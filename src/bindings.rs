@@ -15,11 +15,28 @@ pub fn to_string(val: &Value) -> String {
             Value::Undefined => "undefined".to_string(),
             Value::Null => "null".to_string(),
             Value::Bool(b) => b.to_string(),
-            Value::Number(n) => if n.fract() == 0.0 && n.abs() < 1e15 { format!("{:.0}", n) } else { n.to_string() },
+            Value::Number(n) => {
+                if n.fract() == 0.0 && n.abs() < 1e15 {
+                    format!("{:.0}", n)
+                } else {
+                    n.to_string()
+                }
+            }
             Value::String(s) => s.clone(),
-            Value::Object(p) => format!("{{{}}}", p.iter().map(|(k, v)| format!("{}: {}", k, vs(v))).collect::<Vec<_>>().join(", ")),
-            Value::Array(i) => format!("[{}]", i.iter().map(|v| vs(v)).collect::<Vec<_>>().join(", ")),
-            Value::Function { name, .. } => format!("[Function: {}]", name.as_deref().unwrap_or("anonymous")),
+            Value::Object(p) => format!(
+                "{{{}}}",
+                p.iter()
+                    .map(|(k, v)| format!("{}: {}", k, vs(v)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Value::Array(i) => format!(
+                "[{}]",
+                i.iter().map(|v| vs(v)).collect::<Vec<_>>().join(", ")
+            ),
+            Value::Function { name, .. } => {
+                format!("[Function: {}]", name.as_deref().unwrap_or("anonymous"))
+            }
             Value::NativeFunction { name, .. } => format!("[Function: {} [native]]", name),
         }
     }
@@ -50,7 +67,10 @@ impl VM {
     pub fn new() -> Self {
         let interp = Interpreter::new();
         setup_builtins(&interp.global);
-        Self { interp, modules: HashMap::new() }
+        Self {
+            interp,
+            modules: HashMap::new(),
+        }
     }
 
     #[napi]
@@ -59,7 +79,12 @@ impl VM {
         let toks = lex.tokenize();
         let mut parser = Parser::new(toks);
         let stmts = parser.parse();
-        Ok(to_string(&self.interp.run(&stmts).map_err(|e| napi::Error::from_reason(e.to_string()))?))
+        Ok(to_string(
+            &self
+                .interp
+                .run(&stmts)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?,
+        ))
     }
 
     #[napi]
@@ -71,9 +96,17 @@ impl VM {
         let toks = lex.tokenize();
         let mut parser = Parser::new(toks);
         let stmts = parser.parse();
-        interp.run(&stmts).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        interp
+            .run(&stmts)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         self.modules.insert(name.clone(), source);
-        self.interp.modules.insert(name, Module { exports: HashMap::new(), default: None });
+        self.interp.modules.insert(
+            name,
+            Module {
+                exports: HashMap::new(),
+                default: None,
+            },
+        );
         Ok(())
     }
 

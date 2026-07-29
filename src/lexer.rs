@@ -93,7 +93,10 @@ pub struct Lexer {
 
 impl Lexer {
     pub fn new(s: &str) -> Self {
-        Self { src: s.chars().collect(), pos: 0 }
+        Self {
+            src: s.chars().collect(),
+            pos: 0,
+        }
     }
 
     pub fn tokenize(&mut self) -> Vec<Token> {
@@ -144,18 +147,51 @@ impl Lexer {
     fn next(&mut self) -> Option<Token> {
         let c = *self.src.get(self.pos)?;
         Some(match c {
-            '(' => { self.pos += 1; Token::LParen }
-            ')' => { self.pos += 1; Token::RParen }
-            '{' => { self.pos += 1; Token::LBrace }
-            '}' => { self.pos += 1; Token::RBrace }
-            '[' => { self.pos += 1; Token::LBracket }
-            ']' => { self.pos += 1; Token::RBracket }
-            ';' => { self.pos += 1; Token::Semicolon }
-            ',' => { self.pos += 1; Token::Comma }
-            ':' => { self.pos += 1; Token::Colon }
-            '?' => { self.pos += 1; Token::Question }
+            '(' => {
+                self.pos += 1;
+                Token::LParen
+            }
+            ')' => {
+                self.pos += 1;
+                Token::RParen
+            }
+            '{' => {
+                self.pos += 1;
+                Token::LBrace
+            }
+            '}' => {
+                self.pos += 1;
+                Token::RBrace
+            }
+            '[' => {
+                self.pos += 1;
+                Token::LBracket
+            }
+            ']' => {
+                self.pos += 1;
+                Token::RBracket
+            }
+            ';' => {
+                self.pos += 1;
+                Token::Semicolon
+            }
+            ',' => {
+                self.pos += 1;
+                Token::Comma
+            }
+            ':' => {
+                self.pos += 1;
+                Token::Colon
+            }
+            '?' => {
+                self.pos += 1;
+                Token::Question
+            }
             '.' => {
-                if self.pos + 2 < self.src.len() && self.src[self.pos + 1] == '.' && self.src[self.pos + 2] == '.' {
+                if self.pos + 2 < self.src.len()
+                    && self.src[self.pos + 1] == '.'
+                    && self.src[self.pos + 2] == '.'
+                {
                     self.pos += 3;
                     Token::DotDotDot
                 } else {
@@ -164,57 +200,144 @@ impl Lexer {
                 }
             }
             '+' => match self.src.get(self.pos + 1) {
-                Some('+') => { self.pos += 2; Token::PlusPlus }
-                Some('=') => { self.pos += 2; Token::PlusEqual }
-                _ => { self.pos += 1; Token::Plus }
+                Some('+') => {
+                    self.pos += 2;
+                    Token::PlusPlus
+                }
+                Some('=') => {
+                    self.pos += 2;
+                    Token::PlusEqual
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Plus
+                }
             },
             '-' => match self.src.get(self.pos + 1) {
-                Some('-') => { self.pos += 2; Token::MinusMinus }
-                Some('=') => { self.pos += 2; Token::MinusEqual }
-                _ => { self.pos += 1; Token::Minus }
+                Some('-') => {
+                    self.pos += 2;
+                    Token::MinusMinus
+                }
+                Some('=') => {
+                    self.pos += 2;
+                    Token::MinusEqual
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Minus
+                }
             },
             '*' => match self.src.get(self.pos + 1) {
-                Some('=') => { self.pos += 2; Token::StarEqual }
-                _ => { self.pos += 1; Token::Star }
+                Some('=') => {
+                    self.pos += 2;
+                    Token::StarEqual
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Star
+                }
             },
             '/' => match self.src.get(self.pos + 1) {
-                Some('=') => { self.pos += 2; Token::SlashEqual }
-                _ => { self.pos += 1; Token::Slash }
+                Some('=') => {
+                    self.pos += 2;
+                    Token::SlashEqual
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Slash
+                }
             },
-            '%' => { self.pos += 1; Token::Percent }
+            '%' => {
+                self.pos += 1;
+                Token::Percent
+            }
             '=' => match (self.src.get(self.pos + 1), self.src.get(self.pos + 2)) {
-                (Some('='), Some('=')) => { self.pos += 3; Token::EqualEqualEqual }
-                (Some('='), _) => { self.pos += 2; Token::EqualEqual }
-                (Some('>'), _) => { self.pos += 2; Token::Arrow }
-                _ => { self.pos += 1; Token::Equal }
+                (Some('='), Some('=')) => {
+                    self.pos += 3;
+                    Token::EqualEqualEqual
+                }
+                (Some('='), _) => {
+                    self.pos += 2;
+                    Token::EqualEqual
+                }
+                (Some('>'), _) => {
+                    self.pos += 2;
+                    Token::Arrow
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Equal
+                }
             },
             '!' => match (self.src.get(self.pos + 1), self.src.get(self.pos + 2)) {
-                (Some('='), Some('=')) => { self.pos += 3; Token::NotEqualEqual }
-                (Some('='), _) => { self.pos += 2; Token::NotEqual }
-                _ => { self.pos += 1; Token::Not }
+                (Some('='), Some('=')) => {
+                    self.pos += 3;
+                    Token::NotEqualEqual
+                }
+                (Some('='), _) => {
+                    self.pos += 2;
+                    Token::NotEqual
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Not
+                }
             },
             '<' => match self.src.get(self.pos + 1) {
-                Some('<') => { self.pos += 2; Token::Less }
-                Some('=') => { self.pos += 2; Token::LessEqual }
-                _ => { self.pos += 1; Token::Less }
+                Some('<') => {
+                    self.pos += 2;
+                    Token::Less
+                }
+                Some('=') => {
+                    self.pos += 2;
+                    Token::LessEqual
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Less
+                }
             },
             '>' => match self.src.get(self.pos + 1) {
-                Some('>') => { self.pos += 2; Token::Greater }
-                Some('=') => { self.pos += 2; Token::GreaterEqual }
-                _ => { self.pos += 1; Token::Greater }
+                Some('>') => {
+                    self.pos += 2;
+                    Token::Greater
+                }
+                Some('=') => {
+                    self.pos += 2;
+                    Token::GreaterEqual
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Greater
+                }
             },
             '&' => match self.src.get(self.pos + 1) {
-                Some('&') => { self.pos += 2; Token::And }
-                _ => { self.pos += 1; Token::And }
+                Some('&') => {
+                    self.pos += 2;
+                    Token::And
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::And
+                }
             },
             '|' => match self.src.get(self.pos + 1) {
-                Some('|') => { self.pos += 2; Token::Or }
-                _ => { self.pos += 1; Token::Or }
+                Some('|') => {
+                    self.pos += 2;
+                    Token::Or
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Or
+                }
             },
             '"' | '\'' => self.read_str(c),
             c if c.is_ascii_digit() => self.read_num(),
             c if c.is_ascii_alphabetic() || c == '_' || c == '$' => self.read_ident(),
-            _ => { self.pos += 1; return None; }
+            _ => {
+                self.pos += 1;
+                return None;
+            }
         })
     }
 
@@ -249,16 +372,23 @@ impl Lexer {
 
     fn read_num(&mut self) -> Token {
         let s = self.pos;
-        while self.pos < self.src.len() && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_') {
+        while self.pos < self.src.len()
+            && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_')
+        {
             self.pos += 1;
         }
         if self.pos < self.src.len() && self.src[self.pos] == '.' {
             self.pos += 1;
-            while self.pos < self.src.len() && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_') {
+            while self.pos < self.src.len()
+                && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_')
+            {
                 self.pos += 1;
             }
         }
-        let n: String = self.src[s..self.pos].iter().filter(|c| **c != '_').collect();
+        let n: String = self.src[s..self.pos]
+            .iter()
+            .filter(|c| **c != '_')
+            .collect();
         Token::Number(n.parse().unwrap_or(0.0))
     }
 

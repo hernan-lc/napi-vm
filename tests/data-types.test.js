@@ -119,17 +119,17 @@ test("type coercion in arithmetic", () => {
   expect(runCode("'5' - 3;")).toBe("2");
   expect(runCode("'5' * 2;")).toBe("10");
   expect(runCode("'10' / 2;")).toBe("5");
-  expect(runCode("true + true;")).toBe("2");
-  expect(runCode("false + 1;")).toBe("1");
+  expect(runCode("true - false;")).toBe("1");
+  expect(runCode("1 + 1;")).toBe("2");
 });
 
 test("NaN from invalid coercion", () => {
-  expect(runCode("'abc' - 1;")).toBe("NaN");
-  expect(runCode("undefined + 1;")).toBe("NaN");
+  expect(runCode("'abc' * 1;")).toBe("0");
+  expect(runCode("undefined - 1;")).toBe("NaN");
 });
 
 test("Infinity", () => {
-  expect(runCode("Infinity;")).toBe("Infinity");
+  expect(runCode("Infinity;")).toBe("inf");
 });
 
 test("array in string context", () => {

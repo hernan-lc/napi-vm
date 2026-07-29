@@ -1,15 +1,15 @@
+pub mod bindings;
+pub mod builtins;
 pub mod error;
-pub mod value;
+pub mod interpreter;
 pub mod lexer;
 pub mod parser;
-pub mod interpreter;
-pub mod builtins;
-pub mod bindings;
+pub mod value;
 
-pub use error::VmErr;
-pub use value::Value;
-pub use lexer::{Lexer, Token};
-pub use parser::{Parser, Expr, Statement};
-pub use interpreter::{Interpreter, Environment, Module};
+pub use bindings::{VM, create_vm, debug_parse, run_code};
 pub use builtins::setup_builtins;
-pub use bindings::{VM, create_vm, run_code, debug_parse};
+pub use error::VmErr;
+pub use interpreter::{Environment, Interpreter, Module};
+pub use lexer::{Lexer, Token};
+pub use parser::{Expr, Parser, Statement};
+pub use value::Value;

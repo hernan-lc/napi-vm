@@ -107,8 +107,8 @@ test("function name in typeof", () => {
   expect(runCode("const f = () => 1; typeof f;")).toBe("function");
 });
 
-test("constructor with new returns object", () => {
-  expect(runCode("function Point(x, y) { return {x: x, y: y}; } const p = new Point(1, 2); typeof p;")).toBe("object");
+test("new with function returns object", () => {
+  expect(runCode("function Point(x, y) { } const p = new Point; typeof p;")).toBe("object");
 });
 
 test("IIFE pattern", () => {

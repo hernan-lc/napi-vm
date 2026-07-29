@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::error::{vm_err, vm_ret, vm_throw, VmErr};
+use crate::error::{VmErr, vm_err, vm_ret, vm_throw};
 use crate::parser::{Expr, ExprOrBlock, ForInit, Statement};
 use crate::value::Value;
 
@@ -22,11 +22,17 @@ impl std::fmt::Debug for Environment {
 
 impl Environment {
     pub fn new() -> Self {
-        Self { vars: HashMap::new(), parent: None }
+        Self {
+            vars: HashMap::new(),
+            parent: None,
+        }
     }
 
     pub fn child(p: Env) -> Self {
-        Self { vars: HashMap::new(), parent: Some(p) }
+        Self {
+            vars: HashMap::new(),
+            parent: Some(p),
+        }
     }
 
     pub fn get(&self, n: &str) -> Option<Value> {
@@ -70,7 +76,12 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
-        Self { global: Rc::new(RefCell::new(Environment::new())), modules: HashMap::new(), cur_mod: None, is_main: false }
+        Self {
+            global: Rc::new(RefCell::new(Environment::new())),
+            modules: HashMap::new(),
+            cur_mod: None,
+            is_main: false,
+        }
     }
 
     pub fn run(&mut self, stmts: &[Statement]) -> Result<Value, VmErr> {
@@ -85,53 +96,95 @@ impl Interpreter {
         match s {
             Statement::Expr(e) => self.eval_expr(e),
             Statement::VarDecl { name, init, .. } => {
-                let v = match init { Some(e) => self.eval_expr(e)?, None => Value::Undefined };
+                let v = match init {
+                    Some(e) => self.eval_expr(e)?,
+                    None => Value::Undefined,
+                };
                 self.global.borrow_mut().set(name, v.clone());
                 Ok(v)
             }
             Statement::FnDecl { name, params, body } => {
-                self.global.borrow_mut().set(name, Value::Function { name: Some(name.clone()), params: params.clone(), body: body.clone(), closure: Some(self.global.clone()) });
+                self.global.borrow_mut().set(
+                    name,
+                    Value::Function {
+                        name: Some(name.clone()),
+                        params: params.clone(),
+                        body: body.clone(),
+                        closure: Some(self.global.clone()),
+                    },
+                );
                 Ok(Value::Undefined)
             }
             Statement::ClassDecl { name, .. } => {
-                self.global.borrow_mut().set(name, Value::NativeFunction { name: name.clone(), callable: |_| Ok(Value::Object(vec![])) });
+                self.global.borrow_mut().set(
+                    name,
+                    Value::NativeFunction {
+                        name: name.clone(),
+                        callable: |_| Ok(Value::Object(vec![])),
+                    },
+                );
                 Ok(Value::Undefined)
             }
             Statement::Return(e) => {
-                let v = match e { Some(ex) => self.eval_expr(ex)?, None => Value::Undefined };
+                let v = match e {
+                    Some(ex) => self.eval_expr(ex)?,
+                    None => Value::Undefined,
+                };
                 vm_ret(v)
             }
             Statement::If { test, then, else_ } => {
                 let t = self.eval_expr(test)?;
-                if self.truthy(&t) { self.run(then) } else if let Some(a) = else_ { self.run(a) } else { Ok(Value::Undefined) }
+                if self.truthy(&t) {
+                    self.run(then)
+                } else if let Some(a) = else_ {
+                    self.run(a)
+                } else {
+                    Ok(Value::Undefined)
+                }
             }
             Statement::While { test, body } => {
                 let mut r = Value::Undefined;
                 loop {
                     let t = self.eval_expr(test)?;
-                    if !self.truthy(&t) { break; }
+                    if !self.truthy(&t) {
+                        break;
+                    }
                     r = self.run(body)?;
                 }
                 Ok(r)
             }
-            Statement::For { init, test, update, body } => {
+            Statement::For {
+                init,
+                test,
+                update,
+                body,
+            } => {
                 if let Some(i) = init {
                     match i.as_ref() {
                         ForInit::Var { name, init, .. } => {
-                            let v = match init { Some(e) => self.eval_expr(e)?, None => Value::Undefined };
+                            let v = match init {
+                                Some(e) => self.eval_expr(e)?,
+                                None => Value::Undefined,
+                            };
                             self.global.borrow_mut().set(name, v);
                         }
-                        ForInit::Expr(e) => { self.eval_expr(e)?; }
+                        ForInit::Expr(e) => {
+                            self.eval_expr(e)?;
+                        }
                     }
                 }
                 let mut r = Value::Undefined;
                 loop {
                     if let Some(t) = test {
                         let tv = self.eval_expr(t)?;
-                        if !self.truthy(&tv) { break; }
+                        if !self.truthy(&tv) {
+                            break;
+                        }
                     }
                     r = self.run(body)?;
-                    if let Some(u) = update { self.eval_expr(u)?; }
+                    if let Some(u) = update {
+                        self.eval_expr(u)?;
+                    }
                 }
                 Ok(r)
             }
@@ -147,7 +200,10 @@ impl Interpreter {
             }
             Statement::ForOf { name, iter, body } => {
                 let a = self.eval_expr(iter)?;
-                let items = match &a { Value::Array(i) => i.clone(), _ => return vm_err("for...of needs iterable") };
+                let items = match &a {
+                    Value::Array(i) => i.clone(),
+                    _ => return vm_err("for...of needs iterable"),
+                };
                 let mut r = Value::Undefined;
                 for i in items {
                     self.global.borrow_mut().set(name, i);
@@ -162,28 +218,32 @@ impl Interpreter {
                 let v = self.eval_expr(e)?;
                 vm_throw(self.vs(&v))
             }
-            Statement::Try { body, catch, finally } => {
-                match self.run(body) {
-                    Err(VmErr::Throw(msg)) => {
-                        if let Some((p, cb)) = catch {
-                            let ce = Rc::new(RefCell::new(Environment::child(self.global.clone())));
-                            ce.borrow_mut().set(p, Value::String(msg));
-                            let s = self.global.clone();
-                            self.global = ce;
-                            let r = self.run(cb);
-                            self.global = s;
-                            r
-                        } else {
-                            Ok(Value::Undefined)
-                        }
-                    }
-                    Err(VmErr::Ret(v)) => Err(VmErr::Ret(v)),
-                    other => {
-                        if let Some(f) = finally { self.run(f)?; }
-                        other
+            Statement::Try {
+                body,
+                catch,
+                finally,
+            } => match self.run(body) {
+                Err(VmErr::Throw(msg)) => {
+                    if let Some((p, cb)) = catch {
+                        let ce = Rc::new(RefCell::new(Environment::child(self.global.clone())));
+                        ce.borrow_mut().set(p, Value::String(msg));
+                        let s = self.global.clone();
+                        self.global = ce;
+                        let r = self.run(cb);
+                        self.global = s;
+                        r
+                    } else {
+                        Ok(Value::Undefined)
                     }
                 }
-            }
+                Err(VmErr::Ret(v)) => Err(VmErr::Ret(v)),
+                other => {
+                    if let Some(f) = finally {
+                        self.run(f)?;
+                    }
+                    other
+                }
+            },
             Statement::Switch { disc, cases } => {
                 let d = self.eval_expr(disc)?;
                 let mut r = Value::Undefined;
@@ -191,7 +251,9 @@ impl Interpreter {
                 for c in cases {
                     if let Some(ref t) = c.test {
                         let tv = self.eval_expr(t)?;
-                        if self.seq(&d, &tv) { m = true; }
+                        if self.seq(&d, &tv) {
+                            m = true;
+                        }
                     } else {
                         m = true;
                     }
@@ -199,9 +261,15 @@ impl Interpreter {
                         match self.run(&c.body) {
                             Err(e) => {
                                 let s = format!("{}", e);
-                                if s == "__BREAK__" { break; } else { return Err(e); }
+                                if s == "__BREAK__" {
+                                    break;
+                                } else {
+                                    return Err(e);
+                                }
                             }
-                            Ok(v) => { r = v; }
+                            Ok(v) => {
+                                r = v;
+                            }
                         }
                     }
                 }
@@ -210,13 +278,22 @@ impl Interpreter {
             Statement::ExportDefault(e) => {
                 let v = self.eval_expr(e)?;
                 let mn = self.cur_mod.clone().unwrap_or_default();
-                let mo = self.modules.entry(mn).or_insert_with(|| Module { exports: HashMap::new(), default: None });
+                let mo = self.modules.entry(mn).or_insert_with(|| Module {
+                    exports: HashMap::new(),
+                    default: None,
+                });
                 mo.default = Some(v);
                 Ok(Value::Undefined)
             }
-            Statement::ExportNamed { specifiers, source: _ } => {
+            Statement::ExportNamed {
+                specifiers,
+                source: _,
+            } => {
                 let mn = self.cur_mod.clone().unwrap_or_default();
-                let mo = self.modules.entry(mn).or_insert_with(|| Module { exports: HashMap::new(), default: None });
+                let mo = self.modules.entry(mn).or_insert_with(|| Module {
+                    exports: HashMap::new(),
+                    default: None,
+                });
                 for (l, e) in specifiers {
                     if let Some(v) = self.global.borrow().get(l) {
                         mo.exports.insert(e.clone(), v);
@@ -224,7 +301,12 @@ impl Interpreter {
                 }
                 Ok(Value::Undefined)
             }
-            Statement::Import { module, default, named, namespace } => {
+            Statement::Import {
+                module,
+                default,
+                named,
+                namespace,
+            } => {
                 if let Some(md) = self.modules.get(module) {
                     if let Some(d) = default {
                         let v = md.default.clone().unwrap_or(Value::Undefined);
@@ -235,8 +317,14 @@ impl Interpreter {
                         self.global.borrow_mut().set(l, v);
                     }
                     if let Some(ns) = namespace {
-                        let mut p: Vec<(String, Value)> = md.exports.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                        if let Some(ref def) = md.default { p.push(("_default".to_string(), def.clone())); }
+                        let mut p: Vec<(String, Value)> = md
+                            .exports
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        if let Some(ref def) = md.default {
+                            p.push(("_default".to_string(), def.clone()));
+                        }
                         self.global.borrow_mut().set(ns, Value::Object(p));
                     }
                     Ok(Value::Undefined)
@@ -255,15 +343,23 @@ impl Interpreter {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Null => Ok(Value::Null),
             Expr::Undefined => Ok(Value::Undefined),
-            Expr::Identifier(n) => self.global.borrow().get(n).ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n))),
+            Expr::Identifier(n) => self
+                .global
+                .borrow()
+                .get(n)
+                .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n))),
             Expr::Array(i) => {
                 let mut v = Vec::new();
-                for x in i { v.push(self.eval_expr(x)?); }
+                for x in i {
+                    v.push(self.eval_expr(x)?);
+                }
                 Ok(Value::Array(v))
             }
             Expr::Object(p) => {
                 let mut o = Vec::new();
-                for (k, v) in p { o.push((k.clone(), self.eval_expr(v)?)); }
+                for (k, v) in p {
+                    o.push((k.clone(), self.eval_expr(v)?));
+                }
                 Ok(Value::Object(o))
             }
             Expr::Binary { op, left, right } => {
@@ -271,13 +367,23 @@ impl Interpreter {
                 let r = self.eval_expr(right)?;
                 self.bin_op(op, &l, &r)
             }
-            Expr::Unary { op, operand, prefix } => {
+            Expr::Unary {
+                op,
+                operand,
+                prefix,
+            } => {
                 if (op == "++" || op == "--") && matches!(operand.as_ref(), Expr::Identifier(_)) {
                     if let Expr::Identifier(n) = operand.as_ref() {
                         let (cur, new_val) = {
                             let env = self.global.borrow();
-                            let cur = env.get(n).ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))?;
-                            let nv = if op == "++" { Value::Number(self.tn(&cur) + 1.0) } else { Value::Number(self.tn(&cur) - 1.0) };
+                            let cur = env
+                                .get(n)
+                                .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))?;
+                            let nv = if op == "++" {
+                                Value::Number(self.tn(&cur) + 1.0)
+                            } else {
+                                Value::Number(self.tn(&cur) - 1.0)
+                            };
                             (cur, nv)
                         };
                         self.global.borrow_mut().assign(n, new_val.clone());
@@ -292,11 +398,17 @@ impl Interpreter {
             }
             Expr::Call { callee, args } => {
                 let mut a = Vec::new();
-                for x in args { a.push(self.eval_expr(x)?); }
+                for x in args {
+                    a.push(self.eval_expr(x)?);
+                }
                 let c = self.eval_expr(callee)?;
                 self.call(&c, a)
             }
-            Expr::Member { object, property, computed: _ } => {
+            Expr::Member {
+                object,
+                property,
+                computed: _,
+            } => {
                 let o = self.eval_expr(object)?;
                 let p = self.eval_expr(property)?;
                 self.prop(&o, &p)
@@ -306,7 +418,11 @@ impl Interpreter {
                 match target.as_ref() {
                     Expr::Identifier(n) => {
                         let fv = if *op != "=" {
-                            let c = self.global.borrow().get(n).ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))?;
+                            let c = self
+                                .global
+                                .borrow()
+                                .get(n)
+                                .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))?;
                             let bin_op = op.trim_end_matches('=');
                             self.bin_op(bin_op, &c, &v)?
                         } else {
@@ -320,9 +436,17 @@ impl Interpreter {
                     _ => vm_err("Invalid assignment target"),
                 }
             }
-            Expr::Conditional { test, consequent, alternate } => {
+            Expr::Conditional {
+                test,
+                consequent,
+                alternate,
+            } => {
                 let t = self.eval_expr(test)?;
-                if self.truthy(&t) { self.eval_expr(consequent) } else { self.eval_expr(alternate) }
+                if self.truthy(&t) {
+                    self.eval_expr(consequent)
+                } else {
+                    self.eval_expr(alternate)
+                }
             }
             Expr::ArrowFn { params, body } => Ok(Value::Function {
                 name: None,
@@ -333,10 +457,17 @@ impl Interpreter {
                     ExprOrBlock::Expr(e) => vec![Statement::Return(Some(e.clone()))],
                 },
             }),
-            Expr::FnExpr { name, params, body } => Ok(Value::Function { name: name.clone(), params: params.clone(), body: body.clone(), closure: Some(self.global.clone()) }),
+            Expr::FnExpr { name, params, body } => Ok(Value::Function {
+                name: name.clone(),
+                params: params.clone(),
+                body: body.clone(),
+                closure: Some(self.global.clone()),
+            }),
             Expr::New { callee, args } => {
                 let mut a = Vec::new();
-                for x in args { a.push(self.eval_expr(x)?); }
+                for x in args {
+                    a.push(self.eval_expr(x)?);
+                }
                 let c = self.eval_expr(callee)?;
                 self.ctor(&c, a)
             }
@@ -372,14 +503,28 @@ impl Interpreter {
             ">" => Value::Bool(self.tn(l) > self.tn(r)),
             "<=" => Value::Bool(self.tn(l) <= self.tn(r)),
             ">=" => Value::Bool(self.tn(l) >= self.tn(r)),
-            "&&" => if self.truthy(l) { r.clone() } else { l.clone() },
-            "||" => if self.truthy(l) { l.clone() } else { r.clone() },
+            "&&" => {
+                if self.truthy(l) {
+                    r.clone()
+                } else {
+                    l.clone()
+                }
+            }
+            "||" => {
+                if self.truthy(l) {
+                    l.clone()
+                } else {
+                    r.clone()
+                }
+            }
             "instanceof" => Value::Bool(false),
-            "in" => if let (Value::String(k), Value::Object(p)) = (l, r) {
-                Value::Bool(p.iter().any(|(x, _)| x == k))
-            } else {
-                Value::Bool(false)
-            },
+            "in" => {
+                if let (Value::String(k), Value::Object(p)) = (l, r) {
+                    Value::Bool(p.iter().any(|(x, _)| x == k))
+                } else {
+                    Value::Bool(false)
+                }
+            }
             _ => return vm_err(format!("Unknown op: {}", op)),
         })
     }
@@ -389,15 +534,18 @@ impl Interpreter {
             "!" => Value::Bool(!self.truthy(v)),
             "-" => Value::Number(-self.tn(v)),
             "+" => Value::Number(self.tn(v)),
-            "typeof" => Value::String(match v {
-                Value::Undefined => "undefined",
-                Value::Null => "object",
-                Value::Bool(_) => "boolean",
-                Value::Number(_) => "number",
-                Value::String(_) => "string",
-                Value::Object(_) | Value::Array(_) => "object",
-                Value::Function { .. } | Value::NativeFunction { .. } => "function",
-            }.to_string()),
+            "typeof" => Value::String(
+                match v {
+                    Value::Undefined => "undefined",
+                    Value::Null => "object",
+                    Value::Bool(_) => "boolean",
+                    Value::Number(_) => "number",
+                    Value::String(_) => "string",
+                    Value::Object(_) | Value::Array(_) => "object",
+                    Value::Function { .. } | Value::NativeFunction { .. } => "function",
+                }
+                .to_string(),
+            ),
             "void" => Value::Undefined,
             "delete" => Value::Bool(true),
             "++" => Value::Number(self.tn(v) + 1.0),
@@ -408,17 +556,26 @@ impl Interpreter {
 
     fn call(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmErr> {
         match f {
-            Value::Function { params, body, closure, .. } => {
+            Value::Function {
+                params,
+                body,
+                closure,
+                ..
+            } => {
                 let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
                 let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
                 for (i, p) in params.iter().enumerate() {
-                    fe.borrow_mut().set(p, args.get(i).cloned().unwrap_or(Value::Undefined));
+                    fe.borrow_mut()
+                        .set(p, args.get(i).cloned().unwrap_or(Value::Undefined));
                 }
                 let s = self.global.clone();
                 self.global = fe;
                 let r = self.run(body);
                 self.global = s;
-                match r { Err(VmErr::Ret(v)) => Ok(v), other => other }
+                match r {
+                    Err(VmErr::Ret(v)) => Ok(v),
+                    other => other,
+                }
             }
             Value::NativeFunction { callable, .. } => callable(args),
             _ => vm_err("Not a function"),
@@ -427,19 +584,29 @@ impl Interpreter {
 
     fn ctor(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmErr> {
         let inst = Value::Object(vec![]);
-        if let Value::Function { params, body, closure, .. } = f {
+        if let Value::Function {
+            params,
+            body,
+            closure,
+            ..
+        } = f
+        {
             let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
             let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
             fe.borrow_mut().set("this", inst.clone());
             for (i, p) in params.iter().enumerate() {
-                fe.borrow_mut().set(p, args.get(i).cloned().unwrap_or(Value::Undefined));
+                fe.borrow_mut()
+                    .set(p, args.get(i).cloned().unwrap_or(Value::Undefined));
             }
             let s = self.global.clone();
             self.global = fe;
             let r = self.run(body);
             self.global = s;
             match r {
-                Err(VmErr::Ret(v)) => match v { Value::Object(_) => Ok(v), _ => Ok(inst) },
+                Err(VmErr::Ret(v)) => match v {
+                    Value::Object(_) => Ok(v),
+                    _ => Ok(inst),
+                },
                 _ => Ok(inst),
             }
         } else {
@@ -450,18 +617,34 @@ impl Interpreter {
     fn prop(&self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         match (o, p) {
             (Value::Object(props), Value::String(k)) => {
-                for (xk, xv) in props { if xk == k { return Ok(xv.clone()); } }
+                for (xk, xv) in props {
+                    if xk == k {
+                        return Ok(xv.clone());
+                    }
+                }
                 Ok(Value::Undefined)
             }
             (Value::Array(items), Value::Number(i)) => {
                 let idx = *i as usize;
-                if idx < items.len() { Ok(items[idx].clone()) } else { Ok(Value::Undefined) }
+                if idx < items.len() {
+                    Ok(items[idx].clone())
+                } else {
+                    Ok(Value::Undefined)
+                }
             }
             (Value::Array(items), Value::String(k)) => {
-                if k == "length" { Ok(Value::Number(items.len() as f64)) } else { Ok(Value::Undefined) }
+                if k == "length" {
+                    Ok(Value::Number(items.len() as f64))
+                } else {
+                    Ok(Value::Undefined)
+                }
             }
             (Value::String(s), Value::String(k)) => {
-                if k == "length" { Ok(Value::Number(s.len() as f64)) } else { Ok(Value::Undefined) }
+                if k == "length" {
+                    Ok(Value::Number(s.len() as f64))
+                } else {
+                    Ok(Value::Undefined)
+                }
             }
             _ => Ok(Value::Undefined),
         }
@@ -488,7 +671,13 @@ impl Interpreter {
     pub fn tn(&self, v: &Value) -> f64 {
         match v {
             Value::Number(n) => *n,
-            Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+            Value::Bool(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             Value::String(s) => s.parse().unwrap_or(0.0),
             Value::Null => 0.0,
             Value::Undefined => f64::NAN,
@@ -521,7 +710,13 @@ impl Interpreter {
             Value::Undefined => "undefined".to_string(),
             Value::Null => "null".to_string(),
             Value::Bool(b) => b.to_string(),
-            Value::Number(n) => if n.fract() == 0.0 && n.abs() < 1e15 { format!("{:.0}", n) } else { n.to_string() },
+            Value::Number(n) => {
+                if n.fract() == 0.0 && n.abs() < 1e15 {
+                    format!("{:.0}", n)
+                } else {
+                    n.to_string()
+                }
+            }
             Value::String(s) => s.clone(),
             Value::Object(_) => "[object Object]".to_string(),
             Value::Array(i) => i.iter().map(|x| self.vs(x)).collect::<Vec<_>>().join(","),
@@ -532,12 +727,19 @@ impl Interpreter {
 
     #[allow(dead_code)]
     fn sv(&self, s: &str) -> Value {
-        if s == "undefined" { Value::Undefined }
-        else if s == "null" { Value::Null }
-        else if s == "true" { Value::Bool(true) }
-        else if s == "false" { Value::Bool(false) }
-        else if let Ok(n) = s.parse::<f64>() { Value::Number(n) }
-        else { Value::String(s.to_string()) }
+        if s == "undefined" {
+            Value::Undefined
+        } else if s == "null" {
+            Value::Null
+        } else if s == "true" {
+            Value::Bool(true)
+        } else if s == "false" {
+            Value::Bool(false)
+        } else if let Ok(n) = s.parse::<f64>() {
+            Value::Number(n)
+        } else {
+            Value::String(s.to_string())
+        }
     }
 }
 
@@ -583,18 +785,29 @@ mod tests {
 
     #[test]
     fn test_functions() {
-        assert_eq!(eval_str("function add(a, b) { return a + b; } add(3, 4);"), "7");
+        assert_eq!(
+            eval_str("function add(a, b) { return a + b; } add(3, 4);"),
+            "7"
+        );
         assert_eq!(eval_str("const f = (x) => x * x; f(5);"), "25");
     }
 
     #[test]
     fn test_closures() {
-        assert_eq!(eval_str("function counter() { let n = 0; return () => ++n; } const c = counter(); c(); c(); c();"), "3");
+        assert_eq!(
+            eval_str(
+                "function counter() { let n = 0; return () => ++n; } const c = counter(); c(); c(); c();"
+            ),
+            "3"
+        );
     }
 
     #[test]
     fn test_recursion() {
-        assert_eq!(eval_str("function fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2); } fib(10);"), "55");
+        assert_eq!(
+            eval_str("function fib(n) { return n <= 1 ? n : fib(n-1) + fib(n-2); } fib(10);"),
+            "55"
+        );
     }
 
     #[test]
@@ -617,13 +830,19 @@ mod tests {
 
     #[test]
     fn test_loops() {
-        assert_eq!(eval_str("let s = 0; for (let i = 0; i < 10; i++) { s += i; } s;"), "45");
+        assert_eq!(
+            eval_str("let s = 0; for (let i = 0; i < 10; i++) { s += i; } s;"),
+            "45"
+        );
         assert_eq!(eval_str("let i = 0; while (i < 5) { i++; } i;"), "5");
     }
 
     #[test]
     fn test_try_catch() {
-        assert_eq!(eval_str("try { throw 'oops'; } catch(e) { 'caught: ' + e; }"), "caught: oops");
+        assert_eq!(
+            eval_str("try { throw 'oops'; } catch(e) { 'caught: ' + e; }"),
+            "caught: oops"
+        );
     }
 
     #[test]
@@ -671,22 +890,38 @@ mod tests {
 
     #[test]
     fn test_for_of() {
-        assert_eq!(eval_str("let s = 0; for (const x of [1,2,3]) { s += x; } s;"), "6");
+        assert_eq!(
+            eval_str("let s = 0; for (const x of [1,2,3]) { s += x; } s;"),
+            "6"
+        );
     }
 
     #[test]
     fn test_for_in() {
-        assert_eq!(eval_str("let r = ''; for (const k in {a: 1, b: 2}) { r += k; } r;"), "ab");
+        assert_eq!(
+            eval_str("let r = ''; for (const k in {a: 1, b: 2}) { r += k; } r;"),
+            "ab"
+        );
     }
 
     #[test]
     fn test_switch() {
-        assert_eq!(eval_str("let r = ''; switch (2) { case 1: r = 'one'; break; case 2: r = 'two'; break; default: r = 'other'; } r;"), "two");
+        assert_eq!(
+            eval_str(
+                "let r = ''; switch (2) { case 1: r = 'one'; break; case 2: r = 'two'; break; default: r = 'other'; } r;"
+            ),
+            "two"
+        );
     }
 
     #[test]
     fn test_nested_functions() {
-        assert_eq!(eval_str("function outer() { function inner() { return 42; } return inner(); } outer();"), "42");
+        assert_eq!(
+            eval_str(
+                "function outer() { function inner() { return 42; } return inner(); } outer();"
+            ),
+            "42"
+        );
     }
 
     #[test]

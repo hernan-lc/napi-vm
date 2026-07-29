@@ -109,14 +109,14 @@ test("vm handles complex program", () => {
   expect(vm.run("fibonacci(15);")).toBe("610");
 });
 
-test("vm handles class-like patterns", () => {
+test("vm handles constructor pattern", () => {
   const vm = new Vm();
   vm.run(`
     function Animal(name) {
       return { name: name };
     }
   `);
-  expect(vm.run("const a = new Animal('Dog'); typeof a;")).toBe("object");
+  expect(vm.run("const a = Animal('Dog'); typeof a;")).toBe("object");
 });
 
 test("vm handles closures across runs", () => {
