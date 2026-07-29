@@ -7,7 +7,9 @@
   "scripts": {
     "build": "npx napi build --platform --release",
     "build:debug": "npx napi build --platform",
-    "test": "bun test"
+    "test": "bun test",
+    "bench": "node bench/bench.js",
+    "bench:rust": "cargo bench"
   },
   "napi": {
     "name": "node-vm",

@@ -61,6 +61,17 @@ console.log(debugParse("const x = 1;"));
 | `npm run build` | Build optimized native binary |
 | `npm run build:debug` | Build debug binary |
 | `bun test` | Run the test suite |
+| `npm run bench` | End-to-end JS benchmark through the NAPI binding |
+| `npm run bench:rust` | Criterion microbenchmarks of the interpreter pipeline |
+
+## Benchmarks
+
+Two complementary layers measure the VM from different vantage points:
+
+- **`benches/vm.rs`** (Criterion, `npm run bench:rust`) — microbenchmarks that drive the lexer → parser → interpreter pipeline directly, with no NAPI overhead. A `run` group times representative workloads end to end (arithmetic loops, recursion, array/string builtins, classes, closures, JSON), and a `frontend` group isolates lexing and parsing over a large source. Results, with HTML reports, land in `target/criterion/`.
+- **`bench/bench.js`** (dependency-free, `npm run bench`) — runs the same workloads through the published `runCode` binding so each iteration crosses the NAPI boundary, and compares against an equivalent native-JS baseline to show the interpreter's overhead relative to the host engine. It also asserts the VM result matches the native one, so it doubles as a correctness check.
+
+The JS workloads in both files are kept in sync so the two layers stay comparable.
 
 ## Project Structure
 
@@ -185,7 +196,7 @@ Implemented as native functions (`fn(&mut Interpreter, Value /*this*/, Vec<Value
 - ✅ `JSON.parse` / `JSON.stringify`
 - ✅ `Object` — `keys`, `values`, `entries`, `assign`
 - ✅ `Array` statics — `isArray`
-- ✅ `Array.prototype` — `map`, `filter`, `reduce`, `forEach`, `find`, `some`, `every`, `push`, `pop`, `join`, `slice`, `concat`, `reverse`, `indexOf`, `includes`
+- ✅ `Array.prototype` — `map`, `filter`, `reduce`, `reduceRight`, `forEach`, `find`, `some`, `every`, `push`, `pop`, `shift`, `unshift`, `join`, `slice`, `splice`, `concat`, `reverse`, `sort`, `flat`, `flatMap`, `indexOf`, `includes`
 - ✅ `String.prototype` — `toUpperCase`, `toLowerCase`, `slice`, `substring`, `split`, `includes`, `indexOf`, `trim`, `replace`, `charAt`, `startsWith`, `endsWith`, `repeat`
 - ✅ String index access `'abc'[1]`
 - ✅ `Number.prototype` — `toFixed`
