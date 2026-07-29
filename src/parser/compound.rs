@@ -1,8 +1,26 @@
 //! Compound statement parsers: classes, `import` / `export`, and the shared
 //! block-body / default-guard helpers used across the parser.
 
-use super::{ClassMember, Expr, Parser, Statement};
+use super::{ClassMember, Expr, Parser, Statement, VarKind};
 use crate::lexer::Token;
+
+/// Collect the bound identifier names from a variable declaration statement
+/// (which may be a single `VarDecl` or a block of them for `let a, b`).
+fn declared_names(stmt: &Statement) -> Vec<String> {
+    match stmt {
+        Statement::VarDecl { name, .. } if !name.is_empty() => vec![name.clone()],
+        Statement::Block(stmts) => stmts.iter().flat_map(declared_names).collect(),
+        _ => vec![],
+    }
+}
+
+/// The declared name of a function or class declaration, as a one-element list.
+fn decl_name(stmt: &Statement) -> Vec<String> {
+    match stmt {
+        Statement::FnDecl { name, .. } | Statement::ClassDecl { name, .. } => vec![name.clone()],
+        _ => vec![],
+    }
+}
 
 impl Parser {
     pub(super) fn class_decl(&mut self) -> Option<Statement> {
@@ -125,11 +143,62 @@ impl Parser {
                 source: s,
             })
         } else {
-            Some(Statement::ExportNamed {
-                specifiers: vec![],
-                source: None,
-            })
+            self.export_decl()
         }
+    }
+
+    /// Parse `export <declaration>` (`var`/`let`/`const`/`function`/`class`),
+    /// declaring the binding and re-exporting the declared names. Desugars to a
+    /// block of the declaration followed by an `export { name }` so the existing
+    /// named-export evaluation (which reads from the global scope) applies.
+    fn export_decl(&mut self) -> Option<Statement> {
+        let (decl, names) = match self.cur() {
+            Token::KwVar => {
+                let d = self.var_decl(VarKind::Var)?;
+                let n = declared_names(&d);
+                (d, n)
+            }
+            Token::KwLet => {
+                let d = self.var_decl(VarKind::Let)?;
+                let n = declared_names(&d);
+                (d, n)
+            }
+            Token::KwConst => {
+                let d = self.var_decl(VarKind::Const)?;
+                let n = declared_names(&d);
+                (d, n)
+            }
+            Token::KwFunction => {
+                let d = self.fn_decl(false)?;
+                let n = decl_name(&d);
+                (d, n)
+            }
+            Token::KwAsync if matches!(self.peek(), Token::KwFunction) => {
+                self.adv();
+                let d = self.fn_decl(true)?;
+                let n = decl_name(&d);
+                (d, n)
+            }
+            Token::KwClass => {
+                let d = self.class_decl()?;
+                let n = decl_name(&d);
+                (d, n)
+            }
+            _ => {
+                return Some(Statement::ExportNamed {
+                    specifiers: vec![],
+                    source: None,
+                })
+            }
+        };
+        let specifiers: Vec<(String, String)> = names.into_iter().map(|n| (n.clone(), n)).collect();
+        Some(Statement::Block(vec![
+            decl,
+            Statement::ExportNamed {
+                specifiers,
+                source: None,
+            },
+        ]))
     }
 
     pub(super) fn import(&mut self) -> Option<Statement> {

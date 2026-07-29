@@ -118,7 +118,7 @@ impl Parser {
         }
     }
 
-    fn var_decl(&mut self, k: VarKind) -> Option<Statement> {
+    pub(crate) fn var_decl(&mut self, k: VarKind) -> Option<Statement> {
         self.adv();
         let mut decls = Vec::new();
         loop {
@@ -213,7 +213,7 @@ impl Parser {
         }
     }
 
-    fn fn_decl(&mut self, is_async: bool) -> Option<Statement> {
+    pub(crate) fn fn_decl(&mut self, is_async: bool) -> Option<Statement> {
         self.adv(); // consume `function`
         // Generator declaration: `function*` (the `*` is accepted and ignored;
         // the body is stored as a plain function).

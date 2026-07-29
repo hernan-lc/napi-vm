@@ -1,5 +1,6 @@
 mod array;
 mod date;
+mod error;
 mod json;
 mod math;
 mod number;
@@ -19,11 +20,6 @@ pub fn setup_builtins(env: &Env) {
 
     let simple: &[&str] = &[
         "Boolean",
-        "Error",
-        "TypeError",
-        "RangeError",
-        "SyntaxError",
-        "ReferenceError",
         "Map",
         "Set",
         "WeakMap",
@@ -401,6 +397,7 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     number::install(e);
     json::install(e);
     date::install(e);
+    error::install(e);
     // Global functions.
     e.set("parseInt", nf("parseInt", number::parse_int));
     e.set("parseFloat", nf("parseFloat", number::parse_float));

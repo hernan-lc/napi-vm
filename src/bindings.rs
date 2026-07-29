@@ -4,7 +4,7 @@ use napi_derive::napi;
 
 use crate::builtins::setup_builtins;
 use crate::error::VmErr;
-use crate::interpreter::{Interpreter, Module};
+use crate::interpreter::Interpreter;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::Value;
@@ -102,24 +102,19 @@ impl VM {
 
     #[napi]
     pub fn register_module(&mut self, name: String, source: String) -> napi::Result<()> {
-        let mut interp = Interpreter::new();
-        setup_builtins(&interp.global);
-        interp.cur_mod = Some(name.clone());
+        // Run the module on this VM's interpreter with `cur_mod` set so its
+        // `export` statements populate `self.interp.modules[name]`, making them
+        // visible to later `import` statements in the same VM. (Running it in a
+        // throwaway interpreter, as before, discarded every export.)
+        self.interp.cur_mod = Some(name.clone());
         let mut lex = Lexer::new(&source);
         let toks = lex.tokenize();
         let mut parser = Parser::new(toks);
         let stmts = parser.parse();
-        interp
-            .run(&stmts)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        self.modules.insert(name.clone(), source);
-        self.interp.modules.insert(
-            name,
-            Module {
-                exports: HashMap::new(),
-                default: None,
-            },
-        );
+        let result = self.interp.run(&stmts);
+        self.interp.cur_mod = None;
+        result.map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        self.modules.insert(name, source);
         Ok(())
     }
 
