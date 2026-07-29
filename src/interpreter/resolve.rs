@@ -115,6 +115,13 @@ impl Interpreter {
                         name: "next".to_string(),
                         callable: super::call::generator_next,
                     })
+                } else if k == "__symbol_iterator__" {
+                    // Generators are their own iterators: [Symbol.iterator]()
+                    // returns `this`.
+                    Ok(Value::NativeFunction {
+                        name: "[Symbol.iterator]".to_string(),
+                        callable: generator_iter_self,
+                    })
                 } else {
                     Ok(Value::Undefined)
                 }
@@ -127,6 +134,20 @@ impl Interpreter {
                 } else {
                     Ok(Value::Undefined)
                 }
+            }
+            // Arrays and strings support the iterator protocol via
+            // `__symbol_iterator__` (the internal key for [Symbol.iterator]).
+            (Value::Array(_), Value::String(k)) if k == "__symbol_iterator__" => {
+                Ok(Value::NativeFunction {
+                    name: "[Symbol.iterator]".to_string(),
+                    callable: array_iter,
+                })
+            }
+            (Value::String(_), Value::String(k)) if k == "__symbol_iterator__" => {
+                Ok(Value::NativeFunction {
+                    name: "[Symbol.iterator]".to_string(),
+                    callable: string_iter,
+                })
             }
             (Value::HostFunction { name, .. }, Value::String(k)) => {
                 if k == "name" {

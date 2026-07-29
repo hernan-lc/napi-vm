@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 use crate::error::VmErr;
 use crate::interpreter::{Env, Interpreter};
@@ -73,21 +74,72 @@ pub enum PromiseState {
     Rejected,
 }
 
+/// Messages sent from the main thread to the generator thread.
+pub enum GenResume {
+    /// Resume execution, optionally passing a value into the `yield` expression.
+    Next(Option<Value>),
+}
+
+/// Messages sent from the generator thread back to the main thread.
+pub enum GenYield {
+    /// The generator yielded a value and is now suspended.
+    Yielded(Value),
+    /// The generator returned (body finished). Carries the return value.
+    Returned(Value),
+    /// The generator threw an uncaught error.
+    Threw(String),
+}
+
 /// Mutable state shared across a generator's `next()` calls (behind an `Rc` so
-/// clones of the `Value::Generator` observe the same progress). The body runs
-/// eagerly to completion on the first `next()`, appending each `yield`ed value
-/// to `queue`; later calls drain the queue one value at a time. True mid-body
-/// suspension is not implemented — see the roadmap.
-#[derive(Debug, Clone)]
+/// clones of the `Value::Generator` observe the same progress).
+///
+/// True mid-body suspension is implemented via a dedicated OS thread: the
+/// generator body runs in its own thread and blocks at each `yield`, waiting
+/// for a resume signal over a channel. This correctly handles infinite
+/// generators, yields inside loops/conditionals, and `try/finally` around
+/// yields.
 pub struct GeneratorInner {
     pub body: Rc<Vec<Statement>>,
     pub closure: Option<Env>,
     pub params: Rc<Vec<String>>,
     pub args: Vec<Value>,
-    pub queue: Vec<Value>,
+    /// Sender to the generator thread (resume signals). `None` once done.
+    pub to_gen: Option<mpsc::Sender<GenResume>>,
+    /// Receiver from the generator thread (yielded/returned values).
+    pub from_gen: Option<mpsc::Receiver<GenYield>>,
     pub started: bool,
-    pub cursor: usize,
+    pub done: bool,
+    pub return_value: Option<Value>,
 }
+
+impl std::fmt::Debug for GeneratorInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "GeneratorInner {{ started: {}, done: {} }}",
+            self.started, self.done
+        )
+    }
+}
+
+/// A wrapper asserting that a `Value` can be sent across threads.
+///
+/// # Safety
+/// The generator thread and the main thread never access shared `Rc<RefCell<_>>`
+/// state concurrently: the channel protocol guarantees mutual exclusion (the
+/// main thread blocks on `recv()` while the generator runs, and vice versa).
+pub struct SendValue(pub Value);
+unsafe impl Send for SendValue {}
+
+/// A wrapper asserting that the generator's initial state can be sent to its
+/// thread. Same safety argument as `SendValue`.
+pub struct SendGenInit {
+    pub body: Rc<Vec<Statement>>,
+    pub closure: Option<Env>,
+    pub params: Rc<Vec<String>>,
+    pub args: Vec<Value>,
+}
+unsafe impl Send for SendGenInit {}
 
 impl Value {
     pub fn object(props: Vec<(String, Value)>) -> Self {

@@ -69,6 +69,12 @@ impl Environment {
             false
         }
     }
+
+    /// Return the parent environment, if any. Used by the generator thread
+    /// spawner to find the builtins frame.
+    pub fn parent_env(&self) -> Option<Env> {
+        self.parent.clone()
+    }
 }
 
 #[derive(Clone)]

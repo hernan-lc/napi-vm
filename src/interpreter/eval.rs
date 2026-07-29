@@ -369,6 +369,18 @@ impl Interpreter {
                         }
                         out
                     }
+                    // Full iterator protocol: check for a `[Symbol.iterator]()`
+                    // method on arbitrary objects. If present, call it to obtain
+                    // an iterator, then drive it with `next()`.
+                    Value::Object { .. } => {
+                        let iter_fn =
+                            self.prop(&a, &Value::String("__symbol_iterator__".to_string()))?;
+                        if matches!(iter_fn, Value::Undefined) {
+                            return vm_err("object is not iterable (no Symbol.iterator)");
+                        }
+                        let iterator = self.call_this(&iter_fn, a.clone(), vec![])?;
+                        self.drain_iterator(&iterator)?
+                    }
                     _ => return vm_err("for...of needs iterable"),
                 };
                 let mut r = Value::Undefined;
@@ -913,19 +925,52 @@ impl Interpreter {
                 }
             }
             Expr::Yield(arg) => {
-                // Append the yielded value to the innermost running generator's
-                // queue. `yield` evaluates to `undefined` (sent values are not
-                // supported in this subset). Outside a generator body it is a
-                // no-op that also yields `undefined`.
+                // Evaluate the yielded expression, send it to the main thread
+                // via the generator channel, then block until resumed. The
+                // resume signal may carry a value (from `next(val)`) which
+                // becomes the result of the `yield` expression.
                 let v = match arg {
                     Some(e) => self.eval_expr(e)?,
                     None => Value::Undefined,
                 };
-                if let Some(q) = self.gen_yields.last() {
-                    q.borrow_mut().push(v);
+                if let Some(chan) = self.gen_channel.as_ref() {
+                    use crate::value::{GenResume, GenYield};
+                    chan.to_main
+                        .send(GenYield::Yielded(v))
+                        .map_err(|_| VmErr::Msg("generator receiver dropped".to_string()))?;
+                    // Block until the main thread calls next() again.
+                    match chan.from_main.recv() {
+                        Ok(GenResume::Next(sent)) => Ok(sent.unwrap_or(Value::Undefined)),
+                        Err(_) => {
+                            // Main thread dropped the generator; stop execution.
+                            vm_ret(Value::Undefined)
+                        }
+                    }
+                } else {
+                    // Outside a generator body: yield is a no-op returning undefined.
+                    Ok(Value::Undefined)
                 }
-                Ok(Value::Undefined)
             }
         }
+    }
+
+    /// Drive an iterator object (anything with a `next()` method returning
+    /// `{value, done}`) to completion, collecting all yielded values.
+    pub(crate) fn drain_iterator(&mut self, iterator: &Value) -> Result<Vec<Value>, VmErr> {
+        let next_fn = self.prop(iterator, &Value::String("next".to_string()))?;
+        if matches!(next_fn, Value::Undefined) {
+            return vm_err("iterator has no next() method");
+        }
+        let mut out = Vec::new();
+        loop {
+            let r = self.call_this(&next_fn, iterator.clone(), vec![])?;
+            let done = r.get_prop("done").map(|v| v.is_truthy()).unwrap_or(true);
+            let val = r.get_prop("value").unwrap_or(Value::Undefined);
+            if done {
+                break;
+            }
+            out.push(val);
+        }
+        Ok(out)
     }
 }

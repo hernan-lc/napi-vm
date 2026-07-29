@@ -27,10 +27,18 @@ pub struct Interpreter {
     /// Label applied to the loop currently being entered, if any. A loop takes
     /// this on entry so nested unlabeled loops do not consume its signals.
     active_label: Option<String>,
-    /// Stack of active generator yield queues. Running a generator body pushes
-    /// its queue here so nested `yield` expressions (evaluated during that run)
-    /// can append to it; the top of the stack is the innermost running body.
-    gen_yields: Vec<Rc<RefCell<Vec<Value>>>>,
+    /// When executing inside a generator thread, this holds the channel
+    /// endpoints used to communicate yield/resume with the main thread.
+    /// `None` when not inside a generator body.
+    pub(crate) gen_channel: Option<GenChannel>,
+}
+
+/// Channel endpoints available to a generator body during execution.
+pub(crate) struct GenChannel {
+    /// Send yielded values back to the main thread.
+    pub to_main: std::sync::mpsc::Sender<crate::value::GenYield>,
+    /// Receive resume signals from the main thread.
+    pub from_main: std::sync::mpsc::Receiver<crate::value::GenResume>,
 }
 
 impl Default for Interpreter {
@@ -48,7 +56,7 @@ impl Interpreter {
             cur_mod: None,
             is_main: false,
             active_label: None,
-            gen_yields: Vec::new(),
+            gen_channel: None,
         }
     }
 

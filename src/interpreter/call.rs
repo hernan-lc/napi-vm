@@ -184,9 +184,11 @@ impl Interpreter {
                         closure: closure.clone(),
                         params: params.clone(),
                         args,
-                        queue: Vec::new(),
+                        to_gen: None,
+                        from_gen: None,
                         started: false,
-                        cursor: 0,
+                        done: false,
+                        return_value: None,
                     };
                     return Ok(Value::Generator {
                         inner: Rc::new(RefCell::new(inner)),
@@ -401,77 +403,172 @@ impl Interpreter {
         }
     }
 
-    /// Run a generator body eagerly to completion, collecting every `yield`ed
-    /// value into the returned queue. Parameters are bound in a fresh child of
-    /// the generator's closure, mirroring a normal function call.
-    pub(super) fn run_generator_body(
-        &mut self,
-        body: &[Statement],
-        closure: &Option<super::Env>,
-        params: &[String],
-        args: &[Value],
-    ) -> Vec<Value> {
-        let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
+}
+
+/// Spawn the generator thread. The thread runs the generator body in its own
+/// interpreter, blocking at each `yield` to send the value back and wait for a
+/// resume signal. This gives true mid-body suspension: infinite generators work
+/// correctly, and yields inside loops/conditionals/try-finally all behave as
+/// specified.
+pub(crate) fn spawn_generator_thread(
+    body: Rc<Vec<Statement>>,
+    closure: Option<super::Env>,
+    params: Rc<Vec<String>>,
+    args: Vec<Value>,
+    builtins_env: Option<super::Env>,
+) -> (
+    std::sync::mpsc::Sender<crate::value::GenResume>,
+    std::sync::mpsc::Receiver<crate::value::GenYield>,
+) {
+    use crate::value::{GenResume, GenYield, SendGenInit, SendValue};
+
+    let (to_gen_tx, to_gen_rx) = std::sync::mpsc::channel::<GenResume>();
+    let (from_gen_tx, from_gen_rx) = std::sync::mpsc::channel::<GenYield>();
+
+    let init = SendGenInit {
+        body,
+        closure,
+        params,
+        args,
+    };
+
+    std::thread::spawn(move || {
+        let SendGenInit {
+            body,
+            closure,
+            params,
+            args,
+        } = init;
+
+        // Build a fresh interpreter for the generator thread. If we have a
+        // builtins environment, chain to it so standard library functions work.
+        let mut interp = if let Some(builtins) = builtins_env {
+            let mut i = Interpreter::new();
+            i.global = Rc::new(RefCell::new(Environment::child(builtins)));
+            i
+        } else {
+            Interpreter::with_builtins()
+        };
+
+        // Install the generator channel so `yield` expressions can communicate.
+        interp.gen_channel = Some(super::GenChannel {
+            to_main: from_gen_tx.clone(),
+            from_main: to_gen_rx,
+        });
+
+        // Set up the function environment with bound parameters.
+        let parent_env = closure.unwrap_or_else(|| interp.global.clone());
         let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
         for (i, p) in params.iter().enumerate() {
             let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
             fe.borrow_mut().set(p, arg);
         }
-        let queue = Rc::new(RefCell::new(Vec::new()));
-        self.gen_yields.push(queue.clone());
-        let s = self.global.clone();
-        self.global = fe;
-        let _ = self.run(body);
-        self.global = s;
-        self.gen_yields.pop();
-        Rc::try_unwrap(queue)
-            .map(|c| c.into_inner())
-            .unwrap_or_default()
-    }
+
+        interp.global = fe;
+
+        // Run the body. Yields are handled via the channel inside eval_expr.
+        let result = interp.run(&body);
+
+        // Signal completion or error to the main thread.
+        let chan = interp.gen_channel.as_ref().unwrap();
+        match result {
+            Ok(v) | Err(VmErr::Ret(v)) => {
+                let _ = chan.to_main.send(GenYield::Returned(SendValue(v).0));
+            }
+            Err(VmErr::Throw(v)) => {
+                let msg = match &v {
+                    Value::String(s) => s.clone(),
+                    Value::Error { message, .. } => message.clone(),
+                    _ => format!("{}", v),
+                };
+                let _ = chan.to_main.send(GenYield::Threw(msg));
+            }
+            Err(VmErr::Msg(m)) => {
+                let _ = chan.to_main.send(GenYield::Threw(m));
+            }
+        }
+    });
+
+    (to_gen_tx, from_gen_rx)
 }
 
-/// `Generator.prototype.next`: runs the body on first call, then drains the
-/// collected yields one per call, producing `{ value, done }` result objects.
+/// `Generator.prototype.next`: resumes the generator thread (spawning it on
+/// first call), waits for the next yielded or returned value, and produces a
+/// `{ value, done }` result object.
 pub(crate) fn generator_next(
     interp: &mut Interpreter,
     this: Value,
-    _args: Vec<Value>,
+    args: Vec<Value>,
 ) -> Result<Value, VmErr> {
+    use crate::value::{GenResume, GenYield};
+
     let inner_rc = match this {
         Value::Generator { inner } => inner,
         _ => return Ok(iter_result(Value::Undefined, true)),
     };
 
-    // Phase 1: run the body to completion once, filling the queue.
-    let needs_start = !inner_rc.borrow().started;
-    if needs_start {
-        let (body, closure, params, args) = {
-            let mut inner = inner_rc.borrow_mut();
-            inner.started = true;
-            (
-                inner.body.clone(),
-                inner.closure.clone(),
-                inner.params.clone(),
-                inner.args.clone(),
-            )
-        };
-        let queue = interp.run_generator_body(&body, &closure, &params, &args);
-        inner_rc.borrow_mut().queue = queue;
+    let mut inner = inner_rc.borrow_mut();
+
+    if inner.done {
+        let rv = inner.return_value.clone().unwrap_or(Value::Undefined);
+        return Ok(iter_result(rv, true));
     }
 
-    // Phase 2: hand out the next queued value, or signal completion.
-    let mut inner = inner_rc.borrow_mut();
-    if inner.cursor < inner.queue.len() {
-        let v = inner.queue[inner.cursor].clone();
-        inner.cursor += 1;
-        Ok(iter_result(v, false))
-    } else {
-        Ok(iter_result(Value::Undefined, true))
+    // Spawn the thread on first call.
+    if !inner.started {
+        inner.started = true;
+
+        // Find the builtins environment (the parent of the current global) so
+        // the generator thread has access to standard library functions.
+        let builtins_env = interp.global.borrow().parent_env();
+
+        let (tx, rx) = spawn_generator_thread(
+            inner.body.clone(),
+            inner.closure.clone(),
+            inner.params.clone(),
+            inner.args.clone(),
+            builtins_env,
+        );
+        inner.to_gen = Some(tx);
+        inner.from_gen = Some(rx);
+    }
+
+    // Send the resume signal with the optional sent value.
+    let sent = args.first().cloned();
+    let to_gen = inner.to_gen.as_ref().unwrap();
+    to_gen
+        .send(GenResume::Next(sent))
+        .map_err(|_| VmErr::Msg("generator thread terminated".to_string()))?;
+
+    // Wait for the generator to yield or finish.
+    let from_gen = inner.from_gen.as_ref().unwrap();
+    match from_gen.recv() {
+        Ok(GenYield::Yielded(v)) => Ok(iter_result(v, false)),
+        Ok(GenYield::Returned(v)) => {
+            inner.done = true;
+            inner.return_value = Some(v.clone());
+            inner.to_gen = None;
+            inner.from_gen = None;
+            Ok(iter_result(v, true))
+        }
+        Ok(GenYield::Threw(msg)) => {
+            inner.done = true;
+            inner.to_gen = None;
+            inner.from_gen = None;
+            Err(VmErr::Msg(msg))
+        }
+        Err(_) => {
+            // Channel closed: the thread panicked or was dropped.
+            inner.done = true;
+            inner.to_gen = None;
+            inner.from_gen = None;
+            Ok(iter_result(Value::Undefined, true))
+        }
     }
 }
 
 /// Build an iterator result object `{ value, done }`.
-fn iter_result(value: Value, done: bool) -> Value {
+pub(crate) fn iter_result(value: Value, done: bool) -> Value {
     Value::object(vec![
         ("value".to_string(), value),
         ("done".to_string(), Value::Bool(done)),

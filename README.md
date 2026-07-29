@@ -45,6 +45,33 @@ console.log(vm.run("x;")); // "10"
 console.log(debugParse("const x = 1;"));
 ```
 
+### Host bridge
+
+A VM is fully isolated by default. The bridge methods open a controlled,
+synchronous channel between Node and the VM, marshalling real structured
+values (numbers, strings, booleans, arrays, plain objects) in both directions.
+Exposed values land on the global scope, reachable as bare identifiers and via
+`window` / `globalThis` / `self` (all three alias the one global object).
+
+```javascript
+const vm = new Vm();
+
+// Node -> VM: expose a structured value and a function.
+vm.setGlobal("config", { retries: 3 });
+vm.exposeFunction("add", (a, b) => a + b);
+vm.run("add(config.retries, 4);"); // "7"
+vm.run("window.add(1, 2);");       // "3"  (same function, via the global alias)
+
+// A Node function that throws is catchable inside the VM.
+vm.exposeFunction("boom", () => { throw new Error("nope"); });
+vm.run("try { boom(); } catch (e) { e.message; }"); // "nope"
+
+// VM -> Node: call a function defined inside the VM. Arguments are passed as
+// a single array; the return value comes back as a live JS value.
+vm.run("function point(x, y) { return { x, y }; }");
+vm.callFunction("point", [5, 6]); // { x: 5, y: 6 }
+```
+
 ## API
 
 | Function | Description |
@@ -52,6 +79,12 @@ console.log(debugParse("const x = 1;"));
 | `runCode(code)` | Execute JavaScript code and return the result |
 | `new Vm()` | Create a new isolated VM instance |
 | `vm.run(code)` | Execute code within a VM instance (state persists across calls) |
+| `vm.setGlobal(name, value)` | Define a global from a structured Node value (reachable as `name` and `window.name`) |
+| `vm.exposeFunction(name, fn)` | Expose a Node function to the VM as a callable global; throws propagate into the VM |
+| `vm.callFunction(name, args)` | Call a VM-defined global function; `args` is an array, returns a live JS value |
+| `vm.getGlobal(name)` | Read a global, stringified |
+| `vm.registerModule(name, code)` | Register an ES module so its exports are importable by later `run` calls |
+| `vm.setImportMetaMain(bool)` | Set the value of `import.meta.main` |
 | `debugParse(code)` | Parse code and return the AST as a string |
 
 ## Scripts
@@ -212,6 +245,7 @@ Implemented as native functions (`fn(&mut Interpreter, Value /*this*/, Vec<Value
 - ✅ Module exports reaching importers — `export const`/`function`/`class`/`default` wire through `import { }`, `import * as`, and default imports
 - 🟡 Generators — `function*`/`yield` parse; `yield`ed values are collected and drained one per `next()` call (`{value, done}`) and via `for...of`; true mid-body suspension is not implemented (infinite generators would hang)
 - 🟡 Symbols — `Symbol(desc)`, `Symbol.iterator`, and `for...of` over generators; no full iterator protocol for arbitrary iterables yet
+- ✅ Host bridge (Node ↔ VM) — `setGlobal`/`exposeFunction`/`callFunction` marshal structured values across the NAPI boundary over a stable raw `napi_sys` ABI (the VM stays single-threaded; exposed Node functions are persisted `napi_ref`s invoked synchronously, and thrown errors cross back as catchable exceptions). Exposed globals live on the one global scope, which `window`/`globalThis`/`self` all alias (`Value::GlobalObject`), so `window.add(1, 2)` and bare `add(1, 2)` are the same call. Not yet covered: passing a Node function *into* the VM as a first-class value, async/`postMessage`-style messaging, and a full `EventTarget`.
 
 ## License
 
