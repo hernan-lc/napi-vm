@@ -225,7 +225,7 @@ impl Interpreter {
             Value::Class { name, .. } => format!("class {}", name),
             Value::Promise { .. } => "[object Promise]".to_string(),
             Value::Generator { .. } => "[object Generator]".to_string(),
-            Value::Symbol(_) => "Symbol()".to_string(),
+            Value::Symbol(s) => format!("Symbol({})", s),
             Value::Error { message, .. } => message.clone(),
         }
     }

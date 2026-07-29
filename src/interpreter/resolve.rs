@@ -105,6 +105,25 @@ impl Interpreter {
                 }
                 Ok(Value::Undefined)
             }
+            (Value::Generator { .. }, Value::String(k)) => {
+                if k == "next" {
+                    Ok(Value::NativeFunction {
+                        name: "next".to_string(),
+                        callable: super::call::generator_next,
+                    })
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            (Value::NativeFunction { name, .. }, Value::String(k)) => {
+                // The well-known `Symbol.iterator` member. A native function
+                // cannot carry properties, so it is resolved here by name.
+                if name == "Symbol" && k == "iterator" {
+                    Ok(Value::Symbol("Symbol.iterator".to_string()))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
             _ => Ok(Value::Undefined),
         }
     }

@@ -22,6 +22,10 @@ pub struct Interpreter {
     /// Label applied to the loop currently being entered, if any. A loop takes
     /// this on entry so nested unlabeled loops do not consume its signals.
     active_label: Option<String>,
+    /// Stack of active generator yield queues. Running a generator body pushes
+    /// its queue here so nested `yield` expressions (evaluated during that run)
+    /// can append to it; the top of the stack is the innermost running body.
+    gen_yields: Vec<Rc<RefCell<Vec<Value>>>>,
 }
 
 impl Default for Interpreter {
@@ -38,6 +42,7 @@ impl Interpreter {
             cur_mod: None,
             is_main: false,
             active_label: None,
+            gen_yields: Vec::new(),
         }
     }
 

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { runCode } from "../index.js";
+import { runCode, Vm } from "../index.js";
 
 // ---------------------------------------------------------------------------
 // ECMAScript conformance suite.

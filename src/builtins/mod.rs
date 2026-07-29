@@ -7,6 +7,7 @@ mod number;
 mod object;
 mod promise;
 mod string;
+mod symbol;
 
 pub use array::array_method;
 pub use number::number_method;
@@ -170,7 +171,6 @@ pub fn setup_builtins(env: &Env) {
         ("Array", &["isArray", "from", "of"]),
         ("String", &["fromCharCode"]),
         ("Number", &["isNaN", "isFinite", "parseInt", "parseFloat"]),
-        ("Symbol", &["iterator"]),
         ("Promise", &["resolve", "reject", "all", "race"]),
         ("ArrayBuffer", &["isView"]),
         ("Date", &["now", "parse", "UTC"]),
@@ -400,6 +400,7 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     date::install(e);
     error::install(e);
     promise::install(e);
+    symbol::install(e);
     // Global functions.
     e.set("parseInt", nf("parseInt", number::parse_int));
     e.set("parseFloat", nf("parseFloat", number::parse_float));

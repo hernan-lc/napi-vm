@@ -262,9 +262,7 @@ fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
             });
         } else {
             // Default: lexicographic comparison of the stringified elements.
-            items
-                .borrow_mut()
-                .sort_by(|x, y| interp.vs(x).cmp(&interp.vs(y)));
+            items.borrow_mut().sort_by_key(|x| interp.vs(x));
         }
     }
     Ok(this)

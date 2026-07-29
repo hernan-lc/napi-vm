@@ -7,7 +7,7 @@ use std::rc::Rc;
 use super::{Environment, Interpreter};
 use crate::error::{VmErr, vm_err};
 use crate::parser::{Pattern, Statement};
-use crate::value::{PromiseState, Value};
+use crate::value::{GeneratorInner, PromiseState, Value};
 
 impl Interpreter {
     pub(super) fn destructure(&mut self, pat: &Pattern, val: &Value) -> Result<Value, VmErr> {
@@ -168,8 +168,25 @@ impl Interpreter {
                 closure,
                 is_arrow,
                 is_async,
+                is_generator,
                 ..
             } => {
+                // Calling a generator function does not run its body; it returns
+                // a generator object whose `next()` method drives execution.
+                if *is_generator {
+                    let inner = GeneratorInner {
+                        body: body.clone(),
+                        closure: closure.clone(),
+                        params: params.clone(),
+                        args,
+                        queue: Vec::new(),
+                        started: false,
+                        cursor: 0,
+                    };
+                    return Ok(Value::Generator {
+                        inner: Rc::new(RefCell::new(inner)),
+                    });
+                }
                 let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
                 let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
                 // Regular functions bind their own `this`; arrows inherit the
@@ -370,4 +387,80 @@ impl Interpreter {
             _ => vm_err("Not a constructor"),
         }
     }
+
+    /// Run a generator body eagerly to completion, collecting every `yield`ed
+    /// value into the returned queue. Parameters are bound in a fresh child of
+    /// the generator's closure, mirroring a normal function call.
+    pub(super) fn run_generator_body(
+        &mut self,
+        body: &[Statement],
+        closure: &Option<super::Env>,
+        params: &[String],
+        args: &[Value],
+    ) -> Vec<Value> {
+        let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
+        let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
+        for (i, p) in params.iter().enumerate() {
+            let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
+            fe.borrow_mut().set(p, arg);
+        }
+        let queue = Rc::new(RefCell::new(Vec::new()));
+        self.gen_yields.push(queue.clone());
+        let s = self.global.clone();
+        self.global = fe;
+        let _ = self.run(body);
+        self.global = s;
+        self.gen_yields.pop();
+        Rc::try_unwrap(queue)
+            .map(|c| c.into_inner())
+            .unwrap_or_default()
+    }
+}
+
+/// `Generator.prototype.next`: runs the body on first call, then drains the
+/// collected yields one per call, producing `{ value, done }` result objects.
+pub(crate) fn generator_next(
+    interp: &mut Interpreter,
+    this: Value,
+    _args: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let inner_rc = match this {
+        Value::Generator { inner } => inner,
+        _ => return Ok(iter_result(Value::Undefined, true)),
+    };
+
+    // Phase 1: run the body to completion once, filling the queue.
+    let needs_start = !inner_rc.borrow().started;
+    if needs_start {
+        let (body, closure, params, args) = {
+            let mut inner = inner_rc.borrow_mut();
+            inner.started = true;
+            (
+                inner.body.clone(),
+                inner.closure.clone(),
+                inner.params.clone(),
+                inner.args.clone(),
+            )
+        };
+        let queue = interp.run_generator_body(&body, &closure, &params, &args);
+        inner_rc.borrow_mut().queue = queue;
+    }
+
+    // Phase 2: hand out the next queued value, or signal completion.
+    let mut inner = inner_rc.borrow_mut();
+    if inner.cursor < inner.queue.len() {
+        let v = inner.queue[inner.cursor].clone();
+        inner.cursor += 1;
+        Ok(iter_result(v, false))
+    } else {
+        Ok(iter_result(Value::Undefined, true))
+    }
+}
+
+/// Build an iterator result object `{ value, done }`.
+fn iter_result(value: Value, done: bool) -> Value {
+    Value::object(vec![
+        ("value".to_string(), value),
+        ("done".to_string(), Value::Bool(done)),
+    ])
 }

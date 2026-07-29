@@ -354,6 +354,22 @@ impl Interpreter {
                 let items: Vec<Value> = match &a {
                     Value::Array(i) => i.borrow().clone(),
                     Value::String(s) => s.chars().map(|c| Value::String(c.to_string())).collect(),
+                    Value::Generator { .. } => {
+                        // Drive the generator via its `next()` until done.
+                        let next_fn = self.prop(&a, &Value::String("next".to_string()))?;
+                        let mut out = Vec::new();
+                        loop {
+                            let r = self.call_this(&next_fn, a.clone(), vec![])?;
+                            let done =
+                                r.get_prop("done").map(|v| v.is_truthy()).unwrap_or(true);
+                            let val = r.get_prop("value").unwrap_or(Value::Undefined);
+                            if done {
+                                break;
+                            }
+                            out.push(val);
+                        }
+                        out
+                    }
                     _ => return vm_err("for...of needs iterable"),
                 };
                 let mut r = Value::Undefined;
@@ -835,12 +851,14 @@ impl Interpreter {
                 },
                 is_arrow: true,
                 is_async: false,
+                is_generator: false,
             }),
             Expr::FnExpr {
                 name,
                 params,
                 body,
                 is_async,
+                is_generator,
             } => Ok(Value::Function {
                 name: name.clone(),
                 params: params.clone(),
@@ -848,6 +866,7 @@ impl Interpreter {
                 closure: Some(self.global.clone()),
                 is_arrow: false,
                 is_async: *is_async,
+                is_generator: *is_generator,
             }),
             Expr::New { callee, args } => {
                 let mut a = Vec::new();
@@ -893,6 +912,20 @@ impl Interpreter {
                 } else {
                     Ok(v)
                 }
+            }
+            Expr::Yield(arg) => {
+                // Append the yielded value to the innermost running generator's
+                // queue. `yield` evaluates to `undefined` (sent values are not
+                // supported in this subset). Outside a generator body it is a
+                // no-op that also yields `undefined`.
+                let v = match arg {
+                    Some(e) => self.eval_expr(e)?,
+                    None => Value::Undefined,
+                };
+                if let Some(q) = self.gen_yields.last() {
+                    q.borrow_mut().push(v);
+                }
+                Ok(Value::Undefined)
             }
         }
     }
