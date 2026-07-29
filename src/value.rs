@@ -90,6 +90,12 @@ pub enum GenYield {
     Threw(String),
 }
 
+// Safety: the channel protocol guarantees mutual exclusion between the generator
+// thread and the main thread — only one is ever active at a time. Values sent
+// across the channel are not concurrently accessed.
+unsafe impl Send for GenResume {}
+unsafe impl Send for GenYield {}
+
 /// Mutable state shared across a generator's `next()` calls (behind an `Rc` so
 /// clones of the `Value::Generator` observe the same progress).
 ///
@@ -138,6 +144,9 @@ pub struct SendGenInit {
     pub closure: Option<Env>,
     pub params: Rc<Vec<String>>,
     pub args: Vec<Value>,
+    pub to_gen_rx: mpsc::Receiver<GenResume>,
+    pub from_gen_tx: mpsc::Sender<GenYield>,
+    pub builtins_env: Option<Env>,
 }
 unsafe impl Send for SendGenInit {}
 

@@ -420,76 +420,100 @@ pub(crate) fn spawn_generator_thread(
     std::sync::mpsc::Sender<crate::value::GenResume>,
     std::sync::mpsc::Receiver<crate::value::GenYield>,
 ) {
-    use crate::value::{GenResume, GenYield, SendGenInit, SendValue};
+    use crate::value::{GenResume, GenYield, SendGenInit};
 
     let (to_gen_tx, to_gen_rx) = std::sync::mpsc::channel::<GenResume>();
     let (from_gen_tx, from_gen_rx) = std::sync::mpsc::channel::<GenYield>();
 
+    // Bundle everything the thread needs into a single `Send` wrapper.
     let init = SendGenInit {
         body,
         closure,
         params,
         args,
+        to_gen_rx,
+        from_gen_tx,
+        builtins_env,
     };
 
-    std::thread::spawn(move || {
-        let SendGenInit {
-            body,
-            closure,
-            params,
-            args,
-        } = init;
-
-        // Build a fresh interpreter for the generator thread. If we have a
-        // builtins environment, chain to it so standard library functions work.
-        let mut interp = if let Some(builtins) = builtins_env {
-            let mut i = Interpreter::new();
-            i.global = Rc::new(RefCell::new(Environment::child(builtins)));
-            i
-        } else {
-            Interpreter::with_builtins()
-        };
-
-        // Install the generator channel so `yield` expressions can communicate.
-        interp.gen_channel = Some(super::GenChannel {
-            to_main: from_gen_tx.clone(),
-            from_main: to_gen_rx,
-        });
-
-        // Set up the function environment with bound parameters.
-        let parent_env = closure.unwrap_or_else(|| interp.global.clone());
-        let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
-        for (i, p) in params.iter().enumerate() {
-            let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
-            fe.borrow_mut().set(p, arg);
-        }
-
-        interp.global = fe;
-
-        // Run the body. Yields are handled via the channel inside eval_expr.
-        let result = interp.run(&body);
-
-        // Signal completion or error to the main thread.
-        let chan = interp.gen_channel.as_ref().unwrap();
-        match result {
-            Ok(v) | Err(VmErr::Ret(v)) => {
-                let _ = chan.to_main.send(GenYield::Returned(SendValue(v).0));
-            }
-            Err(VmErr::Throw(v)) => {
-                let msg = match &v {
-                    Value::String(s) => s.clone(),
-                    Value::Error { message, .. } => message.clone(),
-                    _ => format!("{}", v),
-                };
-                let _ = chan.to_main.send(GenYield::Threw(msg));
-            }
-            Err(VmErr::Msg(m)) => {
-                let _ = chan.to_main.send(GenYield::Threw(m));
-            }
-        }
-    });
+    // Use a function boundary so the compiler sees only `SendGenInit` (which is
+    // `Send`) crossing the thread boundary, not the individual `Rc` fields.
+    std::thread::spawn(move || run_generator_thread(init));
 
     (to_gen_tx, from_gen_rx)
+}
+
+/// Entry point for the generator thread. Waits for the first resume signal
+/// (matching JS semantics: the body does not execute until the first `next()`),
+/// then runs the generator body to completion, communicating yields and the
+/// final return value over the channel.
+fn run_generator_thread(init: crate::value::SendGenInit) {
+    use crate::value::{GenResume, GenYield, SendValue};
+
+    let crate::value::SendGenInit {
+        body,
+        closure,
+        params,
+        args,
+        to_gen_rx,
+        from_gen_tx,
+        builtins_env,
+    } = init;
+
+    // Wait for the first `next()` call before executing any of the body.
+    // This matches JS semantics where `function*` bodies are lazy.
+    match to_gen_rx.recv() {
+        Ok(GenResume::Next(_)) => {}
+        Err(_) => return, // Main thread dropped the generator without calling next().
+    }
+
+    // Build a fresh interpreter for the generator thread. If we have a
+    // builtins environment, chain to it so standard library functions work.
+    let mut interp = if let Some(builtins) = builtins_env {
+        let mut i = Interpreter::new();
+        i.global = Rc::new(RefCell::new(Environment::child(builtins)));
+        i
+    } else {
+        Interpreter::with_builtins()
+    };
+
+    // Install the generator channel so `yield` expressions can communicate.
+    interp.gen_channel = Some(super::GenChannel {
+        to_main: from_gen_tx,
+        from_main: to_gen_rx,
+    });
+
+    // Set up the function environment with bound parameters.
+    let parent_env = closure.unwrap_or_else(|| interp.global.clone());
+    let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
+    for (i, p) in params.iter().enumerate() {
+        let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
+        fe.borrow_mut().set(p, arg);
+    }
+
+    interp.global = fe;
+
+    // Run the body. Yields are handled via the channel inside eval_expr.
+    let result = interp.run(&body);
+
+    // Signal completion or error to the main thread.
+    let chan = interp.gen_channel.as_ref().unwrap();
+    match result {
+        Ok(v) | Err(VmErr::Ret(v)) => {
+            let _ = chan.to_main.send(GenYield::Returned(SendValue(v).0));
+        }
+        Err(VmErr::Throw(v)) => {
+            let msg = match &v {
+                Value::String(s) => s.clone(),
+                Value::Error { message, .. } => message.clone(),
+                other => interp.vs(other),
+            };
+            let _ = chan.to_main.send(GenYield::Threw(msg));
+        }
+        Err(VmErr::Msg(m)) => {
+            let _ = chan.to_main.send(GenYield::Threw(m));
+        }
+    }
 }
 
 /// `Generator.prototype.next`: resumes the generator thread (spawning it on

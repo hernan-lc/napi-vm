@@ -132,11 +132,6 @@ impl Parser {
                                     continue;
                                 }
                                 Token::LParen => {
-                                    let key_str = match e {
-                                        Expr::String(s) => s,
-                                        Expr::Number(n) => n.to_string(),
-                                        _ => return None,
-                                    };
                                     self.adv();
                                     let (params, defaults) = self.params();
                                     self.eat(&Token::RParen);
@@ -145,24 +140,48 @@ impl Parser {
                                     self.eat(&Token::RBrace);
                                     let mut body = defaults;
                                     body.extend(b);
-                                    if is_method {
-                                        p.push(ObjectProp::Getter {
-                                            name: key_str,
-                                            body,
-                                        });
-                                    } else if is_setter {
-                                        let param = params.first().cloned().unwrap_or_default();
-                                        p.push(ObjectProp::Setter {
-                                            name: key_str,
-                                            param,
-                                            body,
-                                        });
+                                    // If the computed key is a simple literal,
+                                    // use the named Method/Getter/Setter forms.
+                                    // Otherwise, emit a Computed property whose
+                                    // value is a function expression.
+                                    let key_str = match &e {
+                                        Expr::String(s) => Some(s.clone()),
+                                        Expr::Number(n) => Some(n.to_string()),
+                                        Expr::Identifier(n) => Some(n.clone()),
+                                        _ => None,
+                                    };
+                                    if let Some(key_str) = key_str {
+                                        if is_method {
+                                            p.push(ObjectProp::Getter {
+                                                name: key_str,
+                                                body,
+                                            });
+                                        } else if is_setter {
+                                            let param =
+                                                params.first().cloned().unwrap_or_default();
+                                            p.push(ObjectProp::Setter {
+                                                name: key_str,
+                                                param,
+                                                body,
+                                            });
+                                        } else {
+                                            p.push(ObjectProp::Method {
+                                                name: key_str,
+                                                params,
+                                                body,
+                                            });
+                                        }
                                     } else {
-                                        p.push(ObjectProp::Method {
-                                            name: key_str,
+                                        // Computed method with a non-literal key
+                                        // (e.g. [Symbol.iterator]() { ... }).
+                                        let fn_expr = Expr::FnExpr {
+                                            name: None,
                                             params,
                                             body,
-                                        });
+                                            is_async: false,
+                                            is_generator: false,
+                                        };
+                                        p.push(ObjectProp::Computed(e, fn_expr));
                                     }
                                     if !matches!(self.cur(), Token::RBrace) {
                                         self.eat(&Token::Comma);

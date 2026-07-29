@@ -12,6 +12,7 @@ mod symbol;
 pub use array::array_method;
 pub use number::number_method;
 pub use string::string_method;
+pub(crate) use symbol::{symbol_for, symbol_key_for};
 
 use crate::error::VmErr;
 use crate::interpreter::{Env, Interpreter};

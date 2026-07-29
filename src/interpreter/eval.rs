@@ -598,9 +598,19 @@ impl Interpreter {
                             o.push((k.clone(), self.eval_expr(v)?));
                         }
                         ObjectProp::Computed(k, v) => {
-                            let key = match self.eval_expr(k)? {
-                                Value::String(s) => s,
+                            let key_val = self.eval_expr(k)?;
+                            let key = match &key_val {
+                                Value::String(s) => s.clone(),
                                 Value::Number(n) => n.to_string(),
+                                // Symbol keys are stored under an internal
+                                // mangled name so they can be resolved later.
+                                Value::Symbol(desc) => {
+                                    if desc == "Symbol.iterator" {
+                                        "__symbol_iterator__".to_string()
+                                    } else {
+                                        format!("__symbol:{}__", desc)
+                                    }
+                                }
                                 _ => continue,
                             };
                             o.push((key, self.eval_expr(v)?));
@@ -959,7 +969,7 @@ impl Interpreter {
     pub(crate) fn drain_iterator(&mut self, iterator: &Value) -> Result<Vec<Value>, VmErr> {
         let next_fn = self.prop(iterator, &Value::String("next".to_string()))?;
         if matches!(next_fn, Value::Undefined) {
-            return vm_err("iterator has no next() method");
+            return Err(VmErr::Msg("iterator has no next() method".to_string()));
         }
         let mut out = Vec::new();
         loop {

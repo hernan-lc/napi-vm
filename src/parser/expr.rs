@@ -592,14 +592,14 @@ impl Parser {
                     self.adv();
                     if self.eat(&Token::QuestionDot) {
                         // optional chaining: obj?.prop
-                        let p = self.ident()?;
+                        let p = self.ident_or_keyword()?;
                         e = Expr::OptionalChain {
                             object: Box::new(e),
                             property: Box::new(Expr::String(p)),
                             computed: false,
                         };
                     } else {
-                        let p = self.ident()?;
+                        let p = self.ident_or_keyword()?;
                         e = Expr::Member {
                             object: Box::new(e),
                             property: Box::new(Expr::String(p)),
