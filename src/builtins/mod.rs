@@ -165,6 +165,13 @@ pub fn setup_builtins(env: &Env) {
         e.set(name, Value::object(vec![]));
     }
 
+    // `globalThis`, `self` and `window` are not plain empty objects: they all
+    // denote the global scope itself, so member access on them reads and writes
+    // real globals (see `Interpreter::prop` / `assign_member`).
+    e.set("globalThis", Value::GlobalObject);
+    e.set("self", Value::GlobalObject);
+    e.set("window", Value::GlobalObject);
+
     let with_members: &[(&str, &[&str])] = &[
         ("console", &["log", "error", "warn", "info", "debug"]),
         ("Object", &["keys", "values", "entries", "assign"]),

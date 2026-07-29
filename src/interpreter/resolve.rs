@@ -23,6 +23,10 @@ impl Interpreter {
 
     pub(super) fn prop(&self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         match (o, p) {
+            // `window.x` / `globalThis.x` / `self.x` read a real global.
+            (Value::GlobalObject, Value::String(k)) => {
+                Ok(self.global.borrow().get(k).unwrap_or(Value::Undefined))
+            }
             (Value::Object { props, proto }, Value::String(k)) => {
                 if let Some(v) = props.borrow().iter().find(|(xk, _)| xk == k) {
                     return Ok(v.1.clone());

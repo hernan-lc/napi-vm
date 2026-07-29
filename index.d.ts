@@ -6,6 +6,24 @@ export declare class Vm {
   registerModule(name: string, source: string): void
   setImportMetaMain(isMain: boolean): void
   getGlobal(name: string): string
+  /**
+   * Define a global variable in the VM from a structured Node value. The
+   * value is reachable both as a bare identifier and (once the global
+   * aliases are wired) via `window`/`globalThis`/`self`.
+   */
+  setGlobal(name: string, value: unknown): void
+  /**
+   * Expose a Node function to the VM as a global. VM code can then call it
+   * by name; arguments and the return value are marshalled across the
+   * boundary, and a thrown error propagates into the VM as a catchable
+   * exception.
+   */
+  exposeFunction(name: string, func: unknown): void
+  /**
+   * Call a function defined in the VM (e.g. via a prior `run`) from Node,
+   * marshalling arguments in and the return value out.
+   */
+  callFunction(name: string, args: Array<unknown>): unknown
 }
 export type VM = Vm
 

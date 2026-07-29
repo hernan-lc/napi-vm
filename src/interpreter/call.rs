@@ -138,6 +138,11 @@ impl Interpreter {
                 props.push((k.clone(), val.clone()));
                 Ok(val)
             }
+            // `window.x = v` / `globalThis.x = v` define a real global.
+            (Value::GlobalObject, Value::String(k)) => {
+                self.global.borrow_mut().set(k, val.clone());
+                Ok(val)
+            }
             (Value::Array(items), Value::Number(i)) => {
                 let mut items = items.borrow_mut();
                 let idx = *i as usize;

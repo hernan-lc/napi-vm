@@ -147,7 +147,7 @@ impl Interpreter {
                     Value::Bool(_) => "boolean",
                     Value::Number(_) => "number",
                     Value::String(_) => "string",
-                    Value::Object { .. } | Value::Array(_) => "object",
+                    Value::Object { .. } | Value::Array(_) | Value::GlobalObject => "object",
                     Value::Function { .. }
                     | Value::NativeFunction { .. }
                     | Value::HostFunction { .. }
@@ -189,6 +189,7 @@ impl Interpreter {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
+            (Value::GlobalObject, Value::GlobalObject) => true,
             (Value::Number(a), Value::String(b)) => {
                 if let Ok(parsed) = b.parse::<f64>() {
                     *a == parsed
@@ -229,6 +230,8 @@ impl Interpreter {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
+            // The global aliases all denote the one global scope.
+            (Value::GlobalObject, Value::GlobalObject) => true,
             _ => false,
         }
     }
@@ -247,6 +250,7 @@ impl Interpreter {
             }
             Value::String(s) => s.clone(),
             Value::Object { .. } => "[object Object]".to_string(),
+            Value::GlobalObject => "[object global]".to_string(),
             Value::Array(i) => i
                 .borrow()
                 .iter()

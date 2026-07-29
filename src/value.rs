@@ -39,6 +39,10 @@ pub enum Value {
         name: String,
         id: usize,
     },
+    /// A handle to the global scope itself. Bound to `globalThis`, `self` and
+    /// `window`; member access on it reads and writes real globals (handled in
+    /// `Interpreter::prop` / `assign_member`, which have scope access).
+    GlobalObject,
     Class {
         name: String,
         constructor: Box<Value>,
