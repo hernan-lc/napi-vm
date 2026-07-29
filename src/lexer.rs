@@ -102,6 +102,7 @@ pub enum Token {
     UShrEqual,
     StarStarEqual,
     Backtick,
+    TemplateQuasi(String),
     DollarLBrace,
     EOF,
 }
@@ -109,6 +110,9 @@ pub enum Token {
 pub struct Lexer {
     src: Vec<char>,
     pos: usize,
+    /// Tokens produced ahead of time (e.g. by template scanning), drained in
+    /// FIFO order before lexing more source.
+    pending: Vec<Token>,
 }
 
 impl Lexer {
@@ -116,12 +120,17 @@ impl Lexer {
         Self {
             src: s.chars().collect(),
             pos: 0,
+            pending: Vec::new(),
         }
     }
 
     pub fn tokenize(&mut self) -> Vec<Token> {
         let mut toks = Vec::new();
-        while self.pos < self.src.len() {
+        loop {
+            if let Some(t) = self.pending.pop() {
+                toks.push(t);
+                continue;
+            }
             self.skip_ws();
             if self.pos >= self.src.len() {
                 break;
@@ -160,6 +169,86 @@ impl Lexer {
                 }
             } else {
                 break;
+            }
+        }
+    }
+
+    /// Scan a template literal starting at the opening backtick, preserving the
+    /// raw text of each quasi (including whitespace). Emits:
+    /// `Backtick Quasi (DollarLBrace <expr tokens> RBrace Quasi)* Backtick`.
+    fn read_template(&mut self) -> Vec<Token> {
+        self.pos += 1; // consume opening backtick
+        let mut toks = vec![Token::Backtick];
+        let mut quasi = String::new();
+        while self.pos < self.src.len() {
+            let c = self.src[self.pos];
+            if c == '`' {
+                self.pos += 1;
+                toks.push(Token::TemplateQuasi(quasi));
+                toks.push(Token::Backtick);
+                return toks;
+            } else if c == '$' && self.pos + 1 < self.src.len() && self.src[self.pos + 1] == '{' {
+                self.pos += 2;
+                toks.push(Token::TemplateQuasi(quasi));
+                quasi = String::new();
+                toks.push(Token::DollarLBrace);
+                self.lex_interp(&mut toks);
+            } else if c == '\\' && self.pos + 1 < self.src.len() {
+                self.pos += 1;
+                let e = self.src[self.pos];
+                quasi.push(match e {
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    '0' => '\0',
+                    other => other,
+                });
+                self.pos += 1;
+            } else {
+                quasi.push(c);
+                self.pos += 1;
+            }
+        }
+        // Unterminated template: flush what we have.
+        toks.push(Token::TemplateQuasi(quasi));
+        toks.push(Token::Backtick);
+        toks
+    }
+
+    /// Lex the expression inside a `${ ... }` interpolation, tracking brace depth
+    /// so nested object literals and templates terminate correctly. Consumes the
+    /// matching closing brace and appends `RBrace`.
+    fn lex_interp(&mut self, toks: &mut Vec<Token>) {
+        let mut depth = 1i32;
+        while self.pos < self.src.len() && depth > 0 {
+            self.skip_ws();
+            if self.pos >= self.src.len() {
+                break;
+            }
+            let c = self.src[self.pos];
+            match c {
+                '{' => {
+                    depth += 1;
+                    toks.push(Token::LBrace);
+                    self.pos += 1;
+                }
+                '}' => {
+                    depth -= 1;
+                    self.pos += 1;
+                    toks.push(Token::RBrace);
+                    if depth == 0 {
+                        return;
+                    }
+                }
+                '`' => {
+                    let nested = self.read_template();
+                    toks.extend(nested);
+                }
+                _ => {
+                    if let Some(t) = self.next() {
+                        toks.push(t);
+                    }
+                }
             }
         }
     }
@@ -218,8 +307,12 @@ impl Lexer {
                 }
             },
             '`' => {
-                self.pos += 1;
-                Token::Backtick
+                let toks = self.read_template();
+                let mut it = toks.into_iter();
+                let first = it.next().unwrap_or(Token::Backtick);
+                // Buffer the rest (reversed, since `pending` is popped from the back).
+                self.pending.extend(it.rev());
+                first
             }
             '$' => {
                 if self.pos + 1 < self.src.len() && self.src[self.pos + 1] == '{' {

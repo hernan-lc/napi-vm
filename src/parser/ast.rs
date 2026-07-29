@@ -131,6 +131,10 @@ pub enum Statement {
         body: Vec<Statement>,
     },
     Block(Vec<Statement>),
+    Labeled {
+        label: String,
+        body: Box<Statement>,
+    },
     Break,
     Continue,
     LabeledBreak(String),

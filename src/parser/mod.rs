@@ -32,6 +32,10 @@ impl Parser {
         self.toks.get(self.pos).unwrap_or(&Token::EOF)
     }
 
+    pub(crate) fn peek(&self) -> &Token {
+        self.toks.get(self.pos + 1).unwrap_or(&Token::EOF)
+    }
+
     pub(crate) fn adv(&mut self) -> &Token {
         if self.pos < self.toks.len() {
             self.pos += 1;

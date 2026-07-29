@@ -28,6 +28,13 @@ pub enum Value {
         name: String,
         callable: fn(&mut Interpreter, Value, Vec<Value>) -> Result<Value, VmErr>,
     },
+    Class {
+        name: String,
+        constructor: Box<Value>,
+        prototype: Box<Value>,
+        statics: Rc<RefCell<Vec<(String, Value)>>>,
+        superclass: Option<Box<Value>>,
+    },
     Promise {
         state: PromiseState,
         value: Option<Box<Value>>,

@@ -609,6 +609,7 @@ impl Parser {
                 Token::QuestionDot => {
                     self.adv();
                     if self.eat(&Token::LParen) {
+                        // Optional call: obj?.(args)
                         let mut a = Vec::new();
                         while !matches!(self.cur(), Token::RParen) {
                             if let Some(arg) = self.assign() {
@@ -621,13 +622,31 @@ impl Parser {
                             }
                         }
                         self.eat(&Token::RParen);
+                        e = Expr::Call {
+                            callee: Box::new(Expr::OptionalChain {
+                                object: Box::new(e),
+                                property: Box::new(Expr::Undefined),
+                                computed: false,
+                            }),
+                            args: a,
+                        };
+                    } else if self.eat(&Token::LBracket) {
+                        // Optional computed member: obj?.[expr]
+                        let p = self.assign()?;
+                        self.eat(&Token::RBracket);
                         e = Expr::OptionalChain {
                             object: Box::new(e),
-                            property: Box::new(Expr::Undefined),
-                            computed: false,
+                            property: Box::new(p),
+                            computed: true,
                         };
                     } else {
-                        break;
+                        // Optional member: obj?.prop
+                        let p = self.ident()?;
+                        e = Expr::OptionalChain {
+                            object: Box::new(e),
+                            property: Box::new(Expr::String(p)),
+                            computed: false,
+                        };
                     }
                 }
                 Token::Arrow => {
@@ -680,31 +699,15 @@ impl Parser {
                 self.adv();
                 let mut quasis = Vec::new();
                 let mut exprs = Vec::new();
-                let mut current = String::new();
-                while !matches!(self.cur(), Token::Backtick) && !self.eof() {
-                    match self.cur() {
-                        Token::DollarLBrace => {
-                            self.adv();
-                            quasis.push(current);
-                            current = String::new();
-                            exprs.push(self.expr()?);
-                            self.eat(&Token::RBrace);
-                        }
-                        _ => {
-                            let c = match self.cur() {
-                                Token::String(s) => s.clone(),
-                                Token::Number(n) => n.to_string(),
-                                Token::Identifier(s) => s.clone(),
-                                _ => format!("{:?}", self.cur()),
-                            };
-                            current.push_str(&c);
-                            self.adv();
-                        }
-                    }
+                // Leading quasi (possibly empty).
+                quasis.push(self.take_quasi());
+                while matches!(self.cur(), Token::DollarLBrace) {
+                    self.adv();
+                    exprs.push(self.expr()?);
+                    self.eat(&Token::RBrace);
+                    quasis.push(self.take_quasi());
                 }
-                if self.eat(&Token::Backtick) {
-                    quasis.push(current);
-                }
+                self.eat(&Token::Backtick);
                 Some(Expr::Template { quasis, exprs })
             }
             Token::LParen => {
@@ -974,6 +977,18 @@ impl Parser {
             }
         }
         Some(e)
+    }
+
+    /// Consume a `TemplateQuasi` token if present, returning its raw text
+    /// (empty string when the quasi is absent).
+    fn take_quasi(&mut self) -> String {
+        if let Token::TemplateQuasi(q) = self.cur() {
+            let s = q.clone();
+            self.adv();
+            s
+        } else {
+            String::new()
+        }
     }
 
     /// Speculatively parse `( params ) =>`. On any failure, restore the parser

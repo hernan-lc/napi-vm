@@ -84,6 +84,19 @@ impl Parser {
                 Some(Statement::Empty)
             }
             _ => {
+                // Labeled statement: `label: statement`
+                if let Token::Identifier(n) = self.cur() {
+                    if matches!(self.peek(), Token::Colon) {
+                        let label = n.clone();
+                        self.adv(); // identifier
+                        self.adv(); // colon
+                        let body = self.stmt()?;
+                        return Some(Statement::Labeled {
+                            label,
+                            body: Box::new(body),
+                        });
+                    }
+                }
                 let e = self.expr()?;
                 self.semi();
                 Some(Statement::Expr(e))
@@ -95,15 +108,18 @@ impl Parser {
         self.adv();
         let mut decls = Vec::new();
         loop {
-            let name = self.ident()?;
+            let mut name = String::new();
             let mut destructuring = None;
             let mut init = None;
 
-            if self.eat(&Token::Equal) {
-                init = Some(Box::new(self.assign()?));
-            } else if matches!(self.cur(), Token::LBracket) || matches!(self.cur(), Token::LBrace) {
-                // Destructuring pattern without init
+            if matches!(self.cur(), Token::LBracket) || matches!(self.cur(), Token::LBrace) {
+                // Destructuring declaration: `const [a, b] = ...` / `const {a} = ...`
                 destructuring = Some(Box::new(self.pattern()?));
+                if self.eat(&Token::Equal) {
+                    init = Some(Box::new(self.assign()?));
+                }
+            } else {
+                name = self.ident()?;
                 if self.eat(&Token::Equal) {
                     init = Some(Box::new(self.assign()?));
                 }

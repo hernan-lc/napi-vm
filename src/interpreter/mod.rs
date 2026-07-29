@@ -11,11 +11,22 @@ use crate::error::{VmErr, vm_err, vm_ret, vm_throw};
 use crate::parser::{Expr, ExprOrBlock, ForInit, ClassMember, ObjectProp, Pattern, Statement};
 use crate::value::Value;
 
+fn is_label_break(label: &Option<String>, m: &str) -> bool {
+    matches!(label, Some(l) if m == format!("__BREAK__:{}", l))
+}
+
+fn is_label_continue(label: &Option<String>, m: &str) -> bool {
+    matches!(label, Some(l) if m == format!("__CONTINUE__:{}", l))
+}
+
 pub struct Interpreter {
     pub global: Env,
     pub modules: HashMap<String, Module>,
     pub cur_mod: Option<String>,
     pub is_main: bool,
+    /// Label applied to the loop currently being entered, if any. A loop takes
+    /// this on entry so nested unlabeled loops do not consume its signals.
+    active_label: Option<String>,
 }
 
 impl Default for Interpreter {
@@ -31,6 +42,7 @@ impl Interpreter {
             modules: HashMap::new(),
             cur_mod: None,
             is_main: false,
+            active_label: None,
         }
     }
 
@@ -76,24 +88,20 @@ impl Interpreter {
                 } else {
                     None
                 };
-                // Prototype chain for `extends` is wired up by looking at the
-                // superclass's `prototype` property, if present.
-                let proto = match super_cls {
-                    Some(Value::Object { .. }) | Some(Value::Function { .. }) => None,
+                // Inheritance: the instance prototype chains to the superclass's
+                // prototype so inherited methods resolve.
+                let super_proto = match &super_cls {
+                    Some(Value::Class { prototype, .. }) => Some(prototype.clone()),
                     _ => None,
                 };
 
-                let class_obj = Value::object(vec![
-                    ("name".to_string(), Value::String(name.clone())),
-                ]);
-                let prototype = Value::object_with_proto(vec![], proto);
-                let mut constructor = Value::Function {
-                    name: Some(name.clone()),
-                    params: vec![],
-                    body: vec![],
-                    closure: Some(self.global.clone()),
-                    is_arrow: false,
-                };
+                // Gather the constructor, instance fields, and methods.
+                let mut ctor_params: Vec<String> = Vec::new();
+                let mut ctor_body: Vec<Statement> = Vec::new();
+                let mut instance_fields: Vec<(String, Option<Expr>)> = Vec::new();
+                let mut proto_props: Vec<(String, Value)> = Vec::new();
+                let mut statics: Vec<(String, Value)> =
+                    vec![("name".to_string(), Value::String(name.clone()))];
 
                 for member in body {
                     match member {
@@ -106,24 +114,23 @@ impl Interpreter {
                                 is_arrow: false,
                             };
                             if *st {
-                                class_obj.set_prop(mname.clone(), fn_val);
+                                statics.push((mname.clone(), fn_val));
+                            } else if mname == "constructor" {
+                                ctor_params = mp.clone();
+                                ctor_body = mb.clone();
                             } else {
-                                if mname == "constructor" {
-                                    constructor = fn_val;
-                                } else {
-                                    prototype.set_prop(mname.clone(), fn_val);
-                                }
+                                proto_props.push((mname.clone(), fn_val));
                             }
                         }
                         ClassMember::Field { name: fname, is_static: st, init } => {
-                            let init_val = match init {
-                                Some(e) => self.eval_expr(e)?,
-                                None => Value::Undefined,
-                            };
                             if *st {
-                                class_obj.set_prop(fname.clone(), init_val);
+                                let init_val = match init {
+                                    Some(e) => self.eval_expr(e)?,
+                                    None => Value::Undefined,
+                                };
+                                statics.push((fname.clone(), init_val));
                             } else {
-                                prototype.set_prop(fname.clone(), init_val);
+                                instance_fields.push((fname.clone(), init.clone()));
                             }
                         }
                         ClassMember::Getter { name: gname, is_static: st, body: gb } => {
@@ -135,9 +142,9 @@ impl Interpreter {
                                 is_arrow: false,
                             };
                             if *st {
-                                class_obj.set_prop(name.clone(), getter_fn);
+                                statics.push((gname.clone(), getter_fn));
                             } else {
-                                prototype.set_prop(name.clone(), getter_fn);
+                                proto_props.push((gname.clone(), getter_fn));
                             }
                         }
                         ClassMember::Setter { name: sname, param, is_static: st, body: sb } => {
@@ -149,18 +156,51 @@ impl Interpreter {
                                 is_arrow: false,
                             };
                             if *st {
-                                class_obj.set_prop(sname.clone(), setter_fn);
+                                statics.push((sname.clone(), setter_fn));
                             } else {
-                                prototype.set_prop(sname.clone(), setter_fn);
+                                proto_props.push((sname.clone(), setter_fn));
                             }
                         }
                     }
                 }
 
-                prototype.set_prop("constructor".to_string(), constructor.clone());
-                class_obj.set_prop("prototype".to_string(), prototype);
+                // Desugar instance fields into `this.<field> = <init>;` statements
+                // prepended to the constructor body.
+                let mut full_ctor_body = Vec::new();
+                for (fname, init) in instance_fields {
+                    let value = init.unwrap_or(Expr::Undefined);
+                    full_ctor_body.push(Statement::Expr(Expr::Assignment {
+                        target: Box::new(Expr::Member {
+                            object: Box::new(Expr::This),
+                            property: Box::new(Expr::String(fname.clone())),
+                            computed: false,
+                        }),
+                        op: "=".to_string(),
+                        value: Box::new(value),
+                    }));
+                }
+                full_ctor_body.extend(ctor_body);
 
-                self.global.borrow_mut().set(name, class_obj);
+                let constructor = Value::Function {
+                    name: Some(name.clone()),
+                    params: ctor_params,
+                    body: full_ctor_body,
+                    closure: Some(self.global.clone()),
+                    is_arrow: false,
+                };
+
+                let prototype = Value::object_with_proto(proto_props, super_proto);
+                prototype.set_prop("constructor".to_string(), constructor.clone());
+
+                let class_val = Value::Class {
+                    name: name.clone(),
+                    constructor: Box::new(constructor),
+                    prototype: Box::new(prototype),
+                    statics: Rc::new(RefCell::new(statics)),
+                    superclass: super_cls.map(Box::new),
+                };
+
+                self.global.borrow_mut().set(name, class_val);
                 Ok(Value::Undefined)
             }
             Statement::Return(e) => {
@@ -181,6 +221,7 @@ impl Interpreter {
                 }
             }
             Statement::While { test, body } => {
+                let label = self.active_label.take();
                 let mut r = Value::Undefined;
                 loop {
                     let t = self.eval_expr(test)?;
@@ -188,19 +229,20 @@ impl Interpreter {
                         break;
                     }
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" => break,
-                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" => continue,
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => break,
+                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" || is_label_continue(&label, &m) => continue,
                         other => r = other?,
                     }
                 }
                 Ok(r)
             }
             Statement::DoWhile { test, body } => {
+                let label = self.active_label.take();
                 let mut r = Value::Undefined;
                 loop {
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" => break,
-                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" => {}
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => break,
+                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" || is_label_continue(&label, &m) => {}
                         other => r = other?,
                     }
                     let t = self.eval_expr(test)?;
@@ -233,6 +275,7 @@ impl Interpreter {
                     }
                 }
                 let mut r = Value::Undefined;
+                let label = self.active_label.take();
                 loop {
                     if let Some(t) = test {
                         let tv = self.eval_expr(t)?;
@@ -241,8 +284,8 @@ impl Interpreter {
                         }
                     }
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" => break,
-                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" => {}
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => break,
+                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" || is_label_continue(&label, &m) => {}
                         other => r = other?,
                     }
                     if let Some(u) = update {
@@ -255,11 +298,12 @@ impl Interpreter {
                 let o = self.eval_expr(obj)?;
                 let ks = self.keys(&o);
                 let mut r = Value::Undefined;
+                let label = self.active_label.take();
                 for k in ks {
                     self.global.borrow_mut().set(name, Value::String(k));
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" => break,
-                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" => continue,
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => break,
+                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" || is_label_continue(&label, &m) => continue,
                         other => r = other?,
                     }
                 }
@@ -273,17 +317,33 @@ impl Interpreter {
                     _ => return vm_err("for...of needs iterable"),
                 };
                 let mut r = Value::Undefined;
+                let label = self.active_label.take();
                 for i in items {
                     self.global.borrow_mut().set(name, i);
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" => break,
-                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" => continue,
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => break,
+                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" || is_label_continue(&label, &m) => continue,
                         other => r = other?,
                     }
                 }
                 Ok(r)
             }
             Statement::Block(s) => self.run(s),
+            Statement::Labeled { label, body } => {
+                // Make the label available to a directly-wrapped loop, which
+                // takes it on entry.
+                let prev = self.active_label.take();
+                self.active_label = Some(label.clone());
+                let r = self.eval_stmt(body);
+                self.active_label = prev;
+                match r {
+                    // Consume a labeled break that escaped a non-loop body.
+                    Err(VmErr::Msg(m)) if m == format!("__BREAK__:{}", label) => {
+                        Ok(Value::Undefined)
+                    }
+                    other => other,
+                }
+            }
             Statement::Break => vm_err("__BREAK__"),
             Statement::Continue => vm_err("__CONTINUE__"),
             Statement::LabeledBreak(label) => vm_err(format!("__BREAK__:{}", label)),
@@ -670,13 +730,38 @@ impl Interpreter {
                         _ => a.push(self.eval_expr(x)?),
                     }
                 }
-                let c = self.eval_expr(callee)?;
-                self.call(&c, a)
+                match callee.as_ref() {
+                    // Method call: bind `this` to the receiver object.
+                    Expr::Member { object, property, computed: _ } => {
+                        let obj = self.eval_expr(object)?;
+                        let prop = self.eval_expr(property)?;
+                        let f = self.prop(&obj, &prop)?;
+                        self.call_this(&f, obj, a)
+                    }
+                    Expr::OptionalChain { object, property, computed: _ } => {
+                        let obj = self.eval_expr(object)?;
+                        if matches!(obj, Value::Null | Value::Undefined) {
+                            return Ok(Value::Undefined);
+                        }
+                        // A `Undefined` property marks an optional call `obj?.(args)`.
+                        let f = if matches!(property.as_ref(), Expr::Undefined) {
+                            obj.clone()
+                        } else {
+                            let prop = self.eval_expr(property)?;
+                            self.prop(&obj, &prop)?
+                        };
+                        self.call_this(&f, obj, a)
+                    }
+                    _ => {
+                        let c = self.eval_expr(callee)?;
+                        self.call_this(&c, Value::Undefined, a)
+                    }
+                }
             }
             Expr::Member { object, property, computed: _ } => {
                 let o = self.eval_expr(object)?;
                 let p = self.eval_expr(property)?;
-                self.prop(&o, &p)
+                self.get_prop_value(&o, &p)
             }
             Expr::OptionalChain { object, property, computed: _ } => {
                 let o = self.eval_expr(object)?;
@@ -684,7 +769,7 @@ impl Interpreter {
                     return Ok(Value::Undefined);
                 }
                 let p = self.eval_expr(property)?;
-                self.prop(&o, &p)
+                self.get_prop_value(&o, &p)
             }
             Expr::Assignment { target, op, value } => {
                 let v = self.eval_expr(value)?;
@@ -807,6 +892,19 @@ impl Interpreter {
     fn assign_member(&mut self, obj: &Value, prop: &Value, val: Value) -> Result<Value, VmErr> {
         match (obj, prop) {
             (Value::Object { props, .. }, Value::String(k)) => {
+                // If a setter is defined for this key, invoke it.
+                let setter = props
+                    .borrow()
+                    .iter()
+                    .find(|(xk, xv)| {
+                        xk == k
+                            && matches!(xv, Value::Function { name: Some(n), .. } if n.starts_with("set "))
+                    })
+                    .map(|(_, xv)| xv.clone());
+                if let Some(setter_fn) = setter {
+                    self.call_this(&setter_fn, obj.clone(), vec![val.clone()])?;
+                    return Ok(val);
+                }
                 let mut props = props.borrow_mut();
                 for (xk, xv) in props.iter_mut() {
                     if xk == k {
@@ -834,16 +932,22 @@ impl Interpreter {
         }
     }
 
-    fn call(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmErr> {
+    fn call_this(&mut self, f: &Value, this_val: Value, args: Vec<Value>) -> Result<Value, VmErr> {
         match f {
             Value::Function {
                 params,
                 body,
                 closure,
+                is_arrow,
                 ..
             } => {
                 let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
                 let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
+                // Regular functions bind their own `this`; arrows inherit the
+                // enclosing lexical `this` through the closure chain.
+                if !is_arrow {
+                    fe.borrow_mut().set("this", this_val);
+                }
                 let mut has_rest = false;
                 let mut rest_idx = 0;
                 let mut rest_name = String::new();
@@ -900,7 +1004,6 @@ impl Interpreter {
                 }
             }
             Value::NativeFunction { callable, .. } => {
-                let this_val = self.global.borrow().get("this").unwrap_or(Value::Undefined);
                 callable(self, this_val, args)
             }
             _ => vm_err("Not a function"),
@@ -909,6 +1012,17 @@ impl Interpreter {
 
     fn ctor(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmErr> {
         match f {
+            Value::Class { constructor, prototype, .. } => {
+                // The instance's prototype is the class prototype (shared Rc, so
+                // `instanceof` can compare identity).
+                let inst = Value::object_with_proto(vec![], Some(prototype.clone()));
+                let ctor = constructor.as_ref().clone();
+                let r = self.call_this(&ctor, inst.clone(), args)?;
+                match r {
+                    Value::Object { .. } => Ok(r),
+                    _ => Ok(inst),
+                }
+            }
             Value::Function { params, body, closure, .. } => {
                 let inst = Value::object(vec![]);
                 let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
@@ -971,6 +1085,17 @@ impl Interpreter {
         }
     }
 
+    /// Resolve a property value, invoking it if it is a getter.
+    fn get_prop_value(&mut self, o: &Value, p: &Value) -> Result<Value, VmErr> {
+        let v = self.prop(o, p)?;
+        if let Value::Function { name: Some(n), is_arrow: false, .. } = &v {
+            if n.starts_with("get ") {
+                return self.call_this(&v, o.clone(), vec![]);
+            }
+        }
+        Ok(v)
+    }
+
     fn prop(&self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         match (o, p) {
             (Value::Object { props, proto }, Value::String(k)) => {
@@ -1023,6 +1148,18 @@ impl Interpreter {
                     .nth(idx)
                     .map(|c| Value::String(c.to_string()))
                     .unwrap_or(Value::Undefined))
+            }
+            (Value::Class { statics, prototype, name, .. }, Value::String(k)) => {
+                if k == "prototype" {
+                    return Ok(prototype.as_ref().clone());
+                }
+                if k == "name" {
+                    return Ok(Value::String(name.clone()));
+                }
+                if let Some(v) = statics.borrow().iter().find(|(xk, _)| xk == k) {
+                    return Ok(v.1.clone());
+                }
+                Ok(Value::Undefined)
             }
             _ => Ok(Value::Undefined),
         }
