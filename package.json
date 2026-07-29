@@ -1,0 +1,22 @@
+{
+  "name": "node-vm",
+  "version": "0.1.0",
+  "description": "A Node.js VM with TypeScript compilation via SWC",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "test": "node test.js"
+  },
+  "napi": {
+    "name": "node-vm",
+    "triples": {
+      "defaults": true,
+      "additional": []
+    }
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.8.0"
+  }
+}

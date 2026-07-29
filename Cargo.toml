@@ -1,0 +1,19 @@
+[package]
+name = "node-vm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2.16.4", features = ["napi8"] }
+napi-derive = "2.16.3"
+swc = "73"
+swc_common = "24"
+swc_ecma_parser = "43"
+swc_ecma_ast = "27"
+swc_ecma_codegen = "30"
+swc_ecma_visit = "27"
+swc_ecma_transforms = "60"
+anyhow = "1.0"
