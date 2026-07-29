@@ -25,19 +25,25 @@ pub fn to_string(val: &Value) -> String {
             Value::String(s) => s.clone(),
             Value::Object { props, .. } => format!(
                 "{{{}}}",
-                props.iter()
+                props
+                    .borrow()
+                    .iter()
                     .map(|(k, v)| format!("{}: {}", k, vs(v)))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
             Value::Array(i) => format!(
                 "[{}]",
-                i.iter().map(vs).collect::<Vec<_>>().join(", ")
+                i.borrow().iter().map(vs).collect::<Vec<_>>().join(", ")
             ),
             Value::Function { name, .. } => {
                 format!("[Function: {}]", name.as_deref().unwrap_or("anonymous"))
             }
             Value::NativeFunction { name, .. } => format!("[Function: {} [native]]", name),
+            Value::Promise { .. } => "[object Promise]".to_string(),
+            Value::Generator { .. } => "[object Generator]".to_string(),
+            Value::Symbol(s) => format!("Symbol({})", s),
+            Value::Error { message, .. } => message.clone(),
         }
     }
     vs(val)

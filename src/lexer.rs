@@ -226,8 +226,7 @@ impl Lexer {
                     self.pos += 2;
                     Token::DollarLBrace
                 } else {
-                    self.pos += 1;
-                    Token::Identifier("$".to_string())
+                    self.read_ident()
                 }
             }
             '.' => {

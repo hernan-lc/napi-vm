@@ -1,4 +1,4 @@
-use super::{ClassMember, Expr, ForInit, ObjectProp, Parser, Pattern, Statement, SwitchCase, VarKind};
+use super::{ClassMember, Expr, ForInit, Parser, Pattern, Statement, SwitchCase, VarKind};
 use crate::lexer::Token;
 
 impl Parser {
@@ -16,7 +16,7 @@ impl Parser {
             Token::KwFor => self.for_(),
             Token::KwBreak => {
                 self.adv();
-                let label = if let Token::Identifier(ref n) = self.cur() {
+                let label = if let Token::Identifier(n) = self.cur() {
                     let l = n.clone();
                     self.adv();
                     Some(l)
@@ -32,7 +32,7 @@ impl Parser {
             }
             Token::KwContinue => {
                 self.adv();
-                let label = if let Token::Identifier(ref n) = self.cur() {
+                let label = if let Token::Identifier(n) = self.cur() {
                     let l = n.clone();
                     self.adv();
                     Some(l)
@@ -100,12 +100,12 @@ impl Parser {
             let mut init = None;
 
             if self.eat(&Token::Equal) {
-                init = Some(Box::new(self.expr()?));
+                init = Some(Box::new(self.assign()?));
             } else if matches!(self.cur(), Token::LBracket) || matches!(self.cur(), Token::LBrace) {
                 // Destructuring pattern without init
                 destructuring = Some(Box::new(self.pattern()?));
                 if self.eat(&Token::Equal) {
-                    init = Some(Box::new(self.expr()?));
+                    init = Some(Box::new(self.assign()?));
                 }
             }
 
@@ -171,7 +171,7 @@ impl Parser {
                 let name = n.clone();
                 self.adv();
                 if self.eat(&Token::Equal) {
-                    Some(Pattern::Default(Box::new(Pattern::Ident(name)), Box::new(self.expr()?)))
+                    Some(Pattern::Default(Box::new(Pattern::Ident(name)), Box::new(self.assign()?)))
                 } else {
                     Some(Pattern::Ident(name))
                 }
@@ -184,15 +184,17 @@ impl Parser {
         self.adv();
         let n = self.ident()?;
         self.eat(&Token::LParen);
-        let p = self.params();
+        let (p, defaults) = self.params();
         self.eat(&Token::RParen);
         self.eat(&Token::LBrace);
         let b = self.block_body();
         self.eat(&Token::RBrace);
+        let mut body = defaults;
+        body.extend(b);
         Some(Statement::FnDecl {
             name: n,
             params: p,
-            body: b,
+            body,
         })
     }
 
@@ -226,16 +228,18 @@ impl Parser {
                 _ => return None,
             };
             if self.eat(&Token::LParen) {
-                let p = self.params();
+                let (p, defaults) = self.params();
                 self.eat(&Token::RParen);
                 self.eat(&Token::LBrace);
                 let bd = self.block_body();
                 self.eat(&Token::RBrace);
+                let mut body = defaults;
+                body.extend(bd);
                 if is_getter {
                     b.push(ClassMember::Getter {
                         name: mn,
                         is_static: st,
-                        body: bd,
+                        body,
                     });
                 } else if is_setter {
                     let param = p.first().cloned().unwrap_or_default();
@@ -243,19 +247,19 @@ impl Parser {
                         name: mn,
                         param,
                         is_static: st,
-                        body: bd,
+                        body,
                     });
                 } else {
                     b.push(ClassMember::Method {
                         name: mn,
                         is_static: st,
                         params: p,
-                        body: bd,
+                        body,
                     });
                 }
             } else {
                 let i = if self.eat(&Token::Equal) {
-                    Some(self.expr()?)
+                    Some(self.assign()?)
                 } else {
                     None
                 };
@@ -348,42 +352,30 @@ impl Parser {
     fn for_(&mut self) -> Option<Statement> {
         self.adv();
         self.eat(&Token::LParen);
-        let init = if self.eat(&Token::KwVar) {
-            let n = self.ident()?;
-            let i = if self.eat(&Token::Equal) {
-                Some(Box::new(self.expr()?))
-            } else {
-                None
+        let init = if matches!(
+            self.cur(),
+            Token::KwVar | Token::KwLet | Token::KwConst
+        ) {
+            let kind = match self.cur() {
+                Token::KwVar => VarKind::Var,
+                Token::KwLet => VarKind::Let,
+                _ => VarKind::Const,
             };
-            Some(Box::new(ForInit::Var {
-                kind: VarKind::Var,
-                name: n,
-                init: i,
-            }))
-        } else if self.eat(&Token::KwLet) {
-            let n = self.ident()?;
-            let i = if self.eat(&Token::Equal) {
-                Some(Box::new(self.expr()?))
-            } else {
-                None
-            };
-            Some(Box::new(ForInit::Var {
-                kind: VarKind::Let,
-                name: n,
-                init: i,
-            }))
-        } else if self.eat(&Token::KwConst) {
-            let n = self.ident()?;
-            let i = if self.eat(&Token::Equal) {
-                Some(Box::new(self.expr()?))
-            } else {
-                None
-            };
-            Some(Box::new(ForInit::Var {
-                kind: VarKind::Const,
-                name: n,
-                init: i,
-            }))
+            self.adv();
+            let mut decls = Vec::new();
+            loop {
+                let n = self.ident()?;
+                let i = if self.eat(&Token::Equal) {
+                    Some(self.assign()?)
+                } else {
+                    None
+                };
+                decls.push((n, i));
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
+            Some(Box::new(ForInit::Var { kind, decls }))
         } else if matches!(self.cur(), Token::Semicolon) {
             None
         } else {
@@ -397,7 +389,7 @@ impl Parser {
                 self.eat(&Token::RParen);
                 let b = self.block_or_stmt();
                 let n = match init.as_ref() {
-                    ForInit::Var { name, .. } => name.clone(),
+                    ForInit::Var { decls, .. } => decls.first()?.0.clone(),
                     _ => return None,
                 };
                 return Some(Statement::ForIn {
@@ -411,7 +403,7 @@ impl Parser {
                 self.eat(&Token::RParen);
                 let b = self.block_or_stmt();
                 let n = match init.as_ref() {
-                    ForInit::Var { name, .. } => name.clone(),
+                    ForInit::Var { decls, .. } => decls.first()?.0.clone(),
                     _ => return None,
                 };
                 return Some(Statement::ForOf {
@@ -686,23 +678,48 @@ impl Parser {
         s
     }
 
-    pub(crate) fn params(&mut self) -> Vec<String> {
-        let mut p = Vec::new();
+    /// Build the guard statement implementing a parameter default value:
+    /// `if (name === undefined) name = <default>;`
+    pub(crate) fn default_guard(name: &str, d: Expr) -> Statement {
+        Statement::If {
+            test: Box::new(Expr::Binary {
+                op: "===".to_string(),
+                left: Box::new(Expr::Identifier(name.to_string())),
+                right: Box::new(Expr::Undefined),
+            }),
+            then: vec![Statement::Expr(Expr::Assignment {
+                target: Box::new(Expr::Identifier(name.to_string())),
+                op: "=".to_string(),
+                value: Box::new(d),
+            })],
+            else_: None,
+        }
+    }
+
+    /// Parse a parameter list. Returns the parameter names (rest params keep
+    /// their `...` prefix) plus guard statements that implement default values
+    /// (`if (name === undefined) name = <default>;`), to be prepended to a body.
+    pub(crate) fn params(&mut self) -> (Vec<String>, Vec<Statement>) {
+        let mut names = Vec::new();
+        let mut defaults = Vec::new();
         while !matches!(self.cur(), Token::RParen) {
             match self.cur() {
                 Token::DotDotDot => {
                     self.adv();
                     if let Token::Identifier(n) = self.cur() {
-                        p.push(n.clone());
+                        names.push(format!("...{}", n));
                         self.adv();
                     }
                 }
                 Token::Identifier(n) => {
-                    p.push(n.clone());
+                    let name = n.clone();
                     self.adv();
                     if self.eat(&Token::Equal) {
-                        let _ = self.expr();
+                        if let Some(d) = self.assign() {
+                            defaults.push(Self::default_guard(&name, d));
+                        }
                     }
+                    names.push(name);
                 }
                 _ => {
                     self.adv();
@@ -712,7 +729,7 @@ impl Parser {
                 self.eat(&Token::Comma);
             }
         }
-        p
+        (names, defaults)
     }
 
     pub(crate) fn ident(&mut self) -> Option<String> {

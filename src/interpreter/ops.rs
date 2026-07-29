@@ -5,25 +5,28 @@ use crate::error::{VmErr, vm_err};
 impl Interpreter {
     pub fn bin_op(&self, op: &str, l: &Value, r: &Value) -> Result<Value, VmErr> {
         Ok(match op {
-            "+" => match (l, r) {
-                (Value::Number(a), Value::Number(b)) => Value::Number(a + b),
-                (Value::String(a), _) => Value::String(format!("{}{}", a, self.vs(r))),
-                (_, Value::String(b)) => Value::String(format!("{}{}", self.vs(l), b)),
-                _ => Value::String(format!("{}{}", self.vs(l), self.vs(r))),
-            },
+            "+" => {
+                // String concatenation if either side is a string; otherwise
+                // numeric addition (booleans/null/etc. coerce via to_number).
+                if matches!(l, Value::String(_)) || matches!(r, Value::String(_)) {
+                    Value::String(format!("{}{}", self.vs(l), self.vs(r)))
+                } else {
+                    Value::Number(self.tn(l) + self.tn(r))
+                }
+            }
             "-" => Value::Number(self.tn(l) - self.tn(r)),
             "*" => Value::Number(self.tn(l) * self.tn(r)),
             "/" => Value::Number(self.tn(l) / self.tn(r)),
             "%" => Value::Number(self.tn(l) % self.tn(r)),
             "**" => Value::Number(self.tn(l).powf(self.tn(r))),
-            "&" => Value::Number((self.tn(l) as u64 & self.tn(r) as u64) as f64),
-            "|" => Value::Number((self.tn(l) as u64 | self.tn(r) as u64) as f64),
-            "^" => Value::Number((self.tn(l) as u64 ^ self.tn(r) as u64) as f64),
-            "<<" => Value::Number(((self.tn(l) as u64) << (self.tn(r) as u64)) as f64),
-            ">>" => Value::Number((self.tn(l) as i64 >> self.tn(r) as i64) as f64),
+            "&" => Value::Number(((self.tn(l) as i32) & (self.tn(r) as i32)) as f64),
+            "|" => Value::Number(((self.tn(l) as i32) | (self.tn(r) as i32)) as f64),
+            "^" => Value::Number(((self.tn(l) as i32) ^ (self.tn(r) as i32)) as f64),
+            "<<" => Value::Number(((self.tn(l) as i32) << ((self.tn(r) as i32) & 31)) as f64),
+            ">>" => Value::Number(((self.tn(l) as i32) >> ((self.tn(r) as i32) & 31)) as f64),
             ">>>" => {
-                let a = self.tn(l) as u64;
-                let b = (self.tn(r) as u32) % 32;
+                let a = (self.tn(l) as i32) as u32;
+                let b = (self.tn(r) as i32) as u32 & 31;
                 Value::Number((a >> b) as f64)
             }
             "==" => Value::Bool(self.leq(l, r)),
@@ -59,7 +62,7 @@ impl Interpreter {
             "instanceof" => Value::Bool(false),
             "in" => {
                 if let (Value::String(k), Value::Object { props, .. }) = (l, r) {
-                    Value::Bool(props.iter().any(|(x, _)| x == k))
+                    Value::Bool(props.borrow().iter().any(|(x, _)| x == k))
                 } else {
                     Value::Bool(false)
                 }
@@ -73,7 +76,7 @@ impl Interpreter {
             "!" => Value::Bool(!self.truthy(v)),
             "-" => Value::Number(-self.tn(v)),
             "+" => Value::Number(self.tn(v)),
-            "~" => Value::Number(!(self.tn(v) as u64) as f64),
+            "~" => Value::Number(!(self.tn(v) as i32) as f64),
             "typeof" => Value::String(
                 match v {
                     Value::Undefined => "undefined",
@@ -100,8 +103,8 @@ impl Interpreter {
 
     pub fn keys(&self, o: &Value) -> Vec<String> {
         match o {
-            Value::Object { props, .. } => props.iter().map(|(k, _)| k.clone()).collect(),
-            Value::Array(i) => (0..i.len()).map(|x| x.to_string()).collect(),
+            Value::Object { props, .. } => props.borrow().iter().map(|(k, _)| k.clone()).collect(),
+            Value::Array(i) => (0..i.borrow().len()).map(|x| x.to_string()).collect(),
             _ => vec![],
         }
     }
@@ -178,7 +181,7 @@ impl Interpreter {
             }
             Value::String(s) => s.clone(),
             Value::Object { .. } => "[object Object]".to_string(),
-            Value::Array(i) => i.iter().map(|x| self.vs(x)).collect::<Vec<_>>().join(","),
+            Value::Array(i) => i.borrow().iter().map(|x| self.vs(x)).collect::<Vec<_>>().join(","),
             Value::Function { name, .. } => format!("function {}", name.as_deref().unwrap_or("")),
             Value::NativeFunction { name, .. } => format!("function {} [native]", name),
             Value::Promise { .. } => "[object Promise]".to_string(),

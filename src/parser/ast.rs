@@ -1,8 +1,3 @@
-use std::fmt;
-
-use super::Parser;
-use crate::lexer::Token;
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Number(f64),
@@ -175,8 +170,7 @@ pub enum VarKind {
 pub enum ForInit {
     Var {
         kind: VarKind,
-        name: String,
-        init: Option<Box<Expr>>,
+        decls: Vec<(String, Option<Expr>)>,
     },
     Expr(Expr),
 }

@@ -151,7 +151,7 @@ pub fn setup_builtins(env: &Env) {
         "UnloadEvent",
     ];
     for name in simple {
-        e.set(name, Value::Object(vec![]));
+        e.set(name, Value::object(vec![]));
     }
 
     let with_members: &[(&str, &[&str])] = &[
@@ -342,12 +342,12 @@ pub fn setup_builtins(env: &Env) {
             .iter()
             .map(|m| (m.to_string(), Value::Undefined))
             .collect();
-        e.set(name, Value::Object(props));
+        e.set(name, Value::object(props));
     }
 
     e.set(
         "Math",
-        Value::Object(vec![
+        Value::object(vec![
             ("PI".to_string(), Value::Number(std::f64::consts::PI)),
             ("E".to_string(), Value::Number(std::f64::consts::E)),
             ("LN2".to_string(), Value::Number(std::f64::consts::LN_2)),

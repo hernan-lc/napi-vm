@@ -1,12 +1,29 @@
-use super::{Expr, ObjectProp, Parser};
+use super::{Expr, ExprOrBlock, ObjectProp, Parser, Statement};
 use crate::lexer::Token;
 
 impl Parser {
     pub(crate) fn expr(&mut self) -> Option<Expr> {
-        self.assign()
+        self.comma()
     }
 
-    fn assign(&mut self) -> Option<Expr> {
+    /// The comma operator sits at the lowest precedence. It is only parsed in
+    /// contexts that explicitly call `expr()`; list contexts (array elements,
+    /// call arguments, object values, ...) call `assign()` so the comma is
+    /// treated as a separator instead.
+    fn comma(&mut self) -> Option<Expr> {
+        let mut l = self.assign()?;
+        while self.eat(&Token::Comma) {
+            let r = self.assign()?;
+            l = Expr::Binary {
+                op: ",".to_string(),
+                left: Box::new(l),
+                right: Box::new(r),
+            };
+        }
+        Some(l)
+    }
+
+    pub(crate) fn assign(&mut self) -> Option<Expr> {
         let l = self.cond()?;
         match self.cur() {
             Token::Equal => {
@@ -131,11 +148,11 @@ impl Parser {
     }
 
     fn cond(&mut self) -> Option<Expr> {
-        let t = self.comma()?;
+        let t = self.nullish()?;
         if self.eat(&Token::Question) {
-            let c = self.expr()?;
+            let c = self.assign()?;
             self.eat(&Token::Colon);
-            let a = self.expr()?;
+            let a = self.assign()?;
             Some(Expr::Conditional {
                 test: Box::new(t),
                 consequent: Box::new(c),
@@ -144,19 +161,6 @@ impl Parser {
         } else {
             Some(t)
         }
-    }
-
-    fn comma(&mut self) -> Option<Expr> {
-        let mut l = self.nullish()?;
-        while self.eat(&Token::Comma) {
-            let r = self.nullish()?;
-            l = Expr::Binary {
-                op: ",".to_string(),
-                left: Box::new(l),
-                right: Box::new(r),
-            };
-        }
-        Some(l)
     }
 
     fn nullish(&mut self) -> Option<Expr> {
@@ -542,7 +546,7 @@ impl Parser {
                     self.adv();
                     let mut a = Vec::new();
                     while !matches!(self.cur(), Token::RParen) {
-                        if let Some(arg) = self.expr() {
+                        if let Some(arg) = self.assign() {
                             a.push(arg);
                         } else {
                             self.adv();
@@ -607,7 +611,7 @@ impl Parser {
                     if self.eat(&Token::LParen) {
                         let mut a = Vec::new();
                         while !matches!(self.cur(), Token::RParen) {
-                            if let Some(arg) = self.expr() {
+                            if let Some(arg) = self.assign() {
                                 a.push(arg);
                             } else {
                                 self.adv();
@@ -629,7 +633,7 @@ impl Parser {
                 Token::Arrow => {
                     if let Expr::Identifier(n) = e {
                         self.adv();
-                        e = self.arrow_body(&[n]);
+                        e = self.arrow_body(vec![n], vec![]);
                     } else {
                         break;
                     }
@@ -704,42 +708,13 @@ impl Parser {
                 Some(Expr::Template { quasis, exprs })
             }
             Token::LParen => {
+                // Speculatively try to parse an arrow-function parameter list.
+                if let Some(arrow) = self.try_arrow() {
+                    return Some(arrow);
+                }
+                // Otherwise it is a parenthesized expression.
                 self.adv();
-                if self.eat(&Token::RParen) {
-                    if self.eat(&Token::Arrow) {
-                        return Some(self.arrow_body(&[]));
-                    }
-                    return Some(Expr::Undefined);
-                }
-                let f = self.expr()?;
-                if self.eat(&Token::RParen) {
-                    if self.eat(&Token::Arrow) {
-                        let n = match &f {
-                            Expr::Identifier(x) => x.clone(),
-                            _ => return None,
-                        };
-                        return Some(self.arrow_body(&[n]));
-                    }
-                    return Some(f);
-                }
-                if self.eat(&Token::Comma) {
-                    let mut p = vec![];
-                    if let Expr::Identifier(n) = f {
-                        p.push(n);
-                    }
-                    while self.eat(&Token::Comma) {
-                        if let Token::Identifier(x) = self.cur() {
-                            p.push(x.clone());
-                            self.adv();
-                        }
-                    }
-                    self.eat(&Token::RParen);
-                    if self.eat(&Token::Arrow) {
-                        return Some(self.arrow_body(&p));
-                    }
-                    return None;
-                }
-                let e = self.assign()?;
+                let e = self.expr()?;
                 self.eat(&Token::RParen);
                 Some(e)
             }
@@ -752,9 +727,9 @@ impl Parser {
                         continue;
                     }
                     if self.eat(&Token::DotDotDot) {
-                        i.push(Expr::Spread(Box::new(self.expr()?)));
+                        i.push(Expr::Spread(Box::new(self.assign()?)));
                     } else {
-                        i.push(self.expr()?);
+                        i.push(self.assign()?);
                     }
                     if !matches!(self.cur(), Token::RBracket) {
                         self.eat(&Token::Comma);
@@ -768,7 +743,7 @@ impl Parser {
                 let mut p = Vec::new();
                 while !matches!(self.cur(), Token::RBrace) {
                     if self.eat(&Token::DotDotDot) {
-                        let s = self.expr()?;
+                        let s = self.assign()?;
                         p.push(ObjectProp::Spread(s));
                         if !matches!(self.cur(), Token::RBrace) {
                             self.eat(&Token::Comma);
@@ -795,17 +770,12 @@ impl Parser {
                         }
                         Token::LBracket => {
                             self.adv();
-                            let e = self.expr()?;
+                            let e = self.assign()?;
                             self.eat(&Token::RBracket);
                             match self.cur() {
                                 Token::Colon => {
                                     self.adv();
-                                    let v = self.expr()?;
-                                    let key_expr = match e {
-                                        Expr::String(s) => s,
-                                        Expr::Number(n) => n.to_string(),
-                                        _ => return None,
-                                    };
+                                    let v = self.assign()?;
                                     p.push(ObjectProp::Computed(e, v));
                                     if !matches!(self.cur(), Token::RBrace) {
                                         self.eat(&Token::Comma);
@@ -819,28 +789,30 @@ impl Parser {
                                         _ => return None,
                                     };
                                     self.adv();
-                                    let params = self.params();
+                                    let (params, defaults) = self.params();
                                     self.eat(&Token::RParen);
                                     self.eat(&Token::LBrace);
                                     let b = self.block_body();
                                     self.eat(&Token::RBrace);
-                                    if is_getter {
+                                    let mut body = defaults;
+                                    body.extend(b);
+                                    if is_method {
                                         p.push(ObjectProp::Getter {
                                             name: key_str,
-                                            body: b,
+                                            body,
                                         });
                                     } else if is_setter {
                                         let param = params.first().cloned().unwrap_or_default();
                                         p.push(ObjectProp::Setter {
                                             name: key_str,
                                             param,
-                                            body: b,
+                                            body,
                                         });
                                     } else {
                                         p.push(ObjectProp::Method {
                                             name: key_str,
                                             params,
-                                            body: b,
+                                            body,
                                         });
                                     }
                                     if !matches!(self.cur(), Token::RBrace) {
@@ -866,25 +838,27 @@ impl Parser {
                             body: b,
                         });
                     } else if self.eat(&Token::LParen) {
-                        let params = self.params();
+                        let (params, defaults) = self.params();
                         self.eat(&Token::RParen);
                         self.eat(&Token::LBrace);
                         let b = self.block_body();
                         self.eat(&Token::RBrace);
-                        if is_getter {
+                        let mut body = defaults;
+                        body.extend(b);
+                        if is_method {
                             p.push(ObjectProp::Getter {
                                 name: key,
-                                body: b,
+                                body,
                             });
                         } else {
                             p.push(ObjectProp::Method {
                                 name: key,
                                 params,
-                                body: b,
+                                body,
                             });
                         }
                     } else if self.eat(&Token::Colon) {
-                        let v = self.expr()?;
+                        let v = self.assign()?;
                         p.push(ObjectProp::KeyValue(key, v));
                     } else {
                         p.push(ObjectProp::Shorthand(key));
@@ -906,24 +880,26 @@ impl Parser {
                     None
                 };
                 self.eat(&Token::LParen);
-                let p = self.params();
+                let (p, defaults) = self.params();
                 self.eat(&Token::RParen);
                 self.eat(&Token::LBrace);
                 let b = self.block_body();
                 self.eat(&Token::RBrace);
+                let mut body = defaults;
+                body.extend(b);
                 Some(Expr::FnExpr {
                     name: n,
                     params: p,
-                    body: b,
+                    body,
                 })
             }
             Token::KwNew => {
                 self.adv();
-                let c = self.expr()?;
+                let c = self.new_callee()?;
                 let a = if self.eat(&Token::LParen) {
                     let mut ag = Vec::new();
                     while !matches!(self.cur(), Token::RParen) {
-                        if let Some(arg) = self.expr() {
+                        if let Some(arg) = self.assign() {
                             ag.push(arg);
                         } else {
                             self.adv();
@@ -961,26 +937,127 @@ impl Parser {
             }
             Token::DotDotDot => {
                 self.adv();
-                let i = self.expr()?;
+                let i = self.assign()?;
                 Some(Expr::Spread(Box::new(i)))
             }
             _ => None,
         }
     }
 
-    fn arrow_body(&mut self, p: &[String]) -> Expr {
+    /// Parses the callee of a `new` expression: a primary expression followed
+    /// by member access (dot / computed), but stopping before call arguments so
+    /// that `new Foo(1, 2)` treats `(1, 2)` as the constructor's arguments.
+    fn new_callee(&mut self) -> Option<Expr> {
+        let mut e = self.primary()?;
+        loop {
+            match self.cur() {
+                Token::Dot => {
+                    self.adv();
+                    let p = self.ident()?;
+                    e = Expr::Member {
+                        object: Box::new(e),
+                        property: Box::new(Expr::String(p)),
+                        computed: false,
+                    };
+                }
+                Token::LBracket => {
+                    self.adv();
+                    let p = self.expr()?;
+                    self.eat(&Token::RBracket);
+                    e = Expr::Member {
+                        object: Box::new(e),
+                        property: Box::new(p),
+                        computed: true,
+                    };
+                }
+                _ => break,
+            }
+        }
+        Some(e)
+    }
+
+    /// Speculatively parse `( params ) =>`. On any failure, restore the parser
+    /// position and return `None` so the caller can parse a parenthesized expr.
+    fn try_arrow(&mut self) -> Option<Expr> {
+        let save = self.pos;
+        if !self.eat(&Token::LParen) {
+            return None;
+        }
+        let mut params = Vec::new();
+        let mut defaults = Vec::new();
+        if self.eat(&Token::RParen) {
+            if self.eat(&Token::Arrow) {
+                return Some(self.arrow_body(params, defaults));
+            }
+            self.pos = save;
+            return None;
+        }
+        loop {
+            match self.cur() {
+                Token::DotDotDot => {
+                    self.adv();
+                    if let Token::Identifier(n) = self.cur() {
+                        params.push(format!("...{}", n));
+                        self.adv();
+                    } else {
+                        self.pos = save;
+                        return None;
+                    }
+                }
+                Token::Identifier(n) => {
+                    let name = n.clone();
+                    self.adv();
+                    if self.eat(&Token::Equal) {
+                        match self.assign() {
+                            Some(d) => defaults.push(Parser::default_guard(&name, d)),
+                            None => {
+                                self.pos = save;
+                                return None;
+                            }
+                        }
+                    }
+                    params.push(name);
+                }
+                _ => {
+                    self.pos = save;
+                    return None;
+                }
+            }
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        if !self.eat(&Token::RParen) || !self.eat(&Token::Arrow) {
+            self.pos = save;
+            return None;
+        }
+        Some(self.arrow_body(params, defaults))
+    }
+
+    fn arrow_body(&mut self, params: Vec<String>, defaults: Vec<Statement>) -> Expr {
         if self.eat(&Token::LBrace) {
             let b = self.block_body();
             self.eat(&Token::RBrace);
+            let mut body = defaults;
+            body.extend(b);
             Expr::ArrowFn {
-                params: p.to_vec(),
-                body: Box::new(ExprOrBlock::Block(b)),
+                params,
+                body: Box::new(ExprOrBlock::Block(body)),
             }
         } else {
-            let e = self.expr().unwrap_or(Expr::Undefined);
-            Expr::ArrowFn {
-                params: p.to_vec(),
-                body: Box::new(ExprOrBlock::Expr(Box::new(e))),
+            let e = self.assign().unwrap_or(Expr::Undefined);
+            if defaults.is_empty() {
+                Expr::ArrowFn {
+                    params,
+                    body: Box::new(ExprOrBlock::Expr(Box::new(e))),
+                }
+            } else {
+                let mut body = defaults;
+                body.push(Statement::Return(Some(Box::new(e))));
+                Expr::ArrowFn {
+                    params,
+                    body: Box::new(ExprOrBlock::Block(body)),
+                }
             }
         }
     }

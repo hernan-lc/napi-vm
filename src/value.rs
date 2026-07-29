@@ -75,6 +75,10 @@ impl Value {
         }
     }
 
+    pub fn array(items: Vec<Value>) -> Self {
+        Value::Array(Rc::new(RefCell::new(items)))
+    }
+
     pub fn get_prop(&self, key: &str) -> Option<Value> {
         match self {
             Value::Object { props, proto } => {
