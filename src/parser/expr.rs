@@ -1,4 +1,4 @@
-use super::{Expr, ExprOrBlock, Parser};
+use super::{Expr, ObjectProp, Parser};
 use crate::lexer::Token;
 
 impl Parser {
@@ -131,7 +131,7 @@ impl Parser {
     }
 
     fn cond(&mut self) -> Option<Expr> {
-        let t = self.nullish()?;
+        let t = self.comma()?;
         if self.eat(&Token::Question) {
             let c = self.expr()?;
             self.eat(&Token::Colon);
@@ -144,6 +144,19 @@ impl Parser {
         } else {
             Some(t)
         }
+    }
+
+    fn comma(&mut self) -> Option<Expr> {
+        let mut l = self.nullish()?;
+        while self.eat(&Token::Comma) {
+            let r = self.nullish()?;
+            l = Expr::Binary {
+                op: ",".to_string(),
+                left: Box::new(l),
+                right: Box::new(r),
+            };
+        }
+        Some(l)
     }
 
     fn nullish(&mut self) -> Option<Expr> {
@@ -529,7 +542,11 @@ impl Parser {
                     self.adv();
                     let mut a = Vec::new();
                     while !matches!(self.cur(), Token::RParen) {
-                        a.push(self.expr().unwrap_or(Expr::Undefined));
+                        if let Some(arg) = self.expr() {
+                            a.push(arg);
+                        } else {
+                            self.adv();
+                        }
                         if !matches!(self.cur(), Token::RParen) {
                             self.eat(&Token::Comma);
                         }
@@ -542,12 +559,22 @@ impl Parser {
                 }
                 Token::Dot => {
                     self.adv();
-                    let p = self.ident()?;
-                    e = Expr::Member {
-                        object: Box::new(e),
-                        property: Box::new(Expr::String(p)),
-                        computed: false,
-                    };
+                    if self.eat(&Token::QuestionDot) {
+                        // optional chaining: obj?.prop
+                        let p = self.ident()?;
+                        e = Expr::OptionalChain {
+                            object: Box::new(e),
+                            property: Box::new(Expr::String(p)),
+                            computed: false,
+                        };
+                    } else {
+                        let p = self.ident()?;
+                        e = Expr::Member {
+                            object: Box::new(e),
+                            property: Box::new(Expr::String(p)),
+                            computed: false,
+                        };
+                    }
                 }
                 Token::LBracket => {
                     self.adv();
@@ -574,6 +601,38 @@ impl Parser {
                         operand: Box::new(e),
                         prefix: false,
                     };
+                }
+                Token::QuestionDot => {
+                    self.adv();
+                    if self.eat(&Token::LParen) {
+                        let mut a = Vec::new();
+                        while !matches!(self.cur(), Token::RParen) {
+                            if let Some(arg) = self.expr() {
+                                a.push(arg);
+                            } else {
+                                self.adv();
+                            }
+                            if !matches!(self.cur(), Token::RParen) {
+                                self.eat(&Token::Comma);
+                            }
+                        }
+                        self.eat(&Token::RParen);
+                        e = Expr::OptionalChain {
+                            object: Box::new(e),
+                            property: Box::new(Expr::Undefined),
+                            computed: false,
+                        };
+                    } else {
+                        break;
+                    }
+                }
+                Token::Arrow => {
+                    if let Expr::Identifier(n) = e {
+                        self.adv();
+                        e = self.arrow_body(&[n]);
+                    } else {
+                        break;
+                    }
                 }
                 _ => break,
             }
@@ -612,6 +671,37 @@ impl Parser {
             Token::KwThis => {
                 self.adv();
                 Some(Expr::This)
+            }
+            Token::Backtick => {
+                self.adv();
+                let mut quasis = Vec::new();
+                let mut exprs = Vec::new();
+                let mut current = String::new();
+                while !matches!(self.cur(), Token::Backtick) && !self.eof() {
+                    match self.cur() {
+                        Token::DollarLBrace => {
+                            self.adv();
+                            quasis.push(current);
+                            current = String::new();
+                            exprs.push(self.expr()?);
+                            self.eat(&Token::RBrace);
+                        }
+                        _ => {
+                            let c = match self.cur() {
+                                Token::String(s) => s.clone(),
+                                Token::Number(n) => n.to_string(),
+                                Token::Identifier(s) => s.clone(),
+                                _ => format!("{:?}", self.cur()),
+                            };
+                            current.push_str(&c);
+                            self.adv();
+                        }
+                    }
+                }
+                if self.eat(&Token::Backtick) {
+                    quasis.push(current);
+                }
+                Some(Expr::Template { quasis, exprs })
             }
             Token::LParen => {
                 self.adv();
@@ -661,7 +751,11 @@ impl Parser {
                         i.push(Expr::Undefined);
                         continue;
                     }
-                    i.push(self.expr()?);
+                    if self.eat(&Token::DotDotDot) {
+                        i.push(Expr::Spread(Box::new(self.expr()?)));
+                    } else {
+                        i.push(self.expr()?);
+                    }
                     if !matches!(self.cur(), Token::RBracket) {
                         self.eat(&Token::Comma);
                     }
@@ -673,7 +767,17 @@ impl Parser {
                 self.adv();
                 let mut p = Vec::new();
                 while !matches!(self.cur(), Token::RBrace) {
-                    let k = match self.cur() {
+                    if self.eat(&Token::DotDotDot) {
+                        let s = self.expr()?;
+                        p.push(ObjectProp::Spread(s));
+                        if !matches!(self.cur(), Token::RBrace) {
+                            self.eat(&Token::Comma);
+                        }
+                        continue;
+                    }
+                    let is_method = self.eat(&Token::KwGet);
+                    let is_setter = self.eat(&Token::KwSet);
+                    let key = match self.cur() {
                         Token::Identifier(n) => {
                             let v = n.clone();
                             self.adv();
@@ -689,11 +793,102 @@ impl Parser {
                             self.adv();
                             v
                         }
+                        Token::LBracket => {
+                            self.adv();
+                            let e = self.expr()?;
+                            self.eat(&Token::RBracket);
+                            match self.cur() {
+                                Token::Colon => {
+                                    self.adv();
+                                    let v = self.expr()?;
+                                    let key_expr = match e {
+                                        Expr::String(s) => s,
+                                        Expr::Number(n) => n.to_string(),
+                                        _ => return None,
+                                    };
+                                    p.push(ObjectProp::Computed(e, v));
+                                    if !matches!(self.cur(), Token::RBrace) {
+                                        self.eat(&Token::Comma);
+                                    }
+                                    continue;
+                                }
+                                Token::LParen => {
+                                    let key_str = match e {
+                                        Expr::String(s) => s,
+                                        Expr::Number(n) => n.to_string(),
+                                        _ => return None,
+                                    };
+                                    self.adv();
+                                    let params = self.params();
+                                    self.eat(&Token::RParen);
+                                    self.eat(&Token::LBrace);
+                                    let b = self.block_body();
+                                    self.eat(&Token::RBrace);
+                                    if is_getter {
+                                        p.push(ObjectProp::Getter {
+                                            name: key_str,
+                                            body: b,
+                                        });
+                                    } else if is_setter {
+                                        let param = params.first().cloned().unwrap_or_default();
+                                        p.push(ObjectProp::Setter {
+                                            name: key_str,
+                                            param,
+                                            body: b,
+                                        });
+                                    } else {
+                                        p.push(ObjectProp::Method {
+                                            name: key_str,
+                                            params,
+                                            body: b,
+                                        });
+                                    }
+                                    if !matches!(self.cur(), Token::RBrace) {
+                                        self.eat(&Token::Comma);
+                                    }
+                                    continue;
+                                }
+                                _ => return None,
+                            }
+                        }
                         _ => break,
                     };
-                    self.eat(&Token::Colon);
-                    let v = self.expr()?;
-                    p.push((k, v));
+                    if is_setter {
+                        self.eat(&Token::LParen);
+                        let param = self.ident()?;
+                        self.eat(&Token::RParen);
+                        self.eat(&Token::LBrace);
+                        let b = self.block_body();
+                        self.eat(&Token::RBrace);
+                        p.push(ObjectProp::Setter {
+                            name: key,
+                            param,
+                            body: b,
+                        });
+                    } else if self.eat(&Token::LParen) {
+                        let params = self.params();
+                        self.eat(&Token::RParen);
+                        self.eat(&Token::LBrace);
+                        let b = self.block_body();
+                        self.eat(&Token::RBrace);
+                        if is_getter {
+                            p.push(ObjectProp::Getter {
+                                name: key,
+                                body: b,
+                            });
+                        } else {
+                            p.push(ObjectProp::Method {
+                                name: key,
+                                params,
+                                body: b,
+                            });
+                        }
+                    } else if self.eat(&Token::Colon) {
+                        let v = self.expr()?;
+                        p.push(ObjectProp::KeyValue(key, v));
+                    } else {
+                        p.push(ObjectProp::Shorthand(key));
+                    }
                     if !matches!(self.cur(), Token::RBrace) {
                         self.eat(&Token::Comma);
                     }
@@ -728,7 +923,11 @@ impl Parser {
                 let a = if self.eat(&Token::LParen) {
                     let mut ag = Vec::new();
                     while !matches!(self.cur(), Token::RParen) {
-                        ag.push(self.expr().unwrap_or(Expr::Undefined));
+                        if let Some(arg) = self.expr() {
+                            ag.push(arg);
+                        } else {
+                            self.adv();
+                        }
                         if !matches!(self.cur(), Token::RParen) {
                             self.eat(&Token::Comma);
                         }

@@ -1,6 +1,5 @@
 use super::Interpreter;
 use crate::error::{VmErr, vm_err};
-use crate::value::Value;
 
 impl Interpreter {
     pub fn bin_op(&self, op: &str, l: &Value, r: &Value) -> Result<Value, VmErr> {
@@ -15,6 +14,17 @@ impl Interpreter {
             "*" => Value::Number(self.tn(l) * self.tn(r)),
             "/" => Value::Number(self.tn(l) / self.tn(r)),
             "%" => Value::Number(self.tn(l) % self.tn(r)),
+            "**" => Value::Number(self.tn(l).powf(self.tn(r))),
+            "&" => Value::Number((self.tn(l) as u64 & self.tn(r) as u64) as f64),
+            "|" => Value::Number((self.tn(l) as u64 | self.tn(r) as u64) as f64),
+            "^" => Value::Number((self.tn(l) as u64 ^ self.tn(r) as u64) as f64),
+            "<<" => Value::Number((self.tn(l) as u64 << self.tn(r) as u64) as f64),
+            ">>" => Value::Number((self.tn(l) as i64 >> self.tn(r) as i64) as f64),
+            ">>>" => {
+                let a = self.tn(l) as u64;
+                let b = (self.tn(r) as u32) % 32;
+                Value::Number((a >> b) as f64)
+            }
             "==" => Value::Bool(self.leq(l, r)),
             "!=" => Value::Bool(!self.leq(l, r)),
             "===" => Value::Bool(self.seq(l, r)),
@@ -37,10 +47,18 @@ impl Interpreter {
                     r.clone()
                 }
             }
+            "??" => {
+                if matches!(l, Value::Null | Value::Undefined) {
+                    r.clone()
+                } else {
+                    l.clone()
+                }
+            }
+            "," => r.clone(),
             "instanceof" => Value::Bool(false),
             "in" => {
-                if let (Value::String(k), Value::Object(p)) = (l, r) {
-                    Value::Bool(p.iter().any(|(x, _)| x == k))
+                if let (Value::String(k), Value::Object { props, .. }) = (l, r) {
+                    Value::Bool(props.iter().any(|(x, _)| x == k))
                 } else {
                     Value::Bool(false)
                 }
@@ -54,6 +72,7 @@ impl Interpreter {
             "!" => Value::Bool(!self.truthy(v)),
             "-" => Value::Number(-self.tn(v)),
             "+" => Value::Number(self.tn(v)),
+            "~" => Value::Number(!(self.tn(v) as u64) as f64),
             "typeof" => Value::String(
                 match v {
                     Value::Undefined => "undefined",
@@ -61,8 +80,12 @@ impl Interpreter {
                     Value::Bool(_) => "boolean",
                     Value::Number(_) => "number",
                     Value::String(_) => "string",
-                    Value::Object(_) | Value::Array(_) => "object",
+                    Value::Object { .. } | Value::Array(_) => "object",
                     Value::Function { .. } | Value::NativeFunction { .. } => "function",
+                    Value::Promise { .. } => "object",
+                    Value::Generator { .. } => "object",
+                    Value::Symbol(_) => "symbol",
+                    Value::Error { .. } => "object",
                 }
                 .to_string(),
             ),
@@ -76,37 +99,18 @@ impl Interpreter {
 
     pub fn keys(&self, o: &Value) -> Vec<String> {
         match o {
-            Value::Object(p) => p.iter().map(|(k, _)| k.clone()).collect(),
+            Value::Object { props, .. } => props.iter().map(|(k, _)| k.clone()).collect(),
             Value::Array(i) => (0..i.len()).map(|x| x.to_string()).collect(),
             _ => vec![],
         }
     }
 
     pub fn truthy(&self, v: &Value) -> bool {
-        match v {
-            Value::Bool(b) => *b,
-            Value::Number(n) => *n != 0.0 && !n.is_nan(),
-            Value::String(s) => !s.is_empty(),
-            Value::Null | Value::Undefined => false,
-            _ => true,
-        }
+        v.is_truthy()
     }
 
     pub fn tn(&self, v: &Value) -> f64 {
-        match v {
-            Value::Number(n) => *n,
-            Value::Bool(b) => {
-                if *b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            Value::String(s) => s.parse().unwrap_or(0.0),
-            Value::Null => 0.0,
-            Value::Undefined => f64::NAN,
-            _ => 0.0,
-        }
+        v.to_number()
     }
 
     pub fn leq(&self, a: &Value, b: &Value) -> bool {
@@ -115,6 +119,36 @@ impl Interpreter {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
+            (Value::Number(a), Value::String(b)) => {
+                if let Ok(parsed) = b.parse::<f64>() {
+                    *a == parsed
+                } else {
+                    false
+                }
+            }
+            (Value::String(a), Value::Number(b)) => {
+                if let Ok(parsed) = a.parse::<f64>() {
+                    parsed == *b
+                } else {
+                    false
+                }
+            }
+            (Value::Bool(a), Value::Number(b)) => {
+                let num = if *a { 1.0 } else { 0.0 };
+                num == *b
+            }
+            (Value::Number(a), Value::Bool(b)) => {
+                let num = if *b { 1.0 } else { 0.0 };
+                *a == num
+            }
+            (Value::Bool(a), Value::String(b)) => {
+                let s = if *a { "true" } else { "false" };
+                s == b
+            }
+            (Value::String(a), Value::Bool(b)) => {
+                let s = if *b { "true" } else { "false" };
+                a == s
+            }
             _ => false,
         }
     }
@@ -142,10 +176,14 @@ impl Interpreter {
                 }
             }
             Value::String(s) => s.clone(),
-            Value::Object(_) => "[object Object]".to_string(),
+            Value::Object { .. } => "[object Object]".to_string(),
             Value::Array(i) => i.iter().map(|x| self.vs(x)).collect::<Vec<_>>().join(","),
             Value::Function { name, .. } => format!("function {}", name.as_deref().unwrap_or("")),
             Value::NativeFunction { name, .. } => format!("function {} [native]", name),
+            Value::Promise { .. } => "[object Promise]".to_string(),
+            Value::Generator { .. } => "[object Generator]".to_string(),
+            Value::Symbol(_) => "Symbol()".to_string(),
+            Value::Error { message, .. } => message.clone(),
         }
     }
 

@@ -1,4 +1,4 @@
-use super::{ClassMember, Expr, ForInit, Parser, Statement, SwitchCase, VarKind};
+use super::{ClassMember, Expr, ForInit, ObjectProp, Parser, Pattern, Statement, SwitchCase, VarKind};
 use crate::lexer::Token;
 
 impl Parser {
@@ -16,13 +16,35 @@ impl Parser {
             Token::KwFor => self.for_(),
             Token::KwBreak => {
                 self.adv();
+                let label = if let Token::Identifier(ref n) = self.cur() {
+                    let l = n.clone();
+                    self.adv();
+                    Some(l)
+                } else {
+                    None
+                };
                 self.semi();
-                Some(Statement::Break)
+                if let Some(l) = label {
+                    Some(Statement::LabeledBreak(l))
+                } else {
+                    Some(Statement::Break)
+                }
             }
             Token::KwContinue => {
                 self.adv();
+                let label = if let Token::Identifier(ref n) = self.cur() {
+                    let l = n.clone();
+                    self.adv();
+                    Some(l)
+                } else {
+                    None
+                };
                 self.semi();
-                Some(Statement::Continue)
+                if let Some(l) = label {
+                    Some(Statement::LabeledContinue(l))
+                } else {
+                    Some(Statement::Continue)
+                }
             }
             Token::KwThrow => self.throw(),
             Token::KwTry => self.try_(),
@@ -73,16 +95,25 @@ impl Parser {
         self.adv();
         let mut decls = Vec::new();
         loop {
-            let n = self.ident()?;
-            let i = if self.eat(&Token::Equal) {
-                Some(Box::new(self.expr()?))
-            } else {
-                None
-            };
+            let name = self.ident()?;
+            let mut destructuring = None;
+            let mut init = None;
+
+            if self.eat(&Token::Equal) {
+                init = Some(Box::new(self.expr()?));
+            } else if matches!(self.cur(), Token::LBracket) || matches!(self.cur(), Token::LBrace) {
+                // Destructuring pattern without init
+                destructuring = Some(Box::new(self.pattern()?));
+                if self.eat(&Token::Equal) {
+                    init = Some(Box::new(self.expr()?));
+                }
+            }
+
             decls.push(Statement::VarDecl {
                 kind: k.clone(),
-                name: n,
-                init: i,
+                name,
+                init,
+                destructuring,
             });
             if !self.eat(&Token::Comma) {
                 break;
@@ -93,6 +124,59 @@ impl Parser {
             Some(decls.pop().unwrap())
         } else {
             Some(Statement::Block(decls))
+        }
+    }
+
+    fn pattern(&mut self) -> Option<Pattern> {
+        match self.cur() {
+            Token::LBracket => {
+                self.adv();
+                let mut elements = Vec::new();
+                while !matches!(self.cur(), Token::RBracket) {
+                    if self.eat(&Token::Comma) {
+                        elements.push(Pattern::Rest(Box::new(Pattern::Ident("hole".to_string()))));
+                        continue;
+                    }
+                    if self.eat(&Token::DotDotDot) {
+                        let p = self.pattern()?;
+                        elements.push(Pattern::Rest(Box::new(p)));
+                    } else {
+                        elements.push(self.pattern()?);
+                    }
+                    if !matches!(self.cur(), Token::RBracket) {
+                        self.eat(&Token::Comma);
+                    }
+                }
+                self.eat(&Token::RBracket);
+                Some(Pattern::Array(elements))
+            }
+            Token::LBrace => {
+                self.adv();
+                let mut props = Vec::new();
+                while !matches!(self.cur(), Token::RBrace) {
+                    let key = self.ident()?;
+                    let mut pat = None;
+                    if self.eat(&Token::Colon) {
+                        pat = Some(self.pattern()?);
+                    }
+                    props.push((key, pat));
+                    if !matches!(self.cur(), Token::RBrace) {
+                        self.eat(&Token::Comma);
+                    }
+                }
+                self.eat(&Token::RBrace);
+                Some(Pattern::Object(props))
+            }
+            Token::Identifier(n) => {
+                let name = n.clone();
+                self.adv();
+                if self.eat(&Token::Equal) {
+                    Some(Pattern::Default(Box::new(Pattern::Ident(name)), Box::new(self.expr()?)))
+                } else {
+                    Some(Pattern::Ident(name))
+                }
+            }
+            _ => None,
         }
     }
 
@@ -127,6 +211,8 @@ impl Parser {
                 break;
             }
             let st = self.eat(&Token::KwStatic);
+            let is_getter = self.eat(&Token::KwGet);
+            let is_setter = self.eat(&Token::KwSet);
             let mn = match self.cur() {
                 Token::Identifier(x) => {
                     let v = x.clone();
@@ -145,12 +231,28 @@ impl Parser {
                 self.eat(&Token::LBrace);
                 let bd = self.block_body();
                 self.eat(&Token::RBrace);
-                b.push(ClassMember::Method {
-                    name: mn,
-                    is_static: st,
-                    params: p,
-                    body: bd,
-                });
+                if is_getter {
+                    b.push(ClassMember::Getter {
+                        name: mn,
+                        is_static: st,
+                        body: bd,
+                    });
+                } else if is_setter {
+                    let param = p.first().cloned().unwrap_or_default();
+                    b.push(ClassMember::Setter {
+                        name: mn,
+                        param,
+                        is_static: st,
+                        body: bd,
+                    });
+                } else {
+                    b.push(ClassMember::Method {
+                        name: mn,
+                        is_static: st,
+                        params: p,
+                        body: bd,
+                    });
+                }
             } else {
                 let i = if self.eat(&Token::Equal) {
                     Some(self.expr()?)
@@ -587,9 +689,24 @@ impl Parser {
     pub(crate) fn params(&mut self) -> Vec<String> {
         let mut p = Vec::new();
         while !matches!(self.cur(), Token::RParen) {
-            if let Token::Identifier(n) = self.cur() {
-                p.push(n.clone());
-                self.adv();
+            match self.cur() {
+                Token::DotDotDot => {
+                    self.adv();
+                    if let Token::Identifier(n) = self.cur() {
+                        p.push(n.clone());
+                        self.adv();
+                    }
+                }
+                Token::Identifier(n) => {
+                    p.push(n.clone());
+                    self.adv();
+                    if self.eat(&Token::Equal) {
+                        let _ = self.expr();
+                    }
+                }
+                _ => {
+                    self.adv();
+                }
             }
             if !matches!(self.cur(), Token::RParen) {
                 self.eat(&Token::Comma);

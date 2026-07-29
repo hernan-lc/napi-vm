@@ -1,3 +1,8 @@
+use std::fmt;
+
+use super::Parser;
+use crate::lexer::Token;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Number(f64),
@@ -7,7 +12,7 @@ pub enum Expr {
     Undefined,
     Identifier(String),
     Array(Vec<Expr>),
-    Object(Vec<(String, Expr)>),
+    Object(Vec<ObjectProp>),
     Binary {
         op: String,
         left: Box<Expr>,
@@ -53,6 +58,26 @@ pub enum Expr {
     Spread(Box<Expr>),
     This,
     ImportMeta,
+    Template {
+        quasis: Vec<String>,
+        exprs: Vec<Expr>,
+    },
+    OptionalChain {
+        object: Box<Expr>,
+        property: Box<Expr>,
+        computed: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObjectProp {
+    Shorthand(String),
+    KeyValue(String, Expr),
+    Computed(Expr, Expr),
+    Method(String, Vec<String>, Vec<Statement>),
+    Getter(String, Vec<Statement>),
+    Setter(String, String, Vec<Statement>),
+    Spread(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +93,7 @@ pub enum Statement {
         kind: VarKind,
         name: String,
         init: Option<Box<Expr>>,
+        destructuring: Option<Box<Pattern>>,
     },
     FnDecl {
         name: String,
@@ -112,6 +138,8 @@ pub enum Statement {
     Block(Vec<Statement>),
     Break,
     Continue,
+    LabeledBreak(String),
+    LabeledContinue(String),
     Throw(Box<Expr>),
     Try {
         body: Vec<Statement>,
@@ -172,4 +200,30 @@ pub enum ClassMember {
         is_static: bool,
         init: Option<Expr>,
     },
+    Getter {
+        name: String,
+        is_static: bool,
+        body: Vec<Statement>,
+    },
+    Setter {
+        name: String,
+        param: String,
+        is_static: bool,
+        body: Vec<Statement>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    Ident(String),
+    Array(Vec<Pattern>),
+    Object(Vec<(String, Option<Pattern>)>),
+    Rest(Box<Pattern>),
+    Default(Box<Pattern>, Box<Expr>),
+}
+
+impl Pattern {
+    pub fn is_rest(&self) -> bool {
+        matches!(self, Pattern::Rest(_))
+    }
 }

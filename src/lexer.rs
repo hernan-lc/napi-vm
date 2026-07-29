@@ -92,6 +92,7 @@ pub enum Token {
     UShr,
     StarStar,
     QuestionQuestion,
+    QuestionDot,
     PercentEqual,
     AmpEqual,
     PipeEqual,
@@ -100,6 +101,8 @@ pub enum Token {
     ShrEqual,
     UShrEqual,
     StarStarEqual,
+    Backtick,
+    DollarLBrace,
     EOF,
 }
 
@@ -205,11 +208,28 @@ impl Lexer {
                     self.pos += 2;
                     Token::QuestionQuestion
                 }
+                Some('.') => {
+                    self.pos += 2;
+                    Token::QuestionDot
+                }
                 _ => {
                     self.pos += 1;
                     Token::Question
                 }
             },
+            '`' => {
+                self.pos += 1;
+                Token::Backtick
+            }
+            '$' => {
+                if self.pos + 1 < self.src.len() && self.src[self.pos + 1] == '{' {
+                    self.pos += 2;
+                    Token::DollarLBrace
+                } else {
+                    self.pos += 1;
+                    Token::Identifier("$".to_string())
+                }
+            }
             '.' => {
                 if self.pos + 2 < self.src.len()
                     && self.src[self.pos + 1] == '.'
