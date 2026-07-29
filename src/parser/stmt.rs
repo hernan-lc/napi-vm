@@ -1,0 +1,611 @@
+use super::{ClassMember, Expr, ForInit, Parser, Statement, SwitchCase, VarKind};
+use crate::lexer::Token;
+
+impl Parser {
+    pub(crate) fn stmt(&mut self) -> Option<Statement> {
+        match self.cur() {
+            Token::KwVar => self.var_decl(VarKind::Var),
+            Token::KwLet => self.var_decl(VarKind::Let),
+            Token::KwConst => self.var_decl(VarKind::Const),
+            Token::KwFunction => self.fn_decl(),
+            Token::KwClass => self.class_decl(),
+            Token::KwReturn => self.ret(),
+            Token::KwIf => self.if_(),
+            Token::KwWhile => self.while_(),
+            Token::KwDo => self.do_(),
+            Token::KwFor => self.for_(),
+            Token::KwBreak => {
+                self.adv();
+                self.semi();
+                Some(Statement::Break)
+            }
+            Token::KwContinue => {
+                self.adv();
+                self.semi();
+                Some(Statement::Continue)
+            }
+            Token::KwThrow => self.throw(),
+            Token::KwTry => self.try_(),
+            Token::KwSwitch => self.switch(),
+            Token::KwExport => self.export(),
+            Token::KwImport => {
+                let saved_pos = self.pos;
+                self.adv();
+                if self.eat(&Token::Dot)
+                    && let Token::Identifier(m) = self.cur()
+                    && m == "meta"
+                {
+                    self.adv();
+                    let mut expr = Expr::ImportMeta;
+                    while self.eat(&Token::Dot) {
+                        let prop = self.ident()?;
+                        expr = Expr::Member {
+                            object: Box::new(expr),
+                            property: Box::new(Expr::String(prop)),
+                            computed: false,
+                        };
+                    }
+                    self.semi();
+                    return Some(Statement::Expr(expr));
+                }
+                self.pos = saved_pos;
+                self.import()
+            }
+            Token::LBrace => {
+                self.adv();
+                let b = self.block_body();
+                self.eat(&Token::RBrace);
+                Some(Statement::Block(b))
+            }
+            Token::Semicolon => {
+                self.adv();
+                Some(Statement::Empty)
+            }
+            _ => {
+                let e = self.expr()?;
+                self.semi();
+                Some(Statement::Expr(e))
+            }
+        }
+    }
+
+    fn var_decl(&mut self, k: VarKind) -> Option<Statement> {
+        self.adv();
+        let mut decls = Vec::new();
+        loop {
+            let n = self.ident()?;
+            let i = if self.eat(&Token::Equal) {
+                Some(Box::new(self.expr()?))
+            } else {
+                None
+            };
+            decls.push(Statement::VarDecl {
+                kind: k.clone(),
+                name: n,
+                init: i,
+            });
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        self.semi();
+        if decls.len() == 1 {
+            Some(decls.pop().unwrap())
+        } else {
+            Some(Statement::Block(decls))
+        }
+    }
+
+    fn fn_decl(&mut self) -> Option<Statement> {
+        self.adv();
+        let n = self.ident()?;
+        self.eat(&Token::LParen);
+        let p = self.params();
+        self.eat(&Token::RParen);
+        self.eat(&Token::LBrace);
+        let b = self.block_body();
+        self.eat(&Token::RBrace);
+        Some(Statement::FnDecl {
+            name: n,
+            params: p,
+            body: b,
+        })
+    }
+
+    fn class_decl(&mut self) -> Option<Statement> {
+        self.adv();
+        let n = self.ident()?;
+        let sc = if self.eat(&Token::KwExtends) {
+            Some(Box::new(self.expr()?))
+        } else {
+            None
+        };
+        self.eat(&Token::LBrace);
+        let mut b = Vec::new();
+        while !matches!(self.cur(), Token::RBrace) {
+            if self.eof() {
+                break;
+            }
+            let st = self.eat(&Token::KwStatic);
+            let mn = match self.cur() {
+                Token::Identifier(x) => {
+                    let v = x.clone();
+                    self.adv();
+                    v
+                }
+                Token::KwConstructor => {
+                    self.adv();
+                    "constructor".to_string()
+                }
+                _ => return None,
+            };
+            if self.eat(&Token::LParen) {
+                let p = self.params();
+                self.eat(&Token::RParen);
+                self.eat(&Token::LBrace);
+                let bd = self.block_body();
+                self.eat(&Token::RBrace);
+                b.push(ClassMember::Method {
+                    name: mn,
+                    is_static: st,
+                    params: p,
+                    body: bd,
+                });
+            } else {
+                let i = if self.eat(&Token::Equal) {
+                    Some(self.expr()?)
+                } else {
+                    None
+                };
+                self.semi();
+                b.push(ClassMember::Field {
+                    name: mn,
+                    is_static: st,
+                    init: i,
+                });
+            }
+        }
+        self.eat(&Token::RBrace);
+        Some(Statement::ClassDecl {
+            name: n,
+            superclass: sc,
+            body: b,
+        })
+    }
+
+    fn ret(&mut self) -> Option<Statement> {
+        self.adv();
+        let e = if matches!(self.cur(), Token::Semicolon) || matches!(self.cur(), Token::RBrace) {
+            None
+        } else {
+            Some(Box::new(self.expr()?))
+        };
+        self.semi();
+        Some(Statement::Return(e))
+    }
+
+    fn if_(&mut self) -> Option<Statement> {
+        self.adv();
+        self.eat(&Token::LParen);
+        let t = Box::new(self.expr()?);
+        self.eat(&Token::RParen);
+        let c = self.block_or_stmt();
+        let a = if self.eat(&Token::KwElse) {
+            if matches!(self.cur(), Token::KwIf) {
+                Some(vec![self.if_()?])
+            } else {
+                Some(self.block_or_stmt())
+            }
+        } else {
+            None
+        };
+        Some(Statement::If {
+            test: t,
+            then: c,
+            else_: a,
+        })
+    }
+
+    /// Parses either a `{ ... }` block or a single statement, returning the
+    /// body as a statement list. Enables braceless `if`/`for`/`while` bodies.
+    fn block_or_stmt(&mut self) -> Vec<Statement> {
+        if self.eat(&Token::LBrace) {
+            let b = self.block_body();
+            self.eat(&Token::RBrace);
+            b
+        } else {
+            match self.stmt() {
+                Some(s) => vec![s],
+                None => vec![],
+            }
+        }
+    }
+
+    fn while_(&mut self) -> Option<Statement> {
+        self.adv();
+        self.eat(&Token::LParen);
+        let t = Box::new(self.expr()?);
+        self.eat(&Token::RParen);
+        let b = self.block_or_stmt();
+        Some(Statement::While { test: t, body: b })
+    }
+
+    fn do_(&mut self) -> Option<Statement> {
+        self.adv();
+        let b = self.block_or_stmt();
+        if !self.eat(&Token::KwWhile) {
+            return None;
+        }
+        self.eat(&Token::LParen);
+        let t = Box::new(self.expr()?);
+        self.eat(&Token::RParen);
+        self.semi();
+        Some(Statement::DoWhile { test: t, body: b })
+    }
+
+    fn for_(&mut self) -> Option<Statement> {
+        self.adv();
+        self.eat(&Token::LParen);
+        let init = if self.eat(&Token::KwVar) {
+            let n = self.ident()?;
+            let i = if self.eat(&Token::Equal) {
+                Some(Box::new(self.expr()?))
+            } else {
+                None
+            };
+            Some(Box::new(ForInit::Var {
+                kind: VarKind::Var,
+                name: n,
+                init: i,
+            }))
+        } else if self.eat(&Token::KwLet) {
+            let n = self.ident()?;
+            let i = if self.eat(&Token::Equal) {
+                Some(Box::new(self.expr()?))
+            } else {
+                None
+            };
+            Some(Box::new(ForInit::Var {
+                kind: VarKind::Let,
+                name: n,
+                init: i,
+            }))
+        } else if self.eat(&Token::KwConst) {
+            let n = self.ident()?;
+            let i = if self.eat(&Token::Equal) {
+                Some(Box::new(self.expr()?))
+            } else {
+                None
+            };
+            Some(Box::new(ForInit::Var {
+                kind: VarKind::Const,
+                name: n,
+                init: i,
+            }))
+        } else if matches!(self.cur(), Token::Semicolon) {
+            None
+        } else {
+            Some(Box::new(ForInit::Expr(self.expr()?)))
+        };
+        if let Some(init) = init.as_ref()
+            && !matches!(self.cur(), Token::Semicolon)
+        {
+            if self.eat(&Token::KwIn) {
+                let o = Box::new(self.expr()?);
+                self.eat(&Token::RParen);
+                let b = self.block_or_stmt();
+                let n = match init.as_ref() {
+                    ForInit::Var { name, .. } => name.clone(),
+                    _ => return None,
+                };
+                return Some(Statement::ForIn {
+                    name: n,
+                    obj: o,
+                    body: b,
+                });
+            }
+            if self.eat(&Token::KwOf) {
+                let i = Box::new(self.expr()?);
+                self.eat(&Token::RParen);
+                let b = self.block_or_stmt();
+                let n = match init.as_ref() {
+                    ForInit::Var { name, .. } => name.clone(),
+                    _ => return None,
+                };
+                return Some(Statement::ForOf {
+                    name: n,
+                    iter: i,
+                    body: b,
+                });
+            }
+        }
+        self.semi();
+        let t = if !matches!(self.cur(), Token::Semicolon) {
+            Some(Box::new(self.expr()?))
+        } else {
+            None
+        };
+        self.semi();
+        let u = if !matches!(self.cur(), Token::RParen) {
+            Some(Box::new(self.expr()?))
+        } else {
+            None
+        };
+        self.eat(&Token::RParen);
+        let b = self.block_or_stmt();
+        Some(Statement::For {
+            init,
+            test: t,
+            update: u,
+            body: b,
+        })
+    }
+
+    fn throw(&mut self) -> Option<Statement> {
+        self.adv();
+        let e = self.expr()?;
+        self.semi();
+        Some(Statement::Throw(Box::new(e)))
+    }
+
+    fn try_(&mut self) -> Option<Statement> {
+        self.adv();
+        self.eat(&Token::LBrace);
+        let b = self.block_body();
+        self.eat(&Token::RBrace);
+        let c = if self.eat(&Token::KwCatch) {
+            let p = if self.eat(&Token::LParen) {
+                let x = self.ident()?;
+                self.eat(&Token::RParen);
+                x
+            } else {
+                String::new()
+            };
+            self.eat(&Token::LBrace);
+            let cb = self.block_body();
+            self.eat(&Token::RBrace);
+            Some((p, cb))
+        } else {
+            None
+        };
+        let f = if self.eat(&Token::KwFinally) {
+            self.eat(&Token::LBrace);
+            let fb = self.block_body();
+            self.eat(&Token::RBrace);
+            Some(fb)
+        } else {
+            None
+        };
+        Some(Statement::Try {
+            body: b,
+            catch: c,
+            finally: f,
+        })
+    }
+
+    fn switch(&mut self) -> Option<Statement> {
+        self.adv();
+        self.eat(&Token::LParen);
+        let d = Box::new(self.expr()?);
+        self.eat(&Token::RParen);
+        self.eat(&Token::LBrace);
+        let mut cs = Vec::new();
+        while !matches!(self.cur(), Token::RBrace) {
+            if self.eof() {
+                break;
+            }
+            let t = if self.eat(&Token::KwCase) {
+                let e = self.expr()?;
+                self.eat(&Token::Colon);
+                Some(e)
+            } else if self.eat(&Token::KwDefault) {
+                self.eat(&Token::Colon);
+                None
+            } else {
+                break;
+            };
+            let mut b = Vec::new();
+            while !matches!(self.cur(), Token::KwCase)
+                && !matches!(self.cur(), Token::KwDefault)
+                && !matches!(self.cur(), Token::RBrace)
+            {
+                if self.eof() {
+                    break;
+                }
+                b.push(self.stmt()?);
+            }
+            cs.push(SwitchCase { test: t, body: b });
+        }
+        self.eat(&Token::RBrace);
+        Some(Statement::Switch { disc: d, cases: cs })
+    }
+
+    fn export(&mut self) -> Option<Statement> {
+        self.adv();
+        if self.eat(&Token::KwDefault) {
+            let e = self.expr()?;
+            self.semi();
+            Some(Statement::ExportDefault(Box::new(e)))
+        } else if self.eat(&Token::LBrace) {
+            let mut sp = Vec::new();
+            while !matches!(self.cur(), Token::RBrace) {
+                let l = self.ident()?;
+                let e = if self.eat(&Token::KwAs) {
+                    self.ident()?
+                } else {
+                    l.clone()
+                };
+                sp.push((l, e));
+                if !matches!(self.cur(), Token::RBrace) {
+                    self.eat(&Token::Comma);
+                }
+            }
+            self.eat(&Token::RBrace);
+            let s = if self.eat(&Token::KwFrom) {
+                match self.cur() {
+                    Token::String(x) => {
+                        let v = x.clone();
+                        self.adv();
+                        Some(v)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            self.semi();
+            Some(Statement::ExportNamed {
+                specifiers: sp,
+                source: s,
+            })
+        } else {
+            Some(Statement::ExportNamed {
+                specifiers: vec![],
+                source: None,
+            })
+        }
+    }
+
+    fn import(&mut self) -> Option<Statement> {
+        self.adv();
+        let def = if let Token::Identifier(n) = self.cur() {
+            let nm = n.clone();
+            self.adv();
+            if self.eat(&Token::Comma) {
+                if self.eat(&Token::LBrace) {
+                    let mut nd = Vec::new();
+                    while !matches!(self.cur(), Token::RBrace) {
+                        let l = self.ident()?;
+                        let i = if self.eat(&Token::KwAs) {
+                            self.ident()?
+                        } else {
+                            l.clone()
+                        };
+                        nd.push((l, i));
+                        if !matches!(self.cur(), Token::RBrace) {
+                            self.eat(&Token::Comma);
+                        }
+                    }
+                    self.eat(&Token::RBrace);
+                    let m = self.from()?;
+                    Some(Statement::Import {
+                        module: m,
+                        default: Some(nm),
+                        named: nd,
+                        namespace: None,
+                    })
+                } else {
+                    None
+                }
+            } else if self.eat(&Token::KwFrom) {
+                let m = self.from()?;
+                Some(Statement::Import {
+                    module: m,
+                    default: Some(nm),
+                    named: vec![],
+                    namespace: None,
+                })
+            } else {
+                None
+            }
+        } else if self.eat(&Token::Star) {
+            self.eat(&Token::KwAs);
+            let ns = self.ident()?;
+            let m = self.from()?;
+            Some(Statement::Import {
+                module: m,
+                default: None,
+                named: vec![],
+                namespace: Some(ns),
+            })
+        } else if self.eat(&Token::LBrace) {
+            let mut nd = Vec::new();
+            while !matches!(self.cur(), Token::RBrace) {
+                let l = self.ident()?;
+                let i = if self.eat(&Token::KwAs) {
+                    self.ident()?
+                } else {
+                    l.clone()
+                };
+                nd.push((l, i));
+                if !matches!(self.cur(), Token::RBrace) {
+                    self.eat(&Token::Comma);
+                }
+            }
+            self.eat(&Token::RBrace);
+            let m = self.from()?;
+            Some(Statement::Import {
+                module: m,
+                default: None,
+                named: nd,
+                namespace: None,
+            })
+        } else if let Token::String(s) = self.cur() {
+            let m = s.clone();
+            self.adv();
+            self.semi();
+            Some(Statement::Import {
+                module: m,
+                default: None,
+                named: vec![],
+                namespace: None,
+            })
+        } else {
+            None
+        };
+        self.semi();
+        def
+    }
+
+    fn from(&mut self) -> Option<String> {
+        self.eat(&Token::KwFrom);
+        match self.cur() {
+            Token::String(s) => {
+                let v = s.clone();
+                self.adv();
+                Some(v)
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn block_body(&mut self) -> Vec<Statement> {
+        let mut s = Vec::new();
+        while !matches!(self.cur(), Token::RBrace) {
+            if self.eof() {
+                break;
+            }
+            if let Some(st) = self.stmt() {
+                s.push(st);
+            } else {
+                break;
+            }
+        }
+        s
+    }
+
+    pub(crate) fn params(&mut self) -> Vec<String> {
+        let mut p = Vec::new();
+        while !matches!(self.cur(), Token::RParen) {
+            if let Token::Identifier(n) = self.cur() {
+                p.push(n.clone());
+                self.adv();
+            }
+            if !matches!(self.cur(), Token::RParen) {
+                self.eat(&Token::Comma);
+            }
+        }
+        p
+    }
+
+    pub(crate) fn ident(&mut self) -> Option<String> {
+        match self.cur() {
+            Token::Identifier(n) => {
+                let v = n.clone();
+                self.adv();
+                Some(v)
+            }
+            _ => None,
+        }
+    }
+}
