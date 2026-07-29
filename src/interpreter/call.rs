@@ -110,7 +110,12 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn assign_member(&mut self, obj: &Value, prop: &Value, val: Value) -> Result<Value, VmErr> {
+    pub(super) fn assign_member(
+        &mut self,
+        obj: &Value,
+        prop: &Value,
+        val: Value,
+    ) -> Result<Value, VmErr> {
         match (obj, prop) {
             (Value::Object { props, .. }, Value::String(k)) => {
                 // If a setter is defined for this key, invoke it.
@@ -153,7 +158,12 @@ impl Interpreter {
         }
     }
 
-    pub(crate) fn call_this(&mut self, f: &Value, this_val: Value, args: Vec<Value>) -> Result<Value, VmErr> {
+    pub(crate) fn call_this(
+        &mut self,
+        f: &Value,
+        this_val: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, VmErr> {
         match f {
             Value::Function {
                 params,
@@ -190,7 +200,10 @@ impl Interpreter {
                             fe.borrow_mut().set(&rest_name, Value::array(rest_args));
                         } else {
                             let arg = if i < args.len() {
-                                let is_rest_param = params.get(i + 1).map(|p| p.starts_with("...")).unwrap_or(false);
+                                let is_rest_param = params
+                                    .get(i + 1)
+                                    .map(|p| p.starts_with("..."))
+                                    .unwrap_or(false);
                                 if !is_rest_param && i >= rest_idx {
                                     Value::Undefined
                                 } else {
@@ -211,7 +224,10 @@ impl Interpreter {
 
                 // Create arguments object
                 let args_obj = Value::object(
-                    args.iter().enumerate().map(|(i, v)| (i.to_string(), v.clone())).collect(),
+                    args.iter()
+                        .enumerate()
+                        .map(|(i, v)| (i.to_string(), v.clone()))
+                        .collect(),
                 );
                 args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
                 fe.borrow_mut().set("arguments", args_obj);
@@ -241,16 +257,19 @@ impl Interpreter {
                     result
                 }
             }
-            Value::NativeFunction { callable, .. } => {
-                callable(self, this_val, args)
-            }
+            Value::NativeFunction { callable, .. } => callable(self, this_val, args),
             _ => vm_err("Not a function"),
         }
     }
 
     /// Run a constructor (class or function) against an already-created `this`,
     /// as done by `super(...)`. Returns `this`.
-    pub(super) fn invoke_ctor(&mut self, f: &Value, this_val: Value, args: Vec<Value>) -> Result<Value, VmErr> {
+    pub(super) fn invoke_ctor(
+        &mut self,
+        f: &Value,
+        this_val: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, VmErr> {
         match f {
             Value::Class { constructor, .. } => {
                 let ctor = constructor.as_ref().clone();
@@ -267,7 +286,11 @@ impl Interpreter {
 
     pub(super) fn ctor(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmErr> {
         match f {
-            Value::Class { constructor, prototype, .. } => {
+            Value::Class {
+                constructor,
+                prototype,
+                ..
+            } => {
                 // The instance's prototype is the class prototype (shared Rc, so
                 // `instanceof` can compare identity).
                 let inst = Value::object_with_proto(vec![], Some(prototype.clone()));
@@ -278,7 +301,12 @@ impl Interpreter {
                     _ => Ok(inst),
                 }
             }
-            Value::Function { params, body, closure, .. } => {
+            Value::Function {
+                params,
+                body,
+                closure,
+                ..
+            } => {
                 let inst = Value::object(vec![]);
                 let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
                 let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
@@ -302,7 +330,10 @@ impl Interpreter {
                             let rest_args = args[i..].to_vec();
                             fe.borrow_mut().set(&rest_name, Value::array(rest_args));
                         } else {
-                            let is_rest_param = params.get(i + 1).map(|p| p.starts_with("...")).unwrap_or(false);
+                            let is_rest_param = params
+                                .get(i + 1)
+                                .map(|p| p.starts_with("..."))
+                                .unwrap_or(false);
                             let arg = if !is_rest_param && i >= rest_idx {
                                 Value::Undefined
                             } else {
@@ -319,7 +350,10 @@ impl Interpreter {
                 }
 
                 let args_obj = Value::object(
-                    args.iter().enumerate().map(|(i, v)| (i.to_string(), v.clone())).collect(),
+                    args.iter()
+                        .enumerate()
+                        .map(|(i, v)| (i.to_string(), v.clone()))
+                        .collect(),
                 );
                 args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
                 fe.borrow_mut().set("arguments", args_obj);

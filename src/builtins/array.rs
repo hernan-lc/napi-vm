@@ -1,6 +1,6 @@
 //! `Array` statics and `Array.prototype` methods.
 
-use super::{arr_items, join_str, nf, NativeFn};
+use super::{NativeFn, arr_items, join_str, nf};
 use crate::error::VmErr;
 use crate::interpreter::{Environment, Interpreter};
 use crate::value::Value;
@@ -212,11 +212,7 @@ fn array_slice(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value,
             return 0;
         }
         let i = v as i64;
-        if i < 0 {
-            (len + i).max(0)
-        } else {
-            i.min(len)
-        }
+        if i < 0 { (len + i).max(0) } else { i.min(len) }
     };
     let start = norm(a.get(0).map(|v| v.to_number()).unwrap_or(0.0));
     let end = match a.get(1) {

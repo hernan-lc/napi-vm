@@ -38,7 +38,11 @@ fn json_serialize(interp: &Interpreter, v: &Value) -> String {
         }
         Value::String(s) => format!("\"{}\"", escape_json(s)),
         Value::Array(items) => {
-            let parts: Vec<String> = items.borrow().iter().map(|x| json_serialize(interp, x)).collect();
+            let parts: Vec<String> = items
+                .borrow()
+                .iter()
+                .map(|x| json_serialize(interp, x))
+                .collect();
             format!("[{}]", parts.join(","))
         }
         Value::Object { props, .. } => {

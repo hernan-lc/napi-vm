@@ -1,9 +1,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::value::Value;
 use super::Interpreter;
 use crate::error::{VmErr, vm_err};
+use crate::value::Value;
 
 impl Interpreter {
     pub fn bin_op(&self, op: &str, l: &Value, r: &Value) -> Result<Value, VmErr> {
@@ -215,7 +215,12 @@ impl Interpreter {
             }
             Value::String(s) => s.clone(),
             Value::Object { .. } => "[object Object]".to_string(),
-            Value::Array(i) => i.borrow().iter().map(|x| self.vs(x)).collect::<Vec<_>>().join(","),
+            Value::Array(i) => i
+                .borrow()
+                .iter()
+                .map(|x| self.vs(x))
+                .collect::<Vec<_>>()
+                .join(","),
             Value::Function { name, .. } => format!("function {}", name.as_deref().unwrap_or("")),
             Value::NativeFunction { name, .. } => format!("function {} [native]", name),
             Value::Class { name, .. } => format!("class {}", name),

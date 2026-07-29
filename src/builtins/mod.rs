@@ -365,8 +365,14 @@ pub fn setup_builtins(env: &Env) {
             ("LN2".to_string(), Value::Number(std::f64::consts::LN_2)),
             ("LN10".to_string(), Value::Number(std::f64::consts::LN_10)),
             ("LOG2E".to_string(), Value::Number(std::f64::consts::LOG2_E)),
-            ("LOG10E".to_string(), Value::Number(std::f64::consts::LOG10_E)),
-            ("SQRT1_2".to_string(), Value::Number(std::f64::consts::FRAC_1_SQRT_2)),
+            (
+                "LOG10E".to_string(),
+                Value::Number(std::f64::consts::LOG10_E),
+            ),
+            (
+                "SQRT1_2".to_string(),
+                Value::Number(std::f64::consts::FRAC_1_SQRT_2),
+            ),
             ("SQRT2".to_string(), Value::Number(std::f64::consts::SQRT_2)),
             ("abs".to_string(), Value::Undefined),
             ("floor".to_string(), Value::Undefined),

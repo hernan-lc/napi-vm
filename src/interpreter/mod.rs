@@ -261,11 +261,15 @@ mod tests {
     #[test]
     fn test_continue_in_loops() {
         assert_eq!(
-            eval_str("let s = 0; for (let i = 0; i < 5; i++) { if (i % 2) { continue; } s += i; } s;"),
+            eval_str(
+                "let s = 0; for (let i = 0; i < 5; i++) { if (i % 2) { continue; } s += i; } s;"
+            ),
             "6"
         );
         assert_eq!(
-            eval_str("let s = 0; let i = 0; while (i < 5) { i++; if (i === 3) { continue; } s += i; } s;"),
+            eval_str(
+                "let s = 0; let i = 0; while (i < 5) { i++; if (i === 3) { continue; } s += i; } s;"
+            ),
             "12"
         );
     }

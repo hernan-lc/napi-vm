@@ -1,6 +1,6 @@
 //! `String.prototype` methods.
 
-use super::{nf, str_this, NativeFn};
+use super::{NativeFn, nf, str_this};
 use crate::error::VmErr;
 use crate::interpreter::Interpreter;
 use crate::value::Value;
@@ -44,11 +44,7 @@ fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
             return 0;
         }
         let i = v as i64;
-        if i < 0 {
-            (len + i).max(0)
-        } else {
-            i.min(len)
-        }
+        if i < 0 { (len + i).max(0) } else { i.min(len) }
     };
     let start = norm(a.get(0).map(|v| v.to_number()).unwrap_or(0.0));
     let end = match a.get(1) {
@@ -58,7 +54,9 @@ fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
     if start >= end {
         return Ok(Value::String(String::new()));
     }
-    Ok(Value::String(chars[start as usize..end as usize].iter().collect()))
+    Ok(Value::String(
+        chars[start as usize..end as usize].iter().collect(),
+    ))
 }
 fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
@@ -92,16 +90,25 @@ fn string_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resu
         Some(v) => interp.vs(v),
         None => String::new(),
     };
-    Ok(Value::Number(s.find(&needle).map(|i| i as f64).unwrap_or(-1.0)))
+    Ok(Value::Number(
+        s.find(&needle).map(|i| i as f64).unwrap_or(-1.0),
+    ))
 }
 fn string_char_at(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
     let idx = a.get(0).map(|v| v.to_number() as usize).unwrap_or(0);
     Ok(Value::String(
-        s.chars().nth(idx).map(|c| c.to_string()).unwrap_or_default(),
+        s.chars()
+            .nth(idx)
+            .map(|c| c.to_string())
+            .unwrap_or_default(),
     ))
 }
-fn string_starts_with(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+fn string_starts_with(
+    interp: &mut Interpreter,
+    this: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
     let needle = match a.get(0) {
         Some(Value::String(n)) => n.clone(),

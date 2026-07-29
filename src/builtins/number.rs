@@ -1,7 +1,7 @@
 //! `Number` statics, `Number.prototype` methods, and the global
 //! `parseInt` / `parseFloat` implementations (shared with the `Number` statics).
 
-use super::{nf, NativeFn};
+use super::{NativeFn, nf};
 use crate::error::VmErr;
 use crate::interpreter::{Environment, Interpreter};
 use crate::value::Value;
@@ -34,10 +34,14 @@ fn number_to_fixed(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
 // --- Number statics ---------------------------------------------------------
 
 fn number_is_nan(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    Ok(Value::Bool(matches!(a.get(0), Some(Value::Number(n)) if n.is_nan())))
+    Ok(Value::Bool(
+        matches!(a.get(0), Some(Value::Number(n)) if n.is_nan()),
+    ))
 }
 fn number_is_finite(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    Ok(Value::Bool(matches!(a.get(0), Some(Value::Number(n)) if n.is_finite())))
+    Ok(Value::Bool(
+        matches!(a.get(0), Some(Value::Number(n)) if n.is_finite()),
+    ))
 }
 
 // --- parseInt / parseFloat (global and Number.* share these) ----------------
@@ -96,7 +100,11 @@ pub(super) fn parse_int(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Re
     Ok(Value::Number((if neg { -val } else { val }) as f64))
 }
 
-pub(super) fn parse_float(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+pub(super) fn parse_float(
+    interp: &mut Interpreter,
+    _: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
     let s = match a.get(0) {
         Some(Value::String(s)) => s.clone(),
         Some(v) => interp.vs(v),

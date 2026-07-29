@@ -71,9 +71,20 @@ pub enum ObjectProp {
     Shorthand(String),
     KeyValue(String, Expr),
     Computed(Expr, Expr),
-    Method { name: String, params: Vec<String>, body: Vec<Statement> },
-    Getter { name: String, body: Vec<Statement> },
-    Setter { name: String, param: String, body: Vec<Statement> },
+    Method {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Statement>,
+    },
+    Getter {
+        name: String,
+        body: Vec<Statement>,
+    },
+    Setter {
+        name: String,
+        param: String,
+        body: Vec<Statement>,
+    },
     Spread(Expr),
 }
 

@@ -16,13 +16,15 @@ pub(super) fn install(e: &mut Environment) {
 
 fn object_keys(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let v = a.get(0).cloned().unwrap_or(Value::Undefined);
-    Ok(Value::array(interp.keys(&v).into_iter().map(Value::String).collect()))
+    Ok(Value::array(
+        interp.keys(&v).into_iter().map(Value::String).collect(),
+    ))
 }
 fn object_values(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     match a.get(0) {
-        Some(Value::Object { props, .. }) => {
-            Ok(Value::array(props.borrow().iter().map(|(_, v)| v.clone()).collect()))
-        }
+        Some(Value::Object { props, .. }) => Ok(Value::array(
+            props.borrow().iter().map(|(_, v)| v.clone()).collect(),
+        )),
         _ => Ok(Value::array(vec![])),
     }
 }

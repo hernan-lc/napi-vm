@@ -195,10 +195,7 @@ impl Parser {
                         let mut body = defaults;
                         body.extend(b);
                         if is_method {
-                            p.push(ObjectProp::Getter {
-                                name: key,
-                                body,
-                            });
+                            p.push(ObjectProp::Getter { name: key, body });
                         } else {
                             p.push(ObjectProp::Method {
                                 name: key,

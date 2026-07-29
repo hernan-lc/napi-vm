@@ -9,7 +9,12 @@ impl Interpreter {
     /// Resolve a property value, invoking it if it is a getter.
     pub(super) fn get_prop_value(&mut self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         let v = self.prop(o, p)?;
-        if let Value::Function { name: Some(n), is_arrow: false, .. } = &v {
+        if let Value::Function {
+            name: Some(n),
+            is_arrow: false,
+            ..
+        } = &v
+        {
             if n.starts_with("get ") {
                 return self.call_this(&v, o.clone(), vec![]);
             }
@@ -81,7 +86,15 @@ impl Interpreter {
                     .map(|c| Value::String(c.to_string()))
                     .unwrap_or(Value::Undefined))
             }
-            (Value::Class { statics, prototype, name, .. }, Value::String(k)) => {
+            (
+                Value::Class {
+                    statics,
+                    prototype,
+                    name,
+                    ..
+                },
+                Value::String(k),
+            ) => {
                 if k == "prototype" {
                     return Ok(prototype.as_ref().clone());
                 }

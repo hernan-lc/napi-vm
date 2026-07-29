@@ -1,7 +1,7 @@
 //! `Math` methods. The constants (`PI`, `E`, ...) are installed as plain
 //! properties by `setup_builtins`; this module supplies the callable methods.
 
-use super::{arg_num, nf, NativeFn};
+use super::{NativeFn, arg_num, nf};
 use crate::error::VmErr;
 use crate::interpreter::{Environment, Interpreter};
 use crate::value::Value;
@@ -37,7 +37,10 @@ fn math_methods() -> Vec<(String, Value)> {
         ("tan", math_tan),
         ("hypot", math_hypot),
     ];
-    table.into_iter().map(|(n, f)| (n.to_string(), nf(n, f))).collect()
+    table
+        .into_iter()
+        .map(|(n, f)| (n.to_string(), nf(n, f)))
+        .collect()
 }
 
 fn math_abs(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
@@ -68,7 +71,15 @@ fn math_trunc(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmE
 }
 fn math_sign(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let x = arg_num(&a, 0);
-    let r = if x.is_nan() { f64::NAN } else if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 };
+    let r = if x.is_nan() {
+        f64::NAN
+    } else if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        0.0
+    };
     Ok(Value::Number(r))
 }
 fn math_log(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {

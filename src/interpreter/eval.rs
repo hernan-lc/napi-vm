@@ -21,7 +21,12 @@ impl Interpreter {
     pub(super) fn eval_stmt(&mut self, s: &Statement) -> Result<Value, VmErr> {
         match s {
             Statement::Expr(e) => self.eval_expr(e),
-            Statement::VarDecl { name, init, destructuring, kind: _ } => {
+            Statement::VarDecl {
+                name,
+                init,
+                destructuring,
+                kind: _,
+            } => {
                 let v = match init {
                     Some(e) => self.eval_expr(e)?,
                     None => Value::Undefined,
@@ -33,7 +38,12 @@ impl Interpreter {
                 }
                 Ok(v)
             }
-            Statement::FnDecl { name, params, body, is_async } => {
+            Statement::FnDecl {
+                name,
+                params,
+                body,
+                is_async,
+            } => {
                 self.global.borrow_mut().set(
                     name,
                     Value::Function {
@@ -47,7 +57,11 @@ impl Interpreter {
                 );
                 Ok(Value::Undefined)
             }
-            Statement::ClassDecl { name, superclass, body } => {
+            Statement::ClassDecl {
+                name,
+                superclass,
+                body,
+            } => {
                 let super_cls = if let Some(sc) = superclass {
                     Some(self.eval_expr(sc)?)
                 } else {
@@ -70,7 +84,12 @@ impl Interpreter {
 
                 for member in body {
                     match member {
-                        ClassMember::Method { name: mname, is_static: st, params: mp, body: mb } => {
+                        ClassMember::Method {
+                            name: mname,
+                            is_static: st,
+                            params: mp,
+                            body: mb,
+                        } => {
                             let fn_val = Value::Function {
                                 name: Some(mname.clone()),
                                 params: mp.clone(),
@@ -88,7 +107,11 @@ impl Interpreter {
                                 proto_props.push((mname.clone(), fn_val));
                             }
                         }
-                        ClassMember::Field { name: fname, is_static: st, init } => {
+                        ClassMember::Field {
+                            name: fname,
+                            is_static: st,
+                            init,
+                        } => {
                             if *st {
                                 let init_val = match init {
                                     Some(e) => self.eval_expr(e)?,
@@ -99,7 +122,11 @@ impl Interpreter {
                                 instance_fields.push((fname.clone(), init.clone()));
                             }
                         }
-                        ClassMember::Getter { name: gname, is_static: st, body: gb } => {
+                        ClassMember::Getter {
+                            name: gname,
+                            is_static: st,
+                            body: gb,
+                        } => {
                             let getter_fn = Value::Function {
                                 name: Some(format!("get {}", gname)),
                                 params: vec![],
@@ -114,7 +141,12 @@ impl Interpreter {
                                 proto_props.push((gname.clone(), getter_fn));
                             }
                         }
-                        ClassMember::Setter { name: sname, param, is_static: st, body: sb } => {
+                        ClassMember::Setter {
+                            name: sname,
+                            param,
+                            is_static: st,
+                            body: sb,
+                        } => {
                             let setter_fn = Value::Function {
                                 name: Some(format!("set {}", sname)),
                                 params: vec![param.clone()],
@@ -152,7 +184,10 @@ impl Interpreter {
                 // For a derived class, expose the superclass constructor to the
                 // constructor body as `__super_ctor` so `super(...)` can call it.
                 let ctor_closure = match &super_cls {
-                    Some(Value::Class { constructor: super_ctor, .. }) => {
+                    Some(Value::Class {
+                        constructor: super_ctor,
+                        ..
+                    }) => {
                         let env = Rc::new(RefCell::new(Environment::child(self.global.clone())));
                         env.borrow_mut()
                             .set("__super_ctor", super_ctor.as_ref().clone());
@@ -210,8 +245,14 @@ impl Interpreter {
                         break;
                     }
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => break,
-                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" || is_label_continue(&label, &m) => continue,
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => {
+                            break;
+                        }
+                        Err(VmErr::Msg(m))
+                            if m == "__CONTINUE__" || is_label_continue(&label, &m) =>
+                        {
+                            continue;
+                        }
                         other => r = other?,
                     }
                 }
@@ -222,8 +263,11 @@ impl Interpreter {
                 let mut r = Value::Undefined;
                 loop {
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => break,
-                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" || is_label_continue(&label, &m) => {}
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => {
+                            break;
+                        }
+                        Err(VmErr::Msg(m))
+                            if m == "__CONTINUE__" || is_label_continue(&label, &m) => {}
                         other => r = other?,
                     }
                     let t = self.eval_expr(test)?;
@@ -265,8 +309,11 @@ impl Interpreter {
                         }
                     }
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => break,
-                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" || is_label_continue(&label, &m) => {}
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => {
+                            break;
+                        }
+                        Err(VmErr::Msg(m))
+                            if m == "__CONTINUE__" || is_label_continue(&label, &m) => {}
                         other => r = other?,
                     }
                     if let Some(u) = update {
@@ -283,8 +330,14 @@ impl Interpreter {
                 for k in ks {
                     self.global.borrow_mut().set(name, Value::String(k));
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => break,
-                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" || is_label_continue(&label, &m) => continue,
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => {
+                            break;
+                        }
+                        Err(VmErr::Msg(m))
+                            if m == "__CONTINUE__" || is_label_continue(&label, &m) =>
+                        {
+                            continue;
+                        }
                         other => r = other?,
                     }
                 }
@@ -302,8 +355,14 @@ impl Interpreter {
                 for i in items {
                     self.global.borrow_mut().set(name, i);
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => break,
-                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" || is_label_continue(&label, &m) => continue,
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => {
+                            break;
+                        }
+                        Err(VmErr::Msg(m))
+                            if m == "__CONTINUE__" || is_label_continue(&label, &m) =>
+                        {
+                            continue;
+                        }
                         other => r = other?,
                     }
                 }
@@ -344,7 +403,9 @@ impl Interpreter {
                 let after_catch = match body_result {
                     Err(VmErr::Throw(msg)) => self.run_catch(catch, Value::String(msg)),
                     // Control-flow signals are not catchable.
-                    Err(VmErr::Msg(m)) if m.starts_with("__BREAK__") || m.starts_with("__CONTINUE__") => {
+                    Err(VmErr::Msg(m))
+                        if m.starts_with("__BREAK__") || m.starts_with("__CONTINUE__") =>
+                    {
                         Err(VmErr::Msg(m))
                     }
                     // Runtime errors (e.g. undeclared identifier) are catchable.
@@ -486,7 +547,9 @@ impl Interpreter {
                             let inner_val = self.eval_expr(inner)?;
                             match inner_val {
                                 Value::Array(arr) => v.extend(arr.borrow().iter().cloned()),
-                                Value::String(s) => v.extend(s.chars().map(|c| Value::String(c.to_string()))),
+                                Value::String(s) => {
+                                    v.extend(s.chars().map(|c| Value::String(c.to_string())))
+                                }
                                 _ => {}
                             }
                         }
@@ -570,7 +633,9 @@ impl Interpreter {
                 operand,
                 prefix,
             } => {
-                if (op == "++" || op == "--") && matches!(operand.as_ref(), Expr::Identifier(_) | Expr::Member { .. }) {
+                if (op == "++" || op == "--")
+                    && matches!(operand.as_ref(), Expr::Identifier(_) | Expr::Member { .. })
+                {
                     match operand.as_ref() {
                         Expr::Identifier(n) => {
                             let (cur, new_val) = {
@@ -588,7 +653,11 @@ impl Interpreter {
                             self.global.borrow_mut().assign(n, new_val.clone());
                             if *prefix { Ok(new_val) } else { Ok(cur) }
                         }
-                        Expr::Member { object, property, computed: _ } => {
+                        Expr::Member {
+                            object,
+                            property,
+                            computed: _,
+                        } => {
                             let obj = self.eval_expr(object)?;
                             let prop = self.eval_expr(property)?;
                             let cur = self.prop(&obj, &prop)?;
@@ -640,26 +709,29 @@ impl Interpreter {
                     // `super(...)` invokes the superclass constructor on the
                     // current `this`.
                     Expr::Super => {
-                        let this_val = self
-                            .global
-                            .borrow()
-                            .get("this")
-                            .unwrap_or(Value::Undefined);
-                        let super_ctor = self
-                            .global
-                            .borrow()
-                            .get("__super_ctor")
-                            .ok_or_else(|| VmErr::Msg("super used outside a derived class".to_string()))?;
+                        let this_val = self.global.borrow().get("this").unwrap_or(Value::Undefined);
+                        let super_ctor =
+                            self.global.borrow().get("__super_ctor").ok_or_else(|| {
+                                VmErr::Msg("super used outside a derived class".to_string())
+                            })?;
                         self.invoke_ctor(&super_ctor, this_val, a)
                     }
                     // Method call: bind `this` to the receiver object.
-                    Expr::Member { object, property, computed: _ } => {
+                    Expr::Member {
+                        object,
+                        property,
+                        computed: _,
+                    } => {
                         let obj = self.eval_expr(object)?;
                         let prop = self.eval_expr(property)?;
                         let f = self.prop(&obj, &prop)?;
                         self.call_this(&f, obj, a)
                     }
-                    Expr::OptionalChain { object, property, computed: _ } => {
+                    Expr::OptionalChain {
+                        object,
+                        property,
+                        computed: _,
+                    } => {
                         let obj = self.eval_expr(object)?;
                         if matches!(obj, Value::Null | Value::Undefined) {
                             return Ok(Value::Undefined);
@@ -679,12 +751,20 @@ impl Interpreter {
                     }
                 }
             }
-            Expr::Member { object, property, computed: _ } => {
+            Expr::Member {
+                object,
+                property,
+                computed: _,
+            } => {
                 let o = self.eval_expr(object)?;
                 let p = self.eval_expr(property)?;
                 self.get_prop_value(&o, &p)
             }
-            Expr::OptionalChain { object, property, computed: _ } => {
+            Expr::OptionalChain {
+                object,
+                property,
+                computed: _,
+            } => {
                 let o = self.eval_expr(object)?;
                 if matches!(o, Value::Null | Value::Undefined) {
                     return Ok(Value::Undefined);
@@ -712,7 +792,11 @@ impl Interpreter {
                         }
                         Ok(fv)
                     }
-                    Expr::Member { object, property, computed: _ } => {
+                    Expr::Member {
+                        object,
+                        property,
+                        computed: _,
+                    } => {
                         let obj = self.eval_expr(object)?;
                         let prop = self.eval_expr(property)?;
                         let fv = if *op != "=" {
@@ -751,7 +835,12 @@ impl Interpreter {
                 is_arrow: true,
                 is_async: false,
             }),
-            Expr::FnExpr { name, params, body, is_async } => Ok(Value::Function {
+            Expr::FnExpr {
+                name,
+                params,
+                body,
+                is_async,
+            } => Ok(Value::Function {
                 name: name.clone(),
                 params: params.clone(),
                 body: body.clone(),

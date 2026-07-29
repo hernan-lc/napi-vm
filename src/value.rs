@@ -152,7 +152,11 @@ impl Value {
             }
             Value::Array(items) => {
                 let items = items.borrow();
-                key == "length" || key.parse::<usize>().map(|i| i < items.len()).unwrap_or(false)
+                key == "length"
+                    || key
+                        .parse::<usize>()
+                        .map(|i| i < items.len())
+                        .unwrap_or(false)
             }
             Value::String(_) => key == "length",
             _ => false,

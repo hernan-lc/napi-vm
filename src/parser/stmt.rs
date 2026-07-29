@@ -201,7 +201,10 @@ impl Parser {
                 let name = n.clone();
                 self.adv();
                 if self.eat(&Token::Equal) {
-                    Some(Pattern::Default(Box::new(Pattern::Ident(name)), Box::new(self.assign()?)))
+                    Some(Pattern::Default(
+                        Box::new(Pattern::Ident(name)),
+                        Box::new(self.assign()?),
+                    ))
                 } else {
                     Some(Pattern::Ident(name))
                 }
@@ -305,10 +308,7 @@ impl Parser {
     fn for_(&mut self) -> Option<Statement> {
         self.adv();
         self.eat(&Token::LParen);
-        let init = if matches!(
-            self.cur(),
-            Token::KwVar | Token::KwLet | Token::KwConst
-        ) {
+        let init = if matches!(self.cur(), Token::KwVar | Token::KwLet | Token::KwConst) {
             let kind = match self.cur() {
                 Token::KwVar => VarKind::Var,
                 Token::KwLet => VarKind::Let,
