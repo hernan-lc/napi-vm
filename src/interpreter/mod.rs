@@ -99,14 +99,22 @@ impl Interpreter {
                     if !self.truthy(&t) {
                         break;
                     }
-                    r = self.run(body)?;
+                    match self.run(body) {
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" => break,
+                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" => continue,
+                        other => r = other?,
+                    }
                 }
                 Ok(r)
             }
             Statement::DoWhile { test, body } => {
-                let mut r;
+                let mut r = Value::Undefined;
                 loop {
-                    r = self.run(body)?;
+                    match self.run(body) {
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" => break,
+                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" => {}
+                        other => r = other?,
+                    }
                     let t = self.eval_expr(test)?;
                     if !self.truthy(&t) {
                         break;
@@ -142,7 +150,11 @@ impl Interpreter {
                             break;
                         }
                     }
-                    r = self.run(body)?;
+                    match self.run(body) {
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" => break,
+                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" => {}
+                        other => r = other?,
+                    }
                     if let Some(u) = update {
                         self.eval_expr(u)?;
                     }
@@ -155,7 +167,11 @@ impl Interpreter {
                 let mut r = Value::Undefined;
                 for k in ks {
                     self.global.borrow_mut().set(name, Value::String(k));
-                    r = self.run(body)?;
+                    match self.run(body) {
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" => break,
+                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" => continue,
+                        other => r = other?,
+                    }
                 }
                 Ok(r)
             }
@@ -168,7 +184,11 @@ impl Interpreter {
                 let mut r = Value::Undefined;
                 for i in items {
                     self.global.borrow_mut().set(name, i);
-                    r = self.run(body)?;
+                    match self.run(body) {
+                        Err(VmErr::Msg(m)) if m == "__BREAK__" => break,
+                        Err(VmErr::Msg(m)) if m == "__CONTINUE__" => continue,
+                        other => r = other?,
+                    }
                 }
                 Ok(r)
             }
@@ -726,5 +746,38 @@ mod tests {
     fn test_math_constants() {
         assert_eq!(eval_str("Math.PI;"), "3.141592653589793");
         assert_eq!(eval_str("Math.E;"), "2.718281828459045");
+    }
+
+    #[test]
+    fn test_do_while() {
+        assert_eq!(eval_str("let i = 0; do { i++; } while (i < 5); i;"), "5");
+    }
+
+    #[test]
+    fn test_break_in_loops() {
+        assert_eq!(
+            eval_str("let i = 0; while (true) { if (i >= 3) { break; } i++; } i;"),
+            "3"
+        );
+        assert_eq!(
+            eval_str("let n = 0; for (let i = 0; i < 10; i++) { if (i === 4) { break; } n++; } n;"),
+            "4"
+        );
+        assert_eq!(
+            eval_str("let i = 0; do { if (i >= 2) { break; } i++; } while (true); i;"),
+            "2"
+        );
+    }
+
+    #[test]
+    fn test_continue_in_loops() {
+        assert_eq!(
+            eval_str("let s = 0; for (let i = 0; i < 5; i++) { if (i % 2) { continue; } s += i; } s;"),
+            "6"
+        );
+        assert_eq!(
+            eval_str("let s = 0; let i = 0; while (i < 5) { i++; if (i === 3) { continue; } s += i; } s;"),
+            "12"
+        );
     }
 }

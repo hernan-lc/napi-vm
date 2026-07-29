@@ -130,15 +130,15 @@ test.skip("arguments object", () => {
 
 // --- Control flow -----------------------------------------------------------
 
-test.skip("do...while loop", () => {
+test("do...while loop", () => {
   expect(runCode("let i = 0; do { i++; } while (i < 5); i;")).toBe("5");
 });
 
-test.skip("break inside a loop", () => {
+test("break inside a loop", () => {
   expect(runCode("let i = 0; while (true) { if (i >= 3) { break; } i++; } i;")).toBe("3");
 });
 
-test.skip("continue inside a loop", () => {
+test("continue inside a loop", () => {
   expect(runCode("let s = 0; for (let i = 0; i < 5; i++) { if (i % 2) { continue; } s += i; } s;")).toBe("6");
 });
 
