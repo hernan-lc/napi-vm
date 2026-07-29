@@ -1,3 +1,4 @@
+use crate::value::Value;
 use super::Interpreter;
 use crate::error::{VmErr, vm_err};
 
@@ -18,7 +19,7 @@ impl Interpreter {
             "&" => Value::Number((self.tn(l) as u64 & self.tn(r) as u64) as f64),
             "|" => Value::Number((self.tn(l) as u64 | self.tn(r) as u64) as f64),
             "^" => Value::Number((self.tn(l) as u64 ^ self.tn(r) as u64) as f64),
-            "<<" => Value::Number((self.tn(l) as u64 << self.tn(r) as u64) as f64),
+            "<<" => Value::Number(((self.tn(l) as u64) << (self.tn(r) as u64)) as f64),
             ">>" => Value::Number((self.tn(l) as i64 >> self.tn(r) as i64) as f64),
             ">>>" => {
                 let a = self.tn(l) as u64;

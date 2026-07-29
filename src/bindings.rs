@@ -23,9 +23,9 @@ pub fn to_string(val: &Value) -> String {
                 }
             }
             Value::String(s) => s.clone(),
-            Value::Object(p) => format!(
+            Value::Object { props, .. } => format!(
                 "{{{}}}",
-                p.iter()
+                props.iter()
                     .map(|(k, v)| format!("{}: {}", k, vs(v)))
                     .collect::<Vec<_>>()
                     .join(", ")

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::error::{VmErr, vm_err, vm_ret, vm_throw};
-use crate::parser::{Expr, ExprOrBlock, ForInit, Statement};
+use crate::parser::{Expr, ExprOrBlock, ForInit, ObjectProp, Pattern, Statement};
 use crate::value::Value;
 
 pub struct Interpreter {
@@ -45,12 +45,16 @@ impl Interpreter {
     fn eval_stmt(&mut self, s: &Statement) -> Result<Value, VmErr> {
         match s {
             Statement::Expr(e) => self.eval_expr(e),
-            Statement::VarDecl { name, init, .. } => {
+            Statement::VarDecl { name, init, destructuring, kind } => {
                 let v = match init {
                     Some(e) => self.eval_expr(e)?,
                     None => Value::Undefined,
                 };
-                self.global.borrow_mut().set(name, v.clone());
+                if let Some(pat) = destructuring {
+                    self.destructure(pat, &v)?;
+                } else {
+                    self.global.borrow_mut().set(name, v.clone());
+                }
                 Ok(v)
             }
             Statement::FnDecl { name, params, body } => {
@@ -61,18 +65,122 @@ impl Interpreter {
                         params: params.clone(),
                         body: body.clone(),
                         closure: Some(self.global.clone()),
+                        is_arrow: false,
                     },
                 );
                 Ok(Value::Undefined)
             }
-            Statement::ClassDecl { name, .. } => {
-                self.global.borrow_mut().set(
-                    name,
-                    Value::NativeFunction {
-                        name: name.clone(),
-                        callable: |_| Ok(Value::Object(vec![])),
-                    },
-                );
+            Statement::ClassDecl { name, superclass, body } => {
+                let super_cls = if let Some(sc) = superclass {
+                    Some(self.eval_expr(sc)?)
+                } else {
+                    None
+                };
+                let proto = if let Some(ref sc) = super_cls {
+                    match sc {
+                        Value::Function { .. } => {
+                            let mut p = Value::object(vec![
+                                ("constructor".to_string(), Value::Undefined),
+                            ]);
+                            if let Value::Object { props, .. } = sc {
+                                for (k, v) in props {
+                                    if k == "prototype" {
+                                        if let Value::Object { props: pp, .. } = v {
+                                            p = Value::object_with_proto(
+                                                pp.clone(),
+                                                v.get_prop("constructor").map(Box::new),
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            Some(Box::new(p))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                let mut class_obj = Value::object(vec![
+                    ("name".to_string(), Value::String(name.clone())),
+                ]);
+                let mut prototype = Value::object_with_proto(vec![], proto);
+                let mut constructor = Value::Function {
+                    name: Some(name.clone()),
+                    params: vec![],
+                    body: vec![],
+                    closure: Some(self.global.clone()),
+                    is_arrow: false,
+                };
+
+                for member in body {
+                    match member {
+                        ClassMember::Method { name: mname, is_static: st, params: mp, body: mb } => {
+                            let fn_val = Value::Function {
+                                name: Some(mname.clone()),
+                                params: mp.clone(),
+                                body: mb.clone(),
+                                closure: Some(self.global.clone()),
+                                is_arrow: false,
+                            };
+                            if *st {
+                                class_obj.set_prop(mname.clone(), fn_val);
+                            } else {
+                                if mname == "constructor" {
+                                    constructor = fn_val;
+                                } else {
+                                    prototype.set_prop(mname.clone(), fn_val);
+                                }
+                            }
+                        }
+                        ClassMember::Field { name: fname, is_static: st, init } => {
+                            let init_val = match init {
+                                Some(e) => self.eval_expr(e)?,
+                                None => Value::Undefined,
+                            };
+                            if *st {
+                                class_obj.set_prop(fname.clone(), init_val);
+                            } else {
+                                prototype.set_prop(fname.clone(), init_val);
+                            }
+                        }
+                        ClassMember::Getter { name: gname, is_static: st, body: gb } => {
+                            let getter_fn = Value::Function {
+                                name: Some(format!("get {}", gname)),
+                                params: vec![],
+                                body: gb.clone(),
+                                closure: Some(self.global.clone()),
+                                is_arrow: false,
+                            };
+                            if *st {
+                                class_obj.set_prop(name.clone(), getter_fn);
+                            } else {
+                                prototype.set_prop(name.clone(), getter_fn);
+                            }
+                        }
+                        ClassMember::Setter { name: sname, param, is_static: st, body: sb } => {
+                            let setter_fn = Value::Function {
+                                name: Some(format!("set {}", sname)),
+                                params: vec![param.clone()],
+                                body: sb.clone(),
+                                closure: Some(self.global.clone()),
+                                is_arrow: false,
+                            };
+                            if *st {
+                                class_obj.set_prop(sname.clone(), setter_fn);
+                            } else {
+                                prototype.set_prop(sname.clone(), setter_fn);
+                            }
+                        }
+                    }
+                }
+
+                prototype.set_prop("constructor".to_string(), constructor.clone());
+                class_obj.set_prop("prototype".to_string(), prototype);
+
+                self.global.borrow_mut().set(name, class_obj);
                 Ok(Value::Undefined)
             }
             Statement::Return(e) => {
@@ -179,6 +287,7 @@ impl Interpreter {
                 let a = self.eval_expr(iter)?;
                 let items = match &a {
                     Value::Array(i) => i.clone(),
+                    Value::String(s) => s.chars().map(|c| Value::String(c.to_string())).collect(),
                     _ => return vm_err("for...of needs iterable"),
                 };
                 let mut r = Value::Undefined;
@@ -195,6 +304,8 @@ impl Interpreter {
             Statement::Block(s) => self.run(s),
             Statement::Break => vm_err("__BREAK__"),
             Statement::Continue => vm_err("__CONTINUE__"),
+            Statement::LabeledBreak(label) => vm_err(format!("__BREAK__:{}", label)),
+            Statement::LabeledContinue(label) => vm_err(format!("__CONTINUE__:{}", label)),
             Statement::Throw(e) => {
                 let v = self.eval_expr(e)?;
                 vm_throw(self.vs(&v))
@@ -203,32 +314,52 @@ impl Interpreter {
                 body,
                 catch,
                 finally,
-            } => match self.run(body) {
-                Err(VmErr::Throw(msg)) => {
-                    if let Some((p, cb)) = catch {
-                        let ce = Rc::new(RefCell::new(Environment::child(self.global.clone())));
-                        ce.borrow_mut().set(p, Value::String(msg));
-                        let s = self.global.clone();
-                        self.global = ce;
-                        let r = self.run(cb);
-                        self.global = s;
-                        r
-                    } else {
-                        Ok(Value::Undefined)
+            } => {
+                let catch_result = self.run(body);
+                let finally_result = if let Some(f) = finally {
+                    self.run(f)
+                } else {
+                    Ok(Value::Undefined)
+                };
+
+                match catch_result {
+                    Err(VmErr::Throw(msg)) => {
+                        finally_result?;
+                        if let Some((p, cb)) = catch {
+                            let ce = Rc::new(RefCell::new(Environment::child(self.global.clone())));
+                            ce.borrow_mut().set(p, Value::String(msg));
+                            let s = self.global.clone();
+                            self.global = ce;
+                            let r = self.run(cb);
+                            self.global = s;
+                            r
+                        } else {
+                            Ok(Value::Undefined)
+                        }
+                    }
+                    Err(VmErr::Msg(m)) if m.starts_with("__BREAK__") || m.starts_with("__CONTINUE__") => {
+                        finally_result?;
+                        Err(VmErr::Msg(m))
+                    }
+                    Err(VmErr::Ret(v)) => {
+                        finally_result?;
+                        Err(VmErr::Ret(v))
+                    }
+                    Ok(v) => {
+                        finally_result?;
+                        Ok(v)
+                    }
+                    Err(e) => {
+                        finally_result?;
+                        Err(e)
                     }
                 }
-                Err(VmErr::Ret(v)) => Err(VmErr::Ret(v)),
-                other => {
-                    if let Some(f) = finally {
-                        self.run(f)?;
-                    }
-                    other
-                }
-            },
+            }
             Statement::Switch { disc, cases } => {
                 let d = self.eval_expr(disc)?;
                 let mut r = Value::Undefined;
                 let mut m = false;
+                let mut found_label = None;
                 for c in cases {
                     if let Some(ref t) = c.test {
                         let tv = self.eval_expr(t)?;
@@ -242,8 +373,13 @@ impl Interpreter {
                         match self.run(&c.body) {
                             Err(e) => {
                                 let s = format!("{}", e);
-                                if s == "__BREAK__" {
+                                if let Some(label) = s.strip_prefix("__BREAK__:") {
+                                    found_label = Some(label.to_string());
                                     break;
+                                } else if s == "__BREAK__" {
+                                    break;
+                                } else if s.starts_with("__CONTINUE__") {
+                                    return Err(e);
                                 } else {
                                     return Err(e);
                                 }
@@ -253,6 +389,9 @@ impl Interpreter {
                             }
                         }
                     }
+                }
+                if let Some(label) = found_label {
+                    return vm_err(format!("__BREAK__:{}", label));
                 }
                 Ok(r)
             }
@@ -306,7 +445,7 @@ impl Interpreter {
                         if let Some(ref def) = md.default {
                             p.push(("_default".to_string(), def.clone()));
                         }
-                        self.global.borrow_mut().set(ns, Value::Object(p));
+                        self.global.borrow_mut().set(ns, Value::Object { props: p, proto: None });
                     }
                     Ok(Value::Undefined)
                 } else {
@@ -317,6 +456,84 @@ impl Interpreter {
         }
     }
 
+    fn destructure(&mut self, pat: &Pattern, val: &Value) -> Result<Value, VmErr> {
+        match pat {
+            Pattern::Ident(name) => {
+                self.global.borrow_mut().set(name, val.clone());
+                Ok(val.clone())
+            }
+            Pattern::Array(elements) => {
+                let values = match val {
+                    Value::Array(arr) => arr.clone(),
+                    Value::Object { props, .. } => {
+                        let mut vals = Vec::new();
+                        for (k, v) in props {
+                            if let Ok(n) = k.parse::<usize>() {
+                                while vals.len() <= n {
+                                    vals.push(Value::Undefined);
+                                }
+                                vals[n] = v.clone();
+                            }
+                        }
+                        vals
+                    }
+                    Value::String(s) => s.chars().map(|c| Value::String(c.to_string())).collect(),
+                    _ => vec![],
+                };
+                let mut rest_target = None;
+                for (i, elem) in elements.iter().enumerate() {
+                    if elem.is_rest() {
+                        rest_target = Some(i);
+                        break;
+                    }
+                    if let Some(v) = values.get(i) {
+                        self.destructure(elem, v)?;
+                    } else {
+                        self.destructure(elem, &Value::Undefined)?;
+                    }
+                }
+                if let Some(rest_idx) = rest_target {
+                    if let Pattern::Rest(rest_pat) = &elements[rest_idx] {
+                        let rest_vals = values[rest_idx..].to_vec();
+                        let rest_val = Value::Array(rest_vals);
+                        self.destructure(rest_pat, &rest_val)?;
+                    }
+                }
+                Ok(val.clone())
+            }
+            Pattern::Object(props) => {
+                let obj = match val {
+                    Value::Object { props: oprops, .. } => oprops.clone(),
+                    _ => vec![],
+                };
+                for (key, pat) in props {
+                    let mut found = Value::Undefined;
+                    for (k, v) in &obj {
+                        if k == key {
+                            found = v.clone();
+                            break;
+                        }
+                    }
+                    if let Some(p) = pat {
+                        self.destructure(p, &found)?;
+                    } else {
+                        self.global.borrow_mut().set(key, found);
+                    }
+                }
+                Ok(val.clone())
+            }
+            Pattern::Rest(_) => Ok(val.clone()),
+            Pattern::Default(pat, default_expr) => {
+                if matches!(val, Value::Undefined | Value::Null) {
+                    let default_val = self.eval_expr(default_expr)?;
+                    self.destructure(pat, &default_val)
+                } else {
+                    self.destructure(pat, val)
+                }
+            }
+        }
+    }
+
     fn eval_expr(&mut self, e: &Expr) -> Result<Value, VmErr> {
         match e {
             Expr::Number(n) => Ok(Value::Number(*n)),
@@ -324,24 +541,93 @@ impl Interpreter {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Null => Ok(Value::Null),
             Expr::Undefined => Ok(Value::Undefined),
-            Expr::Identifier(n) => self
-                .global
-                .borrow()
-                .get(n)
-                .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n))),
+            Expr::Identifier(n) => {
+                if n == "undefined" {
+                    return Ok(Value::Undefined);
+                }
+                self.global
+                    .borrow()
+                    .get(n)
+                    .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))
+            }
             Expr::Array(i) => {
                 let mut v = Vec::new();
                 for x in i {
-                    v.push(self.eval_expr(x)?);
+                    match x {
+                        Expr::Spread(inner) => {
+                            let inner_val = self.eval_expr(inner)?;
+                            match inner_val {
+                                Value::Array(arr) => v.extend(arr),
+                                Value::String(s) => v.extend(s.chars().map(|c| Value::String(c.to_string()))),
+                                _ => {}
+                            }
+                        }
+                        _ => v.push(self.eval_expr(x)?),
+                    }
                 }
                 Ok(Value::Array(v))
             }
-            Expr::Object(p) => {
+            Expr::Object(props) => {
                 let mut o = Vec::new();
-                for (k, v) in p {
-                    o.push((k.clone(), self.eval_expr(v)?));
+                for prop in props {
+                    match prop {
+                        ObjectProp::Shorthand(name) => {
+                            let val = self.global.borrow().get(name).unwrap_or(Value::Undefined);
+                            o.push((name.clone(), val));
+                        }
+                        ObjectProp::KeyValue(k, v) => {
+                            o.push((k.clone(), self.eval_expr(v)?));
+                        }
+                        ObjectProp::Computed(k, v) => {
+                            let key = match self.eval_expr(k)? {
+                                Value::String(s) => s,
+                                Value::Number(n) => n.to_string(),
+                                _ => continue,
+                            };
+                            o.push((key, self.eval_expr(v)?));
+                        }
+                        ObjectProp::Method(name, params, body) => {
+                            let fn_val = Value::Function {
+                                name: Some(name.clone()),
+                                params: params.clone(),
+                                body: body.clone(),
+                                closure: Some(self.global.clone()),
+                                is_arrow: false,
+                            };
+                            o.push((name.clone(), fn_val));
+                        }
+                        ObjectProp::Getter(name, body) => {
+                            let fn_val = Value::Function {
+                                name: Some(format!("get {}", name)),
+                                params: vec![],
+                                body: body.clone(),
+                                closure: Some(self.global.clone()),
+                                is_arrow: false,
+                            };
+                            o.push((name.clone(), fn_val));
+                        }
+                        ObjectProp::Setter(name, param, body) => {
+                            let fn_val = Value::Function {
+                                name: Some(format!("set {}", name)),
+                                params: vec![param.clone()],
+                                body: body.clone(),
+                                closure: Some(self.global.clone()),
+                                is_arrow: false,
+                            };
+                            o.push((name.clone(), fn_val));
+                        }
+                        ObjectProp::Spread(expr) => {
+                            let val = self.eval_expr(expr)?;
+                            match val {
+                                Value::Object { props: sprops, .. } => {
+                                    o.extend(sprops);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
-                Ok(Value::Object(o))
+                Ok(Value::Object { props: o, proto: None })
             }
             Expr::Binary { op, left, right } => {
                 let l = self.eval_expr(left)?;
@@ -353,24 +639,40 @@ impl Interpreter {
                 operand,
                 prefix,
             } => {
-                if (op == "++" || op == "--") && matches!(operand.as_ref(), Expr::Identifier(_)) {
-                    if let Expr::Identifier(n) = operand.as_ref() {
-                        let (cur, new_val) = {
-                            let env = self.global.borrow();
-                            let cur = env
-                                .get(n)
-                                .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))?;
-                            let nv = if op == "++" {
+                if (op == "++" || op == "--") && matches!(operand.as_ref(), Expr::Identifier(_) | Expr::Member { .. }) {
+                    match operand.as_ref() {
+                        Expr::Identifier(n) => {
+                            let (cur, new_val) = {
+                                let env = self.global.borrow();
+                                let cur = env
+                                    .get(n)
+                                    .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))?;
+                                let nv = if op == "++" {
+                                    Value::Number(self.tn(&cur) + 1.0)
+                                } else {
+                                    Value::Number(self.tn(&cur) - 1.0)
+                                };
+                                (cur, nv)
+                            };
+                            self.global.borrow_mut().assign(n, new_val.clone());
+                            if *prefix { Ok(new_val) } else { Ok(cur) }
+                        }
+                        Expr::Member { object, property, computed } => {
+                            let obj = self.eval_expr(object)?;
+                            let prop = self.eval_expr(property)?;
+                            let cur = self.prop(&obj, &prop)?;
+                            let new_val = if op == "++" {
                                 Value::Number(self.tn(&cur) + 1.0)
                             } else {
                                 Value::Number(self.tn(&cur) - 1.0)
                             };
-                            (cur, nv)
-                        };
-                        self.global.borrow_mut().assign(n, new_val.clone());
-                        if *prefix { Ok(new_val) } else { Ok(cur) }
-                    } else {
-                        unreachable!()
+                            self.assign_member(&obj, &prop, new_val.clone())?;
+                            if *prefix { Ok(new_val) } else { Ok(cur) }
+                        }
+                        _ => {
+                            let v = self.eval_expr(operand)?;
+                            self.un_op(op, &v)
+                        }
                     }
                 } else {
                     let v = self.eval_expr(operand)?;
@@ -380,17 +682,30 @@ impl Interpreter {
             Expr::Call { callee, args } => {
                 let mut a = Vec::new();
                 for x in args {
-                    a.push(self.eval_expr(x)?);
+                    match x {
+                        Expr::Spread(inner) => {
+                            let inner_val = self.eval_expr(inner)?;
+                            match inner_val {
+                                Value::Array(arr) => a.extend(arr),
+                                _ => a.push(inner_val),
+                            }
+                        }
+                        _ => a.push(self.eval_expr(x)?),
+                    }
                 }
                 let c = self.eval_expr(callee)?;
                 self.call(&c, a)
             }
-            Expr::Member {
-                object,
-                property,
-                computed: _,
-            } => {
+            Expr::Member { object, property, computed } => {
                 let o = self.eval_expr(object)?;
+                let p = self.eval_expr(property)?;
+                self.prop(&o, &p)
+            }
+            Expr::OptionalChain { object, property, computed } => {
+                let o = self.eval_expr(object)?;
+                if matches!(o, Value::Null | Value::Undefined) {
+                    return Ok(Value::Undefined);
+                }
                 let p = self.eval_expr(property)?;
                 self.prop(&o, &p)
             }
@@ -412,6 +727,19 @@ impl Interpreter {
                         if !self.global.borrow_mut().assign(n, fv.clone()) {
                             self.global.borrow_mut().set(n, fv.clone());
                         }
+                        Ok(fv)
+                    }
+                    Expr::Member { object, property, computed } => {
+                        let obj = self.eval_expr(object)?;
+                        let prop = self.eval_expr(property)?;
+                        let fv = if *op != "=" {
+                            let c = self.prop(&obj, &prop)?;
+                            let bin_op = op.trim_end_matches('=');
+                            self.bin_op(bin_op, &c, &v)?
+                        } else {
+                            v
+                        };
+                        self.assign_member(&obj, &prop, fv.clone())?;
                         Ok(fv)
                     }
                     _ => vm_err("Invalid assignment target"),
@@ -437,12 +765,14 @@ impl Interpreter {
                     ExprOrBlock::Block(s) => s.clone(),
                     ExprOrBlock::Expr(e) => vec![Statement::Return(Some(e.clone()))],
                 },
+                is_arrow: true,
             }),
             Expr::FnExpr { name, params, body } => Ok(Value::Function {
                 name: name.clone(),
                 params: params.clone(),
                 body: body.clone(),
                 closure: Some(self.global.clone()),
+                is_arrow: false,
             }),
             Expr::New { callee, args } => {
                 let mut a = Vec::new();
@@ -459,8 +789,45 @@ impl Interpreter {
                     ("url".to_string(), Value::String("vm://module".to_string())),
                     ("main".to_string(), Value::Bool(self.is_main)),
                 ];
-                Ok(Value::Object(o))
+                Ok(Value::Object { props: o, proto: None })
             }
+            Expr::Template { quasis, exprs } => {
+                let mut result = String::new();
+                for (i, q) in quasis.iter().enumerate() {
+                    result.push_str(q);
+                    if i < exprs.len() {
+                        result.push_str(&self.vs(&self.eval_expr(&exprs[i])?));
+                    }
+                }
+                Ok(Value::String(result))
+            }
+        }
+    }
+
+    fn assign_member(&mut self, obj: &Value, prop: &Value, val: Value) -> Result<Value, VmErr> {
+        match (obj, prop) {
+            (Value::Object { props, .. }, Value::String(k)) => {
+                for (xk, xv) in props.iter_mut() {
+                    if xk == k {
+                        *xv = val;
+                        return Ok(val);
+                    }
+                }
+                // If not found, we can't add to immutable Value::Object returned by prop()
+                // But we can modify via a mutable approach if obj was obtained differently
+                // For now, return error to be safe
+                vm_err("Cannot assign to undefined property")
+            }
+            (Value::Array(items), Value::Number(i)) => {
+                let idx = *i as usize;
+                if idx < items.len() {
+                    items[idx] = val;
+                    Ok(val)
+                } else {
+                    vm_err("Array index out of range")
+                }
+            }
+            _ => vm_err("Invalid assignment target"),
         }
     }
 
@@ -470,14 +837,57 @@ impl Interpreter {
                 params,
                 body,
                 closure,
+                is_arrow,
                 ..
             } => {
                 let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
                 let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
+                let mut has_rest = false;
+                let mut rest_idx = 0;
+                let mut rest_name = String::new();
+
                 for (i, p) in params.iter().enumerate() {
-                    fe.borrow_mut()
-                        .set(p, args.get(i).cloned().unwrap_or(Value::Undefined));
+                    if p.starts_with("...") {
+                        has_rest = true;
+                        rest_idx = i;
+                        rest_name = p.trim_start_matches("...").to_string();
+                        break;
+                    }
                 }
+
+                if has_rest {
+                    for (i, p) in params.iter().enumerate() {
+                        if i == rest_idx {
+                            let rest_args = args[i..].to_vec();
+                            fe.borrow_mut().set(&rest_name, Value::Array(rest_args));
+                        } else {
+                            let arg = if i < args.len() {
+                                let is_rest_param = params.get(i + 1).map(|p| p.starts_with("...")).unwrap_or(false);
+                                if !is_rest_param && i >= rest_idx {
+                                    Value::Undefined
+                                } else {
+                                    args.get(i).cloned().unwrap_or(Value::Undefined)
+                                }
+                            } else {
+                                Value::Undefined
+                            };
+                            fe.borrow_mut().set(p, arg);
+                        }
+                    }
+                } else {
+                    for (i, p) in params.iter().enumerate() {
+                        let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
+                        fe.borrow_mut().set(p, arg);
+                    }
+                }
+
+                // Create arguments object
+                let args_obj = Value::object(
+                    args.iter().enumerate().map(|(i, v)| (i.to_string(), v.clone())).collect(),
+                );
+                args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
+                fe.borrow_mut().set("arguments", args_obj);
+
                 let s = self.global.clone();
                 self.global = fe;
                 let r = self.run(body);
@@ -487,46 +897,81 @@ impl Interpreter {
                     other => other,
                 }
             }
-            Value::NativeFunction { callable, .. } => callable(args),
+            Value::NativeFunction { callable, .. } => {
+                let this_val = self.global.borrow().get("this").unwrap_or(Value::Undefined);
+                callable(self, this_val, args)
+            }
             _ => vm_err("Not a function"),
         }
     }
 
     fn ctor(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmErr> {
-        let inst = Value::Object(vec![]);
-        if let Value::Function {
-            params,
-            body,
-            closure,
-            ..
-        } = f
-        {
-            let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
-            let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
-            fe.borrow_mut().set("this", inst.clone());
-            for (i, p) in params.iter().enumerate() {
-                fe.borrow_mut()
-                    .set(p, args.get(i).cloned().unwrap_or(Value::Undefined));
-            }
-            let s = self.global.clone();
-            self.global = fe;
-            let r = self.run(body);
-            self.global = s;
-            match r {
-                Err(VmErr::Ret(v)) => match v {
-                    Value::Object(_) => Ok(v),
+        match f {
+            Value::Function { params, body, closure, .. } => {
+                let inst = Value::object(vec![]);
+                let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
+                let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
+                fe.borrow_mut().set("this", inst.clone());
+
+                let mut has_rest = false;
+                let mut rest_idx = 0;
+                let mut rest_name = String::new();
+                for (i, p) in params.iter().enumerate() {
+                    if p.starts_with("...") {
+                        has_rest = true;
+                        rest_idx = i;
+                        rest_name = p.trim_start_matches("...").to_string();
+                        break;
+                    }
+                }
+
+                if has_rest {
+                    for (i, p) in params.iter().enumerate() {
+                        if i == rest_idx {
+                            let rest_args = args[i..].to_vec();
+                            fe.borrow_mut().set(&rest_name, Value::Array(rest_args));
+                        } else {
+                            let is_rest_param = params.get(i + 1).map(|p| p.starts_with("...")).unwrap_or(false);
+                            let arg = if !is_rest_param && i >= rest_idx {
+                                Value::Undefined
+                            } else {
+                                args.get(i).cloned().unwrap_or(Value::Undefined)
+                            };
+                            fe.borrow_mut().set(p, arg);
+                        }
+                    }
+                } else {
+                    for (i, p) in params.iter().enumerate() {
+                        let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
+                        fe.borrow_mut().set(p, arg);
+                    }
+                }
+
+                let args_obj = Value::object(
+                    args.iter().enumerate().map(|(i, v)| (i.to_string(), v.clone())).collect(),
+                );
+                args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
+                fe.borrow_mut().set("arguments", args_obj);
+
+                let s = self.global.clone();
+                self.global = fe;
+                let r = self.run(body);
+                self.global = s;
+                match r {
+                    Err(VmErr::Ret(v)) => match v {
+                        Value::Object { .. } => Ok(v),
+                        _ => Ok(inst),
+                    },
                     _ => Ok(inst),
-                },
-                _ => Ok(inst),
+                }
             }
-        } else {
-            vm_err("Not a constructor")
+            _ => vm_err("Not a constructor"),
         }
     }
 
     fn prop(&self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         match (o, p) {
-            (Value::Object(props), Value::String(k)) => {
+            (Value::Object { props, .. }, Value::String(k)) => {
                 for (xk, xv) in props {
                     if xk == k {
                         return Ok(xv.clone());
@@ -551,7 +996,10 @@ impl Interpreter {
             }
             (Value::String(s), Value::String(k)) => {
                 if k == "length" {
-                    Ok(Value::Number(s.len() as f64))
+                    Ok(Value::Number(s.chars().count() as f64))
+                } else if let Ok(idx) = k.parse::<usize>() {
+                    s.chars().nth(idx).map(|c| Value::String(c.to_string())).unwrap_or(Value::Undefined);
+                    Ok(Value::String(c.to_string()))
                 } else {
                     Ok(Value::Undefined)
                 }

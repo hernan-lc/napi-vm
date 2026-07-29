@@ -13,10 +13,10 @@ pub enum Value {
     Number(f64),
     String(String),
     Object {
-        props: Vec<(String, Value)>,
+        props: Rc<RefCell<Vec<(String, Value)>>>,
         proto: Option<Box<Value>>,
     },
-    Array(Vec<Value>),
+    Array(Rc<RefCell<Vec<Value>>>),
     Function {
         name: Option<String>,
         params: Vec<String>,
@@ -63,19 +63,23 @@ pub enum GeneratorState {
 impl Value {
     pub fn object(props: Vec<(String, Value)>) -> Self {
         Value::Object {
-            props,
+            props: Rc::new(RefCell::new(props)),
             proto: None,
         }
     }
 
     pub fn object_with_proto(props: Vec<(String, Value)>, proto: Option<Box<Value>>) -> Self {
-        Value::Object { props, proto }
+        Value::Object {
+            props: Rc::new(RefCell::new(props)),
+            proto,
+        }
     }
 
     pub fn get_prop(&self, key: &str) -> Option<Value> {
         match self {
             Value::Object { props, proto } => {
-                for (k, v) in props {
+                let props = props.borrow();
+                for (k, v) in props.iter() {
                     if k == key {
                         return Some(v.clone());
                     }
@@ -87,8 +91,14 @@ impl Value {
                 }
             }
             Value::Array(items) => {
+                let items = items.borrow();
                 if key == "length" {
                     return Some(Value::Number(items.len() as f64));
+                }
+                if let Ok(idx) = key.parse::<usize>() {
+                    if idx < items.len() {
+                        return Some(items[idx].clone());
+                    }
                 }
                 None
             }
@@ -96,15 +106,19 @@ impl Value {
                 if key == "length" {
                     return Some(Value::Number(s.chars().count() as f64));
                 }
+                if let Ok(idx) = key.parse::<usize>() {
+                    return s.chars().nth(idx).map(|c| Value::String(c.to_string()));
+                }
                 None
             }
             _ => None,
         }
     }
 
-    pub fn set_prop(&mut self, key: String, val: Value) {
+    pub fn set_prop(&self, key: String, val: Value) {
         match self {
             Value::Object { props, .. } => {
+                let mut props = props.borrow_mut();
                 for (k, v) in props.iter_mut() {
                     if k == &key {
                         *v = val;
@@ -120,10 +134,14 @@ impl Value {
     pub fn has_prop(&self, key: &str) -> bool {
         match self {
             Value::Object { props, proto } => {
+                let props = props.borrow();
                 props.iter().any(|(k, _)| k == key)
                     || proto.as_ref().map(|p| p.has_prop(key)).unwrap_or(false)
             }
-            Value::Array(items) => key == "length",
+            Value::Array(items) => {
+                let items = items.borrow();
+                key == "length" || key.parse::<usize>().map(|i| i < items.len()).unwrap_or(false)
+            }
             Value::String(_) => key == "length",
             _ => false,
         }
