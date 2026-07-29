@@ -251,7 +251,10 @@ fn array_reverse(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Valu
 fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     if let Value::Array(items) = &this {
         let cmp = a.first().cloned().unwrap_or(Value::Undefined);
-        if matches!(cmp, Value::Function { .. } | Value::NativeFunction { .. }) {
+        if matches!(
+            cmp,
+            Value::Function { .. } | Value::NativeFunction { .. } | Value::HostFunction { .. }
+        ) {
             // Comparator callback: negative/positive/zero ordering.
             items.borrow_mut().sort_by(|x, y| {
                 let n = interp

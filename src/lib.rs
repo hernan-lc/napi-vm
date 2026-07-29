@@ -1,6 +1,7 @@
 pub mod bindings;
 pub mod builtins;
 pub mod error;
+pub mod host;
 pub mod interpreter;
 pub mod lexer;
 pub mod parser;

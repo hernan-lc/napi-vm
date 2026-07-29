@@ -148,9 +148,10 @@ impl Interpreter {
                     Value::Number(_) => "number",
                     Value::String(_) => "string",
                     Value::Object { .. } | Value::Array(_) => "object",
-                    Value::Function { .. } | Value::NativeFunction { .. } | Value::Class { .. } => {
-                        "function"
-                    }
+                    Value::Function { .. }
+                    | Value::NativeFunction { .. }
+                    | Value::HostFunction { .. }
+                    | Value::Class { .. } => "function",
                     Value::Promise { .. } => "object",
                     Value::Generator { .. } => "object",
                     Value::Symbol(_) => "symbol",
@@ -254,6 +255,7 @@ impl Interpreter {
                 .join(","),
             Value::Function { name, .. } => format!("function {}", name.as_deref().unwrap_or("")),
             Value::NativeFunction { name, .. } => format!("function {} [native]", name),
+            Value::HostFunction { name, .. } => format!("function {} [native]", name),
             Value::Class { name, .. } => format!("class {}", name),
             Value::Promise { .. } => "[object Promise]".to_string(),
             Value::Generator { .. } => "[object Generator]".to_string(),

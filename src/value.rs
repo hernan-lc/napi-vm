@@ -32,6 +32,13 @@ pub enum Value {
         name: String,
         callable: fn(&mut Interpreter, Value, Vec<Value>) -> Result<Value, VmErr>,
     },
+    /// A function implemented on the host (Node.js) side, reachable from the VM.
+    /// Calling it dispatches through the interpreter's `HostBridge` using `id`,
+    /// which the bridge maps to a persisted JavaScript function reference.
+    HostFunction {
+        name: String,
+        id: usize,
+    },
     Class {
         name: String,
         constructor: Box<Value>,

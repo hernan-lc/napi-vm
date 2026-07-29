@@ -39,6 +39,7 @@ pub fn to_string(val: &Value) -> String {
                 format!("[Function: {}]", name.as_deref().unwrap_or("anonymous"))
             }
             Value::NativeFunction { name, .. } => format!("[Function: {} [native]]", name),
+            Value::HostFunction { name, .. } => format!("[Function: {} [native]]", name),
             Value::Class { name, .. } => format!("[class {}]", name),
             Value::Promise { .. } => "[object Promise]".to_string(),
             Value::Generator { .. } => "[object Generator]".to_string(),

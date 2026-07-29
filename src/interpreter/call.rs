@@ -272,6 +272,14 @@ impl Interpreter {
                 }
             }
             Value::NativeFunction { callable, .. } => callable(self, this_val, args),
+            Value::HostFunction { id, .. } => {
+                // Clone the bridge out so we don't hold a borrow on `self`
+                // across the host call (which may re-enter the VM).
+                let bridge = self.host.clone().ok_or_else(|| {
+                    VmErr::Msg("cannot call host function: no bridge attached".to_string())
+                })?;
+                bridge.call_host(*id, args)
+            }
             _ => vm_err("Not a function"),
         }
     }

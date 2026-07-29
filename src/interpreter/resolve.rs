@@ -124,6 +124,13 @@ impl Interpreter {
                     Ok(Value::Undefined)
                 }
             }
+            (Value::HostFunction { name, .. }, Value::String(k)) => {
+                if k == "name" {
+                    Ok(Value::String(name.clone()))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
             _ => Ok(Value::Undefined),
         }
     }

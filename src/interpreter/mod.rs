@@ -11,12 +11,17 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::error::VmErr;
+use crate::host::HostBridge;
 use crate::parser::Statement;
 use crate::value::Value;
 
 pub struct Interpreter {
     pub global: Env,
     pub modules: HashMap<String, Module>,
+    /// Optional bridge for calling host (Node.js) functions from inside the VM.
+    /// Attached by the N-API layer when functions are exposed via
+    /// `Vm.exposeFunction`; `None` for a standalone interpreter.
+    pub host: Option<Rc<dyn HostBridge>>,
     pub cur_mod: Option<String>,
     pub is_main: bool,
     /// Label applied to the loop currently being entered, if any. A loop takes
@@ -39,6 +44,7 @@ impl Interpreter {
         Self {
             global: Rc::new(RefCell::new(Environment::new())),
             modules: HashMap::new(),
+            host: None,
             cur_mod: None,
             is_main: false,
             active_label: None,
