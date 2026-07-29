@@ -5,6 +5,7 @@ mod json;
 mod math;
 mod number;
 mod object;
+mod promise;
 mod string;
 
 pub use array::array_method;
@@ -398,6 +399,7 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     json::install(e);
     date::install(e);
     error::install(e);
+    promise::install(e);
     // Global functions.
     e.set("parseInt", nf("parseInt", number::parse_int));
     e.set("parseFloat", nf("parseFloat", number::parse_float));

@@ -24,6 +24,7 @@ pub enum Value {
         closure: Option<Env>,
         is_arrow: bool,
         is_async: bool,
+        is_generator: bool,
     },
     NativeFunction {
         name: String,
@@ -41,11 +42,7 @@ pub enum Value {
         value: Option<Box<Value>>,
     },
     Generator {
-        state: GeneratorState,
-        body: Vec<Statement>,
-        closure: Option<Env>,
-        yielded: Option<Box<Value>>,
-        sent: Option<Box<Value>>,
+        inner: Rc<RefCell<GeneratorInner>>,
     },
     Symbol(String),
     Error {
@@ -61,11 +58,20 @@ pub enum PromiseState {
     Rejected,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum GeneratorState {
-    SuspendedStart,
-    SuspendedYield,
-    Completed,
+/// Mutable state shared across a generator's `next()` calls (behind an `Rc` so
+/// clones of the `Value::Generator` observe the same progress). The body runs
+/// eagerly to completion on the first `next()`, appending each `yield`ed value
+/// to `queue`; later calls drain the queue one value at a time. True mid-body
+/// suspension is not implemented — see the roadmap.
+#[derive(Debug, Clone)]
+pub struct GeneratorInner {
+    pub body: Vec<Statement>,
+    pub closure: Option<Env>,
+    pub params: Vec<String>,
+    pub args: Vec<Value>,
+    pub queue: Vec<Value>,
+    pub started: bool,
+    pub cursor: usize,
 }
 
 impl Value {

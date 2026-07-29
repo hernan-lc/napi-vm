@@ -215,9 +215,8 @@ impl Parser {
 
     pub(crate) fn fn_decl(&mut self, is_async: bool) -> Option<Statement> {
         self.adv(); // consume `function`
-        // Generator declaration: `function*` (the `*` is accepted and ignored;
-        // the body is stored as a plain function).
-        self.eat(&Token::Star);
+        // Generator declaration: `function*`.
+        let is_generator = self.eat(&Token::Star);
         let n = self.ident()?;
         self.eat(&Token::LParen);
         let (p, defaults) = self.params();
@@ -232,6 +231,7 @@ impl Parser {
             params: p,
             body,
             is_async,
+            is_generator,
         })
     }
 

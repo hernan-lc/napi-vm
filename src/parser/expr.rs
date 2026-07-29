@@ -27,6 +27,25 @@ impl Parser {
     }
 
     pub(crate) fn assign(&mut self) -> Option<Expr> {
+        // `yield` sits at assignment precedence. A bare `yield` (followed by a
+        // terminator) yields `undefined`; otherwise it yields the operand.
+        if matches!(self.cur(), Token::KwYield) {
+            self.adv();
+            let arg = if matches!(
+                self.cur(),
+                Token::Semicolon
+                    | Token::RParen
+                    | Token::RBrace
+                    | Token::RBracket
+                    | Token::Comma
+                    | Token::EOF
+            ) {
+                None
+            } else {
+                Some(Box::new(self.assign()?))
+            };
+            return Some(Expr::Yield(arg));
+        }
         let l = self.cond()?;
         match self.cur() {
             Token::Equal => {
@@ -536,6 +555,11 @@ impl Parser {
                     operand: Box::new(o),
                     prefix: true,
                 })
+            }
+            Token::KwAwait => {
+                self.adv();
+                let o = self.unary()?;
+                Some(Expr::Await(Box::new(o)))
             }
             _ => self.postfix(),
         }

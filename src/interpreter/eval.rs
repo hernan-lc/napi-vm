@@ -7,7 +7,7 @@ use std::rc::Rc;
 use super::{Environment, Interpreter, Module};
 use crate::error::{VmErr, vm_err, vm_ret, vm_throw};
 use crate::parser::{ClassMember, Expr, ExprOrBlock, ForInit, ObjectProp, Statement};
-use crate::value::Value;
+use crate::value::{PromiseState, Value};
 
 fn is_label_break(label: &Option<String>, m: &str) -> bool {
     matches!(label, Some(l) if m == format!("__BREAK__:{}", l))
@@ -43,6 +43,7 @@ impl Interpreter {
                 params,
                 body,
                 is_async,
+                is_generator,
             } => {
                 self.global.borrow_mut().set(
                     name,
@@ -53,6 +54,7 @@ impl Interpreter {
                         closure: Some(self.global.clone()),
                         is_arrow: false,
                         is_async: *is_async,
+                        is_generator: *is_generator,
                     },
                 );
                 Ok(Value::Undefined)
@@ -97,6 +99,7 @@ impl Interpreter {
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
+                                is_generator: false,
                             };
                             if *st {
                                 statics.push((mname.clone(), fn_val));
@@ -134,6 +137,7 @@ impl Interpreter {
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
+                                is_generator: false,
                             };
                             if *st {
                                 statics.push((gname.clone(), getter_fn));
@@ -154,6 +158,7 @@ impl Interpreter {
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
+                                is_generator: false,
                             };
                             if *st {
                                 statics.push((sname.clone(), setter_fn));
@@ -203,6 +208,7 @@ impl Interpreter {
                     closure: Some(ctor_closure),
                     is_arrow: false,
                     is_async: false,
+                    is_generator: false,
                 };
 
                 let prototype = Value::object_with_proto(proto_props, super_proto);
@@ -580,6 +586,7 @@ impl Interpreter {
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
+                                is_generator: false,
                             };
                             o.push((name.clone(), fn_val));
                         }
@@ -591,6 +598,7 @@ impl Interpreter {
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
+                                is_generator: false,
                             };
                             o.push((name.clone(), fn_val));
                         }
@@ -602,6 +610,7 @@ impl Interpreter {
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
+                                is_generator: false,
                             };
                             o.push((name.clone(), fn_val));
                         }
@@ -869,6 +878,22 @@ impl Interpreter {
                 Ok(Value::String(result))
             }
             Expr::Super => vm_err("'super' must be called as a function"),
+            Expr::Await(inner) => {
+                // The promise model is eager: by the time we `await` a promise it
+                // is already settled, so unwrap a fulfilled value or re-throw a
+                // rejection reason. Awaiting a non-promise yields it unchanged.
+                let v = self.eval_expr(inner)?;
+                if let Value::Promise { state, value } = v {
+                    let inner_val = value.map(|b| *b).unwrap_or(Value::Undefined);
+                    if state == PromiseState::Rejected {
+                        vm_throw(inner_val)
+                    } else {
+                        Ok(inner_val)
+                    }
+                } else {
+                    Ok(v)
+                }
+            }
         }
     }
 }

@@ -46,6 +46,7 @@ pub enum Expr {
         params: Vec<String>,
         body: Vec<Statement>,
         is_async: bool,
+        is_generator: bool,
     },
     New {
         callee: Box<Expr>,
@@ -64,6 +65,8 @@ pub enum Expr {
         property: Box<Expr>,
         computed: bool,
     },
+    Await(Box<Expr>),
+    Yield(Option<Box<Expr>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +111,7 @@ pub enum Statement {
         params: Vec<String>,
         body: Vec<Statement>,
         is_async: bool,
+        is_generator: bool,
     },
     ClassDecl {
         name: String,
