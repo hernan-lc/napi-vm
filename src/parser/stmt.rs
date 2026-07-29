@@ -7,7 +7,18 @@ impl Parser {
             Token::KwVar => self.var_decl(VarKind::Var),
             Token::KwLet => self.var_decl(VarKind::Let),
             Token::KwConst => self.var_decl(VarKind::Const),
-            Token::KwFunction => self.fn_decl(),
+            Token::KwFunction => self.fn_decl(false),
+            Token::KwAsync => {
+                // `async function name(...) { ... }`
+                if matches!(self.peek(), Token::KwFunction) {
+                    self.adv(); // consume `async`
+                    self.fn_decl(true)
+                } else {
+                    let e = self.expr()?;
+                    self.semi();
+                    Some(Statement::Expr(e))
+                }
+            }
             Token::KwClass => self.class_decl(),
             Token::KwReturn => self.ret(),
             Token::KwIf => self.if_(),
@@ -196,8 +207,11 @@ impl Parser {
         }
     }
 
-    fn fn_decl(&mut self) -> Option<Statement> {
-        self.adv();
+    fn fn_decl(&mut self, is_async: bool) -> Option<Statement> {
+        self.adv(); // consume `function`
+        // Generator declaration: `function*` (the `*` is accepted and ignored;
+        // the body is stored as a plain function).
+        self.eat(&Token::Star);
         let n = self.ident()?;
         self.eat(&Token::LParen);
         let (p, defaults) = self.params();
@@ -211,6 +225,7 @@ impl Parser {
             name: n,
             params: p,
             body,
+            is_async,
         })
     }
 

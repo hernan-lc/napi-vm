@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::error::{VmErr, vm_err, vm_ret, vm_throw};
 use crate::parser::{Expr, ExprOrBlock, ForInit, ClassMember, ObjectProp, Pattern, Statement};
-use crate::value::Value;
+use crate::value::{PromiseState, Value};
 
 fn is_label_break(label: &Option<String>, m: &str) -> bool {
     matches!(label, Some(l) if m == format!("__BREAK__:{}", l))
@@ -69,7 +69,7 @@ impl Interpreter {
                 }
                 Ok(v)
             }
-            Statement::FnDecl { name, params, body } => {
+            Statement::FnDecl { name, params, body, is_async } => {
                 self.global.borrow_mut().set(
                     name,
                     Value::Function {
@@ -78,7 +78,7 @@ impl Interpreter {
                         body: body.clone(),
                         closure: Some(self.global.clone()),
                         is_arrow: false,
-                        is_async: false,
+                        is_async: *is_async,
                     },
                 );
                 Ok(Value::Undefined)
@@ -865,13 +865,13 @@ impl Interpreter {
                 is_arrow: true,
                 is_async: false,
             }),
-            Expr::FnExpr { name, params, body } => Ok(Value::Function {
+            Expr::FnExpr { name, params, body, is_async } => Ok(Value::Function {
                 name: name.clone(),
                 params: params.clone(),
                 body: body.clone(),
                 closure: Some(self.global.clone()),
                 is_arrow: false,
-                is_async: false,
+                is_async: *is_async,
             }),
             Expr::New { callee, args } => {
                 let mut a = Vec::new();
@@ -977,6 +977,7 @@ impl Interpreter {
                 body,
                 closure,
                 is_arrow,
+                is_async,
                 ..
             } => {
                 let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
@@ -1036,9 +1037,25 @@ impl Interpreter {
                 self.global = fe;
                 let r = self.run(body);
                 self.global = s;
-                match r {
+                let result = match r {
                     Err(VmErr::Ret(v)) => Ok(v),
                     other => other,
+                };
+                if *is_async {
+                    // An async function always resolves to a promise.
+                    match result {
+                        Ok(v) => Ok(Value::Promise {
+                            state: PromiseState::Fulfilled,
+                            value: Some(Box::new(v)),
+                        }),
+                        Err(VmErr::Throw(m)) => Ok(Value::Promise {
+                            state: PromiseState::Rejected,
+                            value: Some(Box::new(Value::String(m))),
+                        }),
+                        other => other,
+                    }
+                } else {
+                    result
                 }
             }
             Value::NativeFunction { callable, .. } => {

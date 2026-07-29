@@ -879,6 +879,8 @@ impl Parser {
             }
             Token::KwFunction => {
                 self.adv();
+                // Generator expression: `function*` (star accepted and ignored).
+                self.eat(&Token::Star);
                 let n = if let Token::Identifier(x) = self.cur() {
                     let v = x.clone();
                     self.adv();
@@ -898,6 +900,7 @@ impl Parser {
                     name: n,
                     params: p,
                     body,
+                    is_async: false,
                 })
             }
             Token::KwNew => {

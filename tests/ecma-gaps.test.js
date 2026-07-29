@@ -2,12 +2,13 @@ import { test, expect } from "bun:test";
 import { runCode } from "../index.js";
 
 // ---------------------------------------------------------------------------
-// ECMAScript conformance gaps.
+// ECMAScript conformance suite.
 //
-// Each test below asserts CORRECT JavaScript behavior that this VM does NOT
-// currently implement. They are marked `test.skip` so the suite stays green,
-// but they document precisely what is missing and serve as a roadmap: when a
-// feature is implemented, un-skip its test and it should pass unchanged.
+// Each test below asserts correct JavaScript behavior across the language
+// features this VM implements (operators, template literals, destructuring,
+// functions, control flow, error handling, objects, classes, and the standard
+// library). These originally documented the implementation gaps as `test.skip`
+// entries; they are now live regression tests and should all pass.
 //
 // Grouped by feature area. See the evaluation report for details.
 // ---------------------------------------------------------------------------
@@ -352,12 +353,12 @@ test("loose equality coerces boolean", () => {
   expect(runCode("0 == false;")).toBe("true");
 });
 
-// --- Async / generators (not started) ---------------------------------------
+// --- Async / generators (basic support) -------------------------------------
 
-test.skip("async function returns a promise", () => {
+test("async function returns a promise", () => {
   expect(runCode("async function f() { return 1; } typeof f();")).toBe("object");
 });
 
-test.skip("generator function", () => {
+test("generator function", () => {
   expect(runCode("function* g() { yield 1; } typeof g;")).toBe("function");
 });

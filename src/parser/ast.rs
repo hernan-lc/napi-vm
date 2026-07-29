@@ -45,6 +45,7 @@ pub enum Expr {
         name: Option<String>,
         params: Vec<String>,
         body: Vec<Statement>,
+        is_async: bool,
     },
     New {
         callee: Box<Expr>,
@@ -95,6 +96,7 @@ pub enum Statement {
         name: String,
         params: Vec<String>,
         body: Vec<Statement>,
+        is_async: bool,
     },
     ClassDecl {
         name: String,
