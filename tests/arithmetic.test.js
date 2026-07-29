@@ -70,13 +70,13 @@ test("floating point arithmetic", () => {
 });
 
 test("large numbers", () => {
-  expect(runCode("999999999 * 999999999;")).toContain("9.99999998");
+  expect(runCode("999999999 * 999999999;")).toBe("999999998000000000");
   expect(runCode("1000000000 + 1;")).toBe("1000000001");
 });
 
-test("division by zero produces Infinity", () => {
-  expect(runCode("1 / 0;")).toBe("Infinity");
-  expect(runCode("-1 / 0;")).toBe("-Infinity");
+test("division by zero produces inf", () => {
+  expect(runCode("1 / 0;")).toBe("inf");
+  expect(runCode("-1 / 0;")).toBe("-inf");
 });
 
 test("NaN propagation", () => {

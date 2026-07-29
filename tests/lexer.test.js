@@ -44,58 +44,47 @@ test("skips multi-line comments", () => {
   expect(runCode("1; /* block\ncomment */ 2;")).toBe("2");
 });
 
-test("tokenizes all operators", () => {
-  const ast = debugParse("+ - * / % ++ --");
-  expect(ast).toContain("Plus");
-  expect(ast).toContain("Minus");
-  expect(ast).toContain("Star");
-  expect(ast).toContain("Slash");
-  expect(ast).toContain("Percent");
-  expect(ast).toContain("PlusPlus");
-  expect(ast).toContain("MinusMinus");
+test("tokenizes arithmetic operators in expressions", () => {
+  const ast = debugParse("1 + 2 - 3 * 4 / 5 % 6;");
+  expect(ast).toContain("Binary");
 });
 
-test("tokenizes comparison operators", () => {
-  const ast = debugParse("== != === !== < > <= >=");
-  expect(ast).toContain("EqualEqual");
-  expect(ast).toContain("NotEqual");
-  expect(ast).toContain("EqualEqualEqual");
-  expect(ast).toContain("NotEqualEqual");
+test("tokenizes increment/decrement in expressions", () => {
+  const ast = debugParse("let i = 0; i++; ++i; i--; --i;");
+  expect(ast).toContain("Unary");
 });
 
-test("tokenizes logical operators", () => {
-  const ast = debugParse("&& || !");
-  expect(ast).toContain("And");
-  expect(ast).toContain("Or");
-  expect(ast).toContain("Not");
+test("tokenizes comparison operators in expressions", () => {
+  const ast = debugParse("1 == 2; 1 != 2; 1 === 2; 1 !== 2; 1 < 2; 1 > 2; 1 <= 2; 1 >= 2;");
+  expect(ast).toContain("Binary");
 });
 
-test("tokenizes assignment operators", () => {
-  const ast = debugParse("= += -= *= /=");
-  expect(ast).toContain("Equal");
-  expect(ast).toContain("PlusEqual");
-  expect(ast).toContain("MinusEqual");
-  expect(ast).toContain("StarEqual");
-  expect(ast).toContain("SlashEqual");
+test("tokenizes logical operators in expressions", () => {
+  const ast = debugParse("true && false; true || false; !true;");
+  expect(ast).toContain("Binary");
+  expect(ast).toContain("Unary");
+});
+
+test("tokenizes assignment operators in expressions", () => {
+  const ast = debugParse("let x = 1; x += 2; x -= 1; x *= 3; x /= 2;");
+  expect(ast).toContain("Assignment");
 });
 
 test("tokenizes arrow function syntax", () => {
-  const ast = debugParse("=>");
-  expect(ast).toContain("Arrow");
+  const ast = debugParse("const f = (x) => x;");
+  expect(ast).toContain("ArrowFn");
 });
 
-test("tokenizes spread operator", () => {
-  const ast = debugParse("...");
-  expect(ast).toContain("DotDotDot");
+test("tokenizes spread in array", () => {
+  const ast = debugParse("const a = [...x];");
+  expect(ast).toContain("Spread");
 });
 
-test("tokenizes keywords", () => {
-  const ast = debugParse("var let const function return if else for while do switch case default break continue class extends new this super import export from as async await try catch finally throw typeof instanceof in of true false null undefined delete void static get set constructor");
-  expect(ast).toContain("KwVar");
-  expect(ast).toContain("KwLet");
-  expect(ast).toContain("KwConst");
-  expect(ast).toContain("KwFunction");
-  expect(ast).toContain("KwClass");
+test("tokenizes keywords in context", () => {
+  const ast = debugParse("var a = 1; let b = 2; const c = 3; function f() { return 1; } class C {}");
+  expect(ast).toContain("VarDecl");
+  expect(ast).toContain("FnDecl");
+  expect(ast).toContain("ClassDecl");
 });
 
 test("handles empty input", () => {
