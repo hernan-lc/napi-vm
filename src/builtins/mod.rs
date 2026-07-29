@@ -1,0 +1,452 @@
+mod array;
+mod json;
+mod math;
+mod number;
+mod object;
+mod string;
+
+pub use array::array_method;
+pub use number::number_method;
+pub use string::string_method;
+
+use crate::error::VmErr;
+use crate::interpreter::{Env, Interpreter};
+use crate::value::Value;
+
+pub fn setup_builtins(env: &Env) {
+    let mut e = env.borrow_mut();
+
+    let simple: &[&str] = &[
+        "Boolean",
+        "Error",
+        "TypeError",
+        "RangeError",
+        "SyntaxError",
+        "ReferenceError",
+        "Map",
+        "Set",
+        "WeakMap",
+        "WeakSet",
+        "DataView",
+        "RegExp",
+        "Function",
+        "globalThis",
+        "self",
+        "window",
+        "fetch",
+        "URLSearchParams",
+        "Headers",
+        "Request",
+        "Event",
+        "EventTarget",
+        "CustomEvent",
+        "AbortController",
+        "AbortSignal",
+        "TextEncoder",
+        "TextDecoder",
+        "ReadableStream",
+        "WritableStream",
+        "TransformStream",
+        "Blob",
+        "File",
+        "FormData",
+        "queueMicrotask",
+        "setTimeout",
+        "setInterval",
+        "clearTimeout",
+        "clearInterval",
+        "structuredClone",
+        "Proxy",
+        "undefined",
+        "isNaN",
+        "isFinite",
+        "parseInt",
+        "parseFloat",
+        "encodeURI",
+        "decodeURI",
+        "encodeURIComponent",
+        "decodeURIComponent",
+        "escape",
+        "unescape",
+        "eval",
+        "require",
+        "exports",
+        "__dirname",
+        "__filename",
+        "Worker",
+        "SharedWorker",
+        "MessageChannel",
+        "MessagePort",
+        "BroadcastChannel",
+        "EventSource",
+        "ByteLengthQueuingStrategy",
+        "CountQueuingStrategy",
+        "CompressionStream",
+        "DecompressionStream",
+        "DOMException",
+        "Lock",
+        "LockManager",
+        "Navigation",
+        "Navigator",
+        "Notification",
+        "PermissionStatus",
+        "Permissions",
+        "PushManager",
+        "PushSubscription",
+        "PushSubscriptionOptions",
+        "Scheduler",
+        "StorageManager",
+        "Worklet",
+        "CryptoKey",
+        "GPU",
+        "GPUAdapter",
+        "GPUBindGroup",
+        "GPUBuffer",
+        "GPUCanvasContext",
+        "GPUCommandBuffer",
+        "GPUCommandEncoder",
+        "GPUComputePassEncoder",
+        "GPUComputePipeline",
+        "GPUDevice",
+        "GPUExternalTexture",
+        "GPUPipelineLayout",
+        "GPUQuerySet",
+        "GPUQueue",
+        "GPURenderBundle",
+        "GPURenderBundleEncoder",
+        "GPURenderPassEncoder",
+        "GPURenderPipeline",
+        "GPUSampler",
+        "GPUShaderModule",
+        "GPUTexture",
+        "GPUTextureView",
+        "WGSLLanguageFeatures",
+        "importScripts",
+        "close",
+        "postMessage",
+        "parentPort",
+        "threadId",
+        "workerData",
+        "isMainThread",
+        "WritableStreamDefaultWriter",
+        "WritableStreamDefaultController",
+        "ReadableStreamDefaultReader",
+        "ReadableStreamBYOBReader",
+        "ReadableStreamDefaultController",
+        "ReadableByteStreamController",
+        "TransformStreamDefaultController",
+        "AudioData",
+        "EncodedAudioChunk",
+        "EncodedVideoChunk",
+        "ImageBitmap",
+        "OffscreenCanvas",
+        "VideoFrame",
+        "WebSocketStream",
+        "Serial",
+        "USB",
+        "HID",
+        "Bluetooth",
+        "Clipboard",
+        "Credential",
+        "CredentialsContainer",
+        "Geolocation",
+        "GeolocationPosition",
+        "GeolocationCoordinates",
+        "GeolocationPositionError",
+        "ServiceWorker",
+        "ServiceWorkerContainer",
+        "ServiceWorkerRegistration",
+        "ServiceWorkerGlobalScope",
+        "DedicatedWorkerGlobalScope",
+        "SharedWorkerGlobalScope",
+        "WorkerGlobalScope",
+        "UnloadEvent",
+    ];
+    for name in simple {
+        e.set(name, Value::object(vec![]));
+    }
+
+    let with_members: &[(&str, &[&str])] = &[
+        ("console", &["log", "error", "warn", "info", "debug"]),
+        ("Object", &["keys", "values", "entries", "assign"]),
+        ("Array", &["isArray", "from", "of"]),
+        ("String", &["fromCharCode"]),
+        ("Number", &["isNaN", "isFinite", "parseInt", "parseFloat"]),
+        ("Symbol", &["iterator"]),
+        ("Promise", &["resolve", "reject", "all", "race"]),
+        ("ArrayBuffer", &["isView"]),
+        ("Date", &["now", "parse", "UTC"]),
+        ("URL", &["createObjectURL", "revokeObjectURL"]),
+        ("Response", &["json", "text", "redirect"]),
+        ("WebSocket", &["CONNECTING", "OPEN", "CLOSING", "CLOSED"]),
+        ("crypto", &["getRandomValues", "randomUUID", "subtle"]),
+        ("navigator", &["userAgent", "language", "platform"]),
+        ("performance", &["now"]),
+        ("BigInt", &["asIntN", "asUintN"]),
+        (
+            "Reflect",
+            &[
+                "apply",
+                "construct",
+                "defineProperty",
+                "deleteProperty",
+                "get",
+                "has",
+                "set",
+            ],
+        ),
+        ("Intl", &["DateTimeFormat", "NumberFormat"]),
+        ("module", &["exports"]),
+        (
+            "process",
+            &["env", "argv", "cwd", "pid", "platform", "version"],
+        ),
+        ("Buffer", &["alloc", "from", "concat", "isBuffer"]),
+        (
+            "location",
+            &[
+                "href", "protocol", "host", "pathname", "search", "hash", "origin",
+            ],
+        ),
+        (
+            "history",
+            &[
+                "length",
+                "go",
+                "back",
+                "forward",
+                "pushState",
+                "replaceState",
+            ],
+        ),
+        ("screen", &["width", "height"]),
+        (
+            "localStorage",
+            &["getItem", "setItem", "removeItem", "clear"],
+        ),
+        (
+            "sessionStorage",
+            &["getItem", "setItem", "removeItem", "clear"],
+        ),
+        ("indexedDB", &["open", "deleteDatabase"]),
+        ("caches", &["open", "has", "delete", "keys", "match"]),
+        ("Cache", &["match", "add", "put", "delete", "keys"]),
+        ("CacheStorage", &["open", "has", "delete", "keys"]),
+        (
+            "SubtleCrypto",
+            &[
+                "encrypt",
+                "decrypt",
+                "sign",
+                "verify",
+                "digest",
+                "generateKey",
+                "deriveKey",
+                "deriveBits",
+                "importKey",
+                "exportKey",
+                "wrapKey",
+                "unwrapKey",
+            ],
+        ),
+        (
+            "MessageEvent",
+            &["data", "origin", "lastEventId", "source", "ports"],
+        ),
+        (
+            "ErrorEvent",
+            &["message", "filename", "lineno", "colno", "error"],
+        ),
+        ("PromiseRejectionEvent", &["promise", "reason"]),
+        ("CloseEvent", &["code", "reason", "wasClean"]),
+        ("HashChangeEvent", &["oldURL", "newURL"]),
+        ("PopStateEvent", &["state"]),
+        (
+            "StorageEvent",
+            &["key", "oldValue", "newValue", "url", "storageArea"],
+        ),
+        ("SubmitEvent", &["submitter"]),
+        ("FormDataEvent", &["formData"]),
+        ("ProgressEvent", &["lengthComputable", "loaded", "total"]),
+        ("PageTransitionEvent", &["persisted"]),
+        ("BeforeUnloadEvent", &["returnValue"]),
+        ("UIEvent", &["detail", "view", "which"]),
+        (
+            "MouseEvent",
+            &[
+                "screenX",
+                "screenY",
+                "clientX",
+                "clientY",
+                "ctrlKey",
+                "shiftKey",
+                "altKey",
+                "metaKey",
+                "button",
+                "buttons",
+                "relatedTarget",
+            ],
+        ),
+        (
+            "KeyboardEvent",
+            &[
+                "key",
+                "code",
+                "location",
+                "ctrlKey",
+                "shiftKey",
+                "altKey",
+                "metaKey",
+                "repeat",
+                "isComposing",
+            ],
+        ),
+        (
+            "TouchEvent",
+            &["touches", "targetTouches", "changedTouches"],
+        ),
+        (
+            "Touch",
+            &[
+                "identifier",
+                "target",
+                "screenX",
+                "screenY",
+                "clientX",
+                "clientY",
+                "pageX",
+                "pageY",
+            ],
+        ),
+        ("WheelEvent", &["deltaX", "deltaY", "deltaZ", "deltaMode"]),
+        ("DragEvent", &["dataTransfer"]),
+        ("FocusEvent", &["relatedTarget"]),
+        ("InputEvent", &["data", "inputType", "isComposing"]),
+        ("CompositionEvent", &["data"]),
+        (
+            "PointerEvent",
+            &[
+                "pointerId",
+                "width",
+                "height",
+                "pressure",
+                "pointerType",
+                "isPrimary",
+            ],
+        ),
+        (
+            "AnimationEvent",
+            &["animationName", "elapsedTime", "pseudoElement"],
+        ),
+        (
+            "TransitionEvent",
+            &["propertyName", "elapsedTime", "pseudoElement"],
+        ),
+        ("ClipboardEvent", &["clipboardData"]),
+        (
+            "SecurityPolicyViolationEvent",
+            &["documentURI", "referrer", "blockedURI", "violatedDirective"],
+        ),
+        ("JSON", &["parse", "stringify"]),
+    ];
+    for (name, members) in with_members {
+        let props: Vec<(String, Value)> = members
+            .iter()
+            .map(|m| (m.to_string(), Value::Undefined))
+            .collect();
+        e.set(name, Value::object(props));
+    }
+
+    e.set(
+        "Math",
+        Value::object(vec![
+            ("PI".to_string(), Value::Number(std::f64::consts::PI)),
+            ("E".to_string(), Value::Number(std::f64::consts::E)),
+            ("LN2".to_string(), Value::Number(std::f64::consts::LN_2)),
+            ("LN10".to_string(), Value::Number(std::f64::consts::LN_10)),
+            ("LOG2E".to_string(), Value::Number(std::f64::consts::LOG2_E)),
+            ("LOG10E".to_string(), Value::Number(std::f64::consts::LOG10_E)),
+            ("SQRT1_2".to_string(), Value::Number(std::f64::consts::FRAC_1_SQRT_2)),
+            ("SQRT2".to_string(), Value::Number(std::f64::consts::SQRT_2)),
+            ("abs".to_string(), Value::Undefined),
+            ("floor".to_string(), Value::Undefined),
+            ("ceil".to_string(), Value::Undefined),
+            ("round".to_string(), Value::Undefined),
+            ("sqrt".to_string(), Value::Undefined),
+            ("pow".to_string(), Value::Undefined),
+            ("min".to_string(), Value::Undefined),
+            ("max".to_string(), Value::Undefined),
+            ("random".to_string(), Value::Undefined),
+        ]),
+    );
+
+    install_functions(&mut e);
+
+    e.set("Infinity", Value::Number(f64::INFINITY));
+    e.set("NaN", Value::Number(f64::NAN));
+}
+
+/// Overwrite the placeholder members above with real native implementations.
+fn install_functions(e: &mut crate::interpreter::Environment) {
+    math::install(e);
+    object::install(e);
+    array::install(e);
+    number::install(e);
+    json::install(e);
+    // Global functions.
+    e.set("parseInt", nf("parseInt", number::parse_int));
+    e.set("parseFloat", nf("parseFloat", number::parse_float));
+    e.set("isNaN", nf("isNaN", global_is_nan));
+    e.set("isFinite", nf("isFinite", global_is_finite));
+}
+
+// ===========================================================================
+// Shared helpers for the native function implementations in the sub-modules.
+// ===========================================================================
+
+type NativeFn = fn(&mut Interpreter, Value, Vec<Value>) -> Result<Value, VmErr>;
+
+fn nf(name: &str, callable: NativeFn) -> Value {
+    Value::NativeFunction {
+        name: name.to_string(),
+        callable,
+    }
+}
+
+fn arg_num(args: &[Value], i: usize) -> f64 {
+    args.get(i).map(|v| v.to_number()).unwrap_or(f64::NAN)
+}
+
+fn arr_items(this: &Value) -> Vec<Value> {
+    match this {
+        Value::Array(a) => a.borrow().clone(),
+        _ => vec![],
+    }
+}
+
+fn str_this(interp: &Interpreter, this: &Value) -> String {
+    match this {
+        Value::String(s) => s.clone(),
+        _ => interp.vs(this),
+    }
+}
+
+/// Display a value the way `Array.prototype.join` / string coercion does:
+/// `null`/`undefined` become the empty string.
+fn join_str(interp: &Interpreter, v: &Value) -> String {
+    match v {
+        Value::Null | Value::Undefined => String::new(),
+        _ => interp.vs(v),
+    }
+}
+
+// --- Global functions -------------------------------------------------------
+
+fn global_is_nan(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let n = a.get(0).map(|v| v.to_number()).unwrap_or(f64::NAN);
+    Ok(Value::Bool(n.is_nan()))
+}
+fn global_is_finite(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let n = a.get(0).map(|v| v.to_number()).unwrap_or(f64::NAN);
+    Ok(Value::Bool(n.is_finite()))
+}

@@ -66,87 +66,44 @@ console.log(debugParse("const x = 1;"));
 
 ```
 src/
-├── lexer.rs            # Tokenizer (783 lines — see Modularization Plan)
+├── lexer.rs            # Tokenizer
 ├── parser/
 │   ├── mod.rs          # Parser core (token cursor, helpers) + tests
 │   ├── ast.rs          # AST node types (Expr, Statement, ...)
-│   ├── stmt.rs         # Statement parsing (765 lines)
-│   └── expr.rs         # Expression parsing (1083 lines)
+│   ├── stmt.rs         # Statement parsing
+│   ├── compound.rs     # Class, import/export parsing + shared block helpers
+│   ├── expr.rs         # Expression precedence ladder (comma → postfix)
+│   └── primary.rs      # Primary expressions, arrow functions, new callees
 ├── interpreter/
-│   ├── mod.rs          # Interpreter, eval_stmt / eval_expr, calls + tests (1471 lines)
+│   ├── mod.rs          # Interpreter struct, run() + tests
+│   ├── eval.rs         # eval_stmt / eval_expr dispatchers
+│   ├── call.rs         # Function/constructor calls, destructuring, catch
+│   ├── resolve.rs      # Property resolution, prototype-chain lookup
 │   ├── env.rs          # Environment, scope chain, Module
 │   └── ops.rs          # Value operations (binary/unary, coercion, stringify)
+├── builtins/
+│   ├── mod.rs          # setup_builtins(), shared native helpers, global functions
+│   ├── math.rs         # Math methods
+│   ├── array.rs        # Array statics + prototype methods
+│   ├── string.rs       # String prototype methods
+│   ├── number.rs       # Number statics/prototype + parseInt/parseFloat
+│   ├── object.rs       # Object statics
+│   └── json.rs         # JSON.stringify / JSON.parse
 ├── value.rs            # Value enum
 ├── error.rs            # Error types
-├── builtins.rs         # Built-in object definitions (1187 lines)
 └── bindings.rs         # NAPI bindings to Node.js
 ```
 
-## Modularization Plan
+## Modularization
 
-Four source files exceed ~800 lines and are candidates for splitting. The goal is to keep each file focused on a single responsibility, make the codebase navigable, and reduce merge-conflict surface. The split is designed so that each new module has a clear boundary and minimal cross-references.
+The four files that previously exceeded ~800 lines have been split so that each module has a single responsibility (see [Project Structure](#project-structure)):
 
-### 1. `src/interpreter/mod.rs` (1471 lines) → 4 files
+- **`interpreter/mod.rs`** (was 1471 lines) → `eval.rs` (stmt/expr dispatch), `call.rs` (calls, destructuring, catch), `resolve.rs` (property lookup), plus a slim `mod.rs` with the struct and tests. The pieces remain sibling `impl Interpreter` blocks, so there was no API change.
+- **`builtins.rs`** (was 1187 lines) → one file per standard-library surface (`math`, `array`, `string`, `number`, `object`, `json`) under `builtins/`, orchestrated by `setup_builtins()` in `mod.rs`, which also hosts the shared `NativeFn` helpers.
+- **`parser/expr.rs`** (was 1083 lines) → the precedence ladder stays in `expr.rs`; `primary()` and the arrow-function machinery moved to `primary.rs`.
+- **`parser/stmt.rs`** (was 765 lines) → classes and `import`/`export` moved to `compound.rs`.
 
-This is the largest file. It mixes struct definition, statement evaluation, expression evaluation, function/constructor calls, and property resolution.
-
-| Extract to | Contains | Lines ~ |
-|---|---|---|
-| `interpreter/eval.rs` | `eval_stmt()` + `eval_expr()` — the two giant match dispatchers | ~450 |
-| `interpreter/call.rs` | `call_this()`, `invoke_ctor()`, `ctor()`, `run_catch()`, `destructure()`, `assign_member()` | ~260 |
-| `interpreter/resolve.rs` | `prop()`, `get_prop_value()`, and the prototype-chain lookup logic | ~90 |
-| `interpreter/mod.rs` | `Interpreter` struct, `new()`, `run()`, helpers, tests | ~670 → ~300 |
-
-**Key consideration:** `eval` and `call` are tightly coupled (each calls the other). They stay as sibling `impl Interpreter` blocks in separate files under the same `interpreter/` module, so cross-references are `crate::interpreter::*` or `super::` — no API change.
-
-### 2. `src/builtins.rs` (1187 lines) → 6 files
-
-This file defines every global, then implements native methods for Math, Array, String, Number, Object, and JSON — all in one flat namespace.
-
-| Extract to | Contains | Lines ~ |
-|---|---|---|
-| `builtins/math.rs` | `math_methods()` + all `math_*` functions | ~130 |
-| `builtins/array.rs` | `array_method()` + `array_is_array()` + all `array_*` prototype functions | ~240 |
-| `builtins/string.rs` | `string_method()` + all `string_*` prototype functions | ~135 |
-| `builtins/number.rs` | `number_method()` + `number_is_nan/finite` | ~35 |
-| `builtins/object.rs` | `object_keys/values/entries/assign` | ~40 |
-| `builtins/json.rs` | `json_stringify/parse` + `escape_json` | ~75 |
-| `builtins/mod.rs` | `setup_builtins()`, `install_functions()`, helpers (`nf`, `arg_num`, `arr_items`, `str_this`, `join_str`) | ~530 → ~250 |
-
-**Key consideration:** All native functions share the `NativeFn` type and the `nf()` constructor — these live in `builtins/mod.rs` and are `pub use`-d into sub-modules. The `setup_builtins()` function stays as the single orchestrator that calls into each sub-module's `install_*()` function.
-
-### 3. `src/parser/expr.rs` (1083 lines) → 2 files
-
-The precedence ladder (comma → assign → cond → ... → unary → postfix → primary) is well-structured but long. The bottom of the stack — `primary()` and its helpers — is the most self-contained chunk.
-
-| Extract to | Contains | Lines ~ |
-|---|---|---|
-| `parser/primary.rs` | `primary()`, `new_callee()`, `try_arrow()`, `arrow_body()`, `take_quasi()` | ~320 |
-| `parser/expr.rs` | Precedence ladder (comma through postfix) | ~760 → ~440 |
-
-**Key consideration:** `postfix()` calls `primary()` — a single `super::primary::primary(&mut self)` reference. The ladder itself remains intact and readable.
-
-### 4. `src/parser/stmt.rs` (765 lines) → 2 files
-
-Statement parsing mixes simple one-liners (if, while, return) with large compound parsers (class, import/export).
-
-| Extract to | Contains | Lines ~ |
-|---|---|---|
-| `parser/stmt.rs` | `stmt()`, `var_decl`, `pattern`, `fn_decl`, `ret`, `if_`, `while_`, `do_`, `for_`, `throw`, `try_`, `switch`, `block_or_stmt`, `params`, `ident` | ~765 → ~480 |
-| `parser/compound.rs` | `class_decl()`, `export()`, `import()`, `from()`, `block_body()`, `default_guard()` | ~285 |
-
-**Key consideration:** `class_decl` and `import`/`export` are the largest individual parsers in this file and the most likely to grow as features are added. Isolating them makes the core `stmt` dispatcher easier to follow.
-
-### 5. `src/lexer.rs` (783 lines) → minor cleanup
-
-The lexer is borderline. The template literal scanner (`read_template` + `lex_interp`) is ~80 lines that could move to `lexer/template.rs`, but the file is otherwise cohesive. **Recommended:** defer unless template support grows.
-
-### Execution order
-
-1. **builtins.rs** first — it has no internal coupling beyond shared helpers, so it's the safest to split and immediately pays dividends when implementing P2 stdlib features.
-2. **interpreter/mod.rs** second — split out eval/call/resolve, then the P0 bug fixes become easier to navigate.
-3. **parser/expr.rs** and **parser/stmt.rs** third — lower urgency since the parser is stable and well-tested.
-4. **lexer.rs** — optional, defer.
+`lexer.rs` was deliberately left intact — it is cohesive at ~780 lines.
 
 ## Roadmap & Implementation Tracker
 
