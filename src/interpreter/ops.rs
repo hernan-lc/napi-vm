@@ -125,7 +125,7 @@ impl Interpreter {
             }
             "in" => {
                 if let (Value::String(k), Value::Object { props, .. }) = (l, r) {
-                    Value::Bool(props.borrow().has(k))
+                    Value::Bool(props.borrow().iter().any(|(x, _)| x == k))
                 } else {
                     Value::Bool(false)
                 }
@@ -168,7 +168,7 @@ impl Interpreter {
 
     pub fn keys(&self, o: &Value) -> Vec<String> {
         match o {
-            Value::Object { props, .. } => props.borrow().keys(),
+            Value::Object { props, .. } => props.borrow().iter().map(|(k, _)| k.clone()).collect(),
             Value::Array(i) => (0..i.borrow().len()).map(|x| x.to_string()).collect(),
             _ => vec![],
         }

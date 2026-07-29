@@ -153,7 +153,9 @@ impl Value {
     pub fn has_prop(&self, key: &str) -> bool {
         match self {
             Value::Object { props, proto } => {
-                props.borrow().has(key) || proto.as_ref().map(|p| p.has_prop(key)).unwrap_or(false)
+                let props = props.borrow();
+                props.iter().any(|(k, _)| k == key)
+                    || proto.as_ref().map(|p| p.has_prop(key)).unwrap_or(false)
             }
             Value::Array(items) => {
                 let items = items.borrow();

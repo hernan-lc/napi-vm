@@ -44,10 +44,9 @@ fn json_serialize(v: &Value) -> String {
         Value::Object { props, .. } => {
             let parts: Vec<String> = props
                 .borrow()
-                .entries()
-                .into_iter()
+                .iter()
                 .filter(|(_, v)| !matches!(v, Value::Undefined))
-                .map(|(k, v)| format!("\"{}\":{}", escape_json(&k), json_serialize(&v)))
+                .map(|(k, v)| format!("\"{}\":{}", escape_json(k), json_serialize(v)))
                 .collect();
             format!("{{{}}}", parts.join(","))
         }

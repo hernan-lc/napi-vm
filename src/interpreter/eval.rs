@@ -632,7 +632,7 @@ impl Interpreter {
                         ObjectProp::Spread(expr) => {
                             let val = self.eval_expr(expr)?;
                             if let Value::Object { props: sprops, .. } = val {
-                                o.extend(sprops.borrow().entries());
+                                o.extend(sprops.borrow().iter().cloned());
                             }
                         }
                     }

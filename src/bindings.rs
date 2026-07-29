@@ -26,7 +26,6 @@ pub fn to_string(val: &Value) -> String {
                 "{{{}}}",
                 props
                     .borrow()
-                    .entries()
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k, vs(v)))
                     .collect::<Vec<_>>()

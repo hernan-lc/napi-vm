@@ -21,12 +21,12 @@ impl Interpreter {
                     Value::Array(arr) => arr.borrow().clone(),
                     Value::Object { props, .. } => {
                         let mut vals = Vec::new();
-                        for (k, v) in props.borrow().entries() {
+                        for (k, v) in props.borrow().iter() {
                             if let Ok(n) = k.parse::<usize>() {
                                 while vals.len() <= n {
                                     vals.push(Value::Undefined);
                                 }
-                                vals[n] = v;
+                                vals[n] = v.clone();
                             }
                         }
                         vals
@@ -57,7 +57,7 @@ impl Interpreter {
             }
             Pattern::Object(props) => {
                 let obj: Vec<(String, Value)> = match val {
-                    Value::Object { props: oprops, .. } => oprops.borrow().entries(),
+                    Value::Object { props: oprops, .. } => oprops.borrow().clone(),
                     _ => vec![],
                 };
                 for (key, pat) in props {
@@ -116,14 +116,26 @@ impl Interpreter {
         match (obj, prop) {
             (Value::Object { props, .. }, Value::String(k)) => {
                 // If a setter is defined for this key, invoke it.
-                let setter = props.borrow().get(k).filter(|xv| {
-                    matches!(xv, Value::Function { name: Some(n), .. } if n.starts_with("set "))
-                });
+                let setter = props
+                    .borrow()
+                    .iter()
+                    .find(|(xk, xv)| {
+                        xk == k
+                            && matches!(xv, Value::Function { name: Some(n), .. } if n.starts_with("set "))
+                    })
+                    .map(|(_, xv)| xv.clone());
                 if let Some(setter_fn) = setter {
                     self.call_this(&setter_fn, obj.clone(), vec![val.clone()])?;
                     return Ok(val);
                 }
-                props.borrow_mut().set(k.clone(), val.clone());
+                let mut props = props.borrow_mut();
+                for (xk, xv) in props.iter_mut() {
+                    if xk == k {
+                        *xv = val.clone();
+                        return Ok(val);
+                    }
+                }
+                props.push((k.clone(), val.clone()));
                 Ok(val)
             }
             (Value::Array(items), Value::Number(i)) => {
