@@ -1,4 +1,5 @@
 mod array;
+mod date;
 mod json;
 mod math;
 mod number;
@@ -399,11 +400,21 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     array::install(e);
     number::install(e);
     json::install(e);
+    date::install(e);
     // Global functions.
     e.set("parseInt", nf("parseInt", number::parse_int));
     e.set("parseFloat", nf("parseFloat", number::parse_float));
     e.set("isNaN", nf("isNaN", global_is_nan));
     e.set("isFinite", nf("isFinite", global_is_finite));
+
+    // console: route output to the host's stdout/stderr.
+    if let Some(c) = e.get("console") {
+        c.set_prop("log".to_string(), nf("log", console_out));
+        c.set_prop("info".to_string(), nf("info", console_out));
+        c.set_prop("debug".to_string(), nf("debug", console_out));
+        c.set_prop("error".to_string(), nf("error", console_err));
+        c.set_prop("warn".to_string(), nf("warn", console_err));
+    }
 }
 
 // ===========================================================================
@@ -455,4 +466,25 @@ fn global_is_nan(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, 
 fn global_is_finite(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let n = a.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
     Ok(Value::Bool(n.is_finite()))
+}
+
+// --- console ----------------------------------------------------------------
+
+/// Format console arguments the way `console.log` does: each value stringified
+/// and joined with a single space.
+fn console_fmt(interp: &Interpreter, a: &[Value]) -> String {
+    a.iter()
+        .map(|v| interp.vs(v))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn console_out(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    println!("{}", console_fmt(interp, &a));
+    Ok(Value::Undefined)
+}
+
+fn console_err(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    eprintln!("{}", console_fmt(interp, &a));
+    Ok(Value::Undefined)
 }

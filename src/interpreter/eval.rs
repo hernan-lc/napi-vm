@@ -390,7 +390,7 @@ impl Interpreter {
             Statement::LabeledContinue(label) => vm_err(format!("__CONTINUE__:{}", label)),
             Statement::Throw(e) => {
                 let v = self.eval_expr(e)?;
-                vm_throw(self.vs(&v))
+                vm_throw(v)
             }
             Statement::Try {
                 body,
@@ -401,7 +401,7 @@ impl Interpreter {
                 let body_result = self.run(body);
 
                 let after_catch = match body_result {
-                    Err(VmErr::Throw(msg)) => self.run_catch(catch, Value::String(msg)),
+                    Err(VmErr::Throw(val)) => self.run_catch(catch, val),
                     // Control-flow signals are not catchable.
                     Err(VmErr::Msg(m))
                         if m.starts_with("__BREAK__") || m.starts_with("__CONTINUE__") =>

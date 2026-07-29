@@ -37,6 +37,10 @@ pub fn array_method(name: &str) -> Option<Value> {
         "slice" => array_slice,
         "concat" => array_concat,
         "reverse" => array_reverse,
+        "sort" => array_sort,
+        "flat" => array_flat,
+        "flatMap" => array_flat_map,
+        "reduceRight" => array_reduce_right,
         _ => return None,
     };
     Some(nf(name, f))
@@ -242,4 +246,93 @@ fn array_reverse(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Valu
         return Ok(this);
     }
     Ok(Value::Undefined)
+}
+
+fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    if let Value::Array(items) = &this {
+        let cmp = a.first().cloned().unwrap_or(Value::Undefined);
+        if matches!(cmp, Value::Function { .. } | Value::NativeFunction { .. }) {
+            // Comparator callback: negative/positive/zero ordering.
+            items.borrow_mut().sort_by(|x, y| {
+                let n = interp
+                    .call_this(&cmp, Value::Undefined, vec![x.clone(), y.clone()])
+                    .map(|v| v.to_number())
+                    .unwrap_or(0.0);
+                n.partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+        } else {
+            // Default: lexicographic comparison of the stringified elements.
+            items
+                .borrow_mut()
+                .sort_by(|x, y| interp.vs(x).cmp(&interp.vs(y)));
+        }
+    }
+    Ok(this)
+}
+
+fn array_flat(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let items = arr_items(&this);
+    let depth = a.first().map(|v| v.to_number()).unwrap_or(1.0);
+    let depth = if depth.is_nan() { 0.0 } else { depth };
+
+    fn flatten(items: &[Value], depth: f64, out: &mut Vec<Value>) {
+        for it in items {
+            if depth > 0.0
+                && let Value::Array(inner) = it
+            {
+                flatten(&inner.borrow(), depth - 1.0, out);
+            } else {
+                out.push(it.clone());
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    flatten(&items, depth, &mut out);
+    Ok(Value::array(out))
+}
+
+fn array_flat_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let items = arr_items(&this);
+    let cb = a.first().cloned().unwrap_or(Value::Undefined);
+    let mut out = Vec::new();
+    for (i, it) in items.iter().enumerate() {
+        let r = interp.call_this(
+            &cb,
+            Value::Undefined,
+            vec![it.clone(), Value::Number(i as f64), this.clone()],
+        )?;
+        match r {
+            Value::Array(inner) => out.extend(inner.borrow().iter().cloned()),
+            other => out.push(other),
+        }
+    }
+    Ok(Value::array(out))
+}
+
+fn array_reduce_right(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let items = arr_items(&this);
+    let cb = a.first().cloned().unwrap_or(Value::Undefined);
+    let len = items.len();
+    let (mut acc, mut i) = if a.len() >= 2 {
+        (a[1].clone(), len as i64 - 1)
+    } else if len == 0 {
+        return Ok(Value::Undefined);
+    } else {
+        (items[len - 1].clone(), len as i64 - 2)
+    };
+    while i >= 0 {
+        acc = interp.call_this(
+            &cb,
+            Value::Undefined,
+            vec![
+                acc,
+                items[i as usize].clone(),
+                Value::Number(i as f64),
+                this.clone(),
+            ],
+        )?;
+        i -= 1;
+    }
+    Ok(acc)
 }

@@ -102,11 +102,8 @@ impl Interpreter {
             self.global = s;
             r
         } else {
-            // No catch clause: re-throw.
-            match err_val {
-                Value::String(m) => Err(VmErr::Throw(m)),
-                _ => Err(VmErr::Throw(self.vs(&err_val))),
-            }
+            // No catch clause: re-throw the original value.
+            Err(VmErr::Throw(err_val))
         }
     }
 
@@ -247,9 +244,9 @@ impl Interpreter {
                             state: PromiseState::Fulfilled,
                             value: Some(Box::new(v)),
                         }),
-                        Err(VmErr::Throw(m)) => Ok(Value::Promise {
+                        Err(VmErr::Throw(v)) => Ok(Value::Promise {
                             state: PromiseState::Rejected,
-                            value: Some(Box::new(Value::String(m))),
+                            value: Some(Box::new(v)),
                         }),
                         other => other,
                     }
