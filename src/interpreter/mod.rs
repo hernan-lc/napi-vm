@@ -46,6 +46,18 @@ impl Interpreter {
         }
     }
 
+    /// Create an interpreter whose global scope is a fresh *user* frame chained
+    /// to a shared builtins frame. User declarations land in the small user
+    /// frame, so hot-path variable lookups hit immediately instead of scanning
+    /// the large builtins table; builtins still resolve via the parent chain.
+    pub fn with_builtins() -> Self {
+        let mut interp = Self::new();
+        let builtins = Rc::new(RefCell::new(Environment::new()));
+        crate::builtins::setup_builtins(&builtins);
+        interp.global = Rc::new(RefCell::new(Environment::child(builtins)));
+        interp
+    }
+
     pub fn run(&mut self, stmts: &[Statement]) -> Result<Value, VmErr> {
         let mut r = Value::Undefined;
         for s in stmts {
@@ -58,13 +70,11 @@ impl Interpreter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::setup_builtins;
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
     fn eval(src: &str) -> Result<Value, VmErr> {
-        let mut interp = Interpreter::new();
-        setup_builtins(&interp.global);
+        let mut interp = Interpreter::with_builtins();
         let mut lex = Lexer::new(src);
         let toks = lex.tokenize();
         let mut parser = Parser::new(toks);

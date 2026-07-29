@@ -50,12 +50,18 @@ impl Environment {
     }
 
     pub fn set(&mut self, n: &str, v: Value) {
-        self.vars.insert(n.to_string(), v);
+        // Reuse the existing key allocation when the variable is already bound
+        // (the common case in loops); only allocate on first insertion.
+        if let Some(slot) = self.vars.get_mut(n) {
+            *slot = v;
+        } else {
+            self.vars.insert(n.to_string(), v);
+        }
     }
 
     pub fn assign(&mut self, n: &str, v: Value) -> bool {
-        if self.vars.contains_key(n) {
-            self.vars.insert(n.to_string(), v);
+        if let Some(slot) = self.vars.get_mut(n) {
+            *slot = v;
             true
         } else if let Some(ref p) = self.parent {
             p.borrow_mut().assign(n, v)

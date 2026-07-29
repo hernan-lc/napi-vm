@@ -24,8 +24,8 @@ impl Interpreter {
     pub(super) fn prop(&self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         match (o, p) {
             (Value::Object { props, proto }, Value::String(k)) => {
-                if let Some(v) = props.borrow().iter().find(|(xk, _)| xk == k) {
-                    return Ok(v.1.clone());
+                if let Some(v) = props.borrow().get(k) {
+                    return Ok(v);
                 }
                 if let Some(proto) = proto {
                     return self.prop(proto, p);

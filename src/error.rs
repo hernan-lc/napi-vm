@@ -35,16 +35,9 @@ fn throw_display(v: &Value) -> String {
         }
         Value::Object { props, .. } => {
             let borrow = props.borrow();
-            let get_str = |k: &str| {
-                borrow.iter().find_map(|(pk, pv)| {
-                    if pk == k
-                        && let Value::String(s) = pv
-                    {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                })
+            let get_str = |k: &str| match borrow.get(k) {
+                Some(Value::String(s)) => Some(s),
+                _ => None,
             };
             match (get_str("name"), get_str("message")) {
                 (Some(name), Some(msg)) if name != "Error" => format!("{}: {}", name, msg),

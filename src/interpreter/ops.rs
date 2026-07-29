@@ -6,6 +6,38 @@ use crate::value::Value;
 
 impl Interpreter {
     pub fn bin_op(&self, op: &str, l: &Value, r: &Value) -> Result<Value, VmErr> {
+        // Fast path: when both operands are already numbers, the arithmetic and
+        // comparison operators need no coercion and `+` cannot be string
+        // concatenation. This skips the `to_number` dispatch and the string
+        // check on the hottest interpreter path.
+        if let (Value::Number(a), Value::Number(b)) = (l, r) {
+            let fast = match op {
+                "+" => Some(Value::Number(a + b)),
+                "-" => Some(Value::Number(a - b)),
+                "*" => Some(Value::Number(a * b)),
+                "/" => Some(Value::Number(a / b)),
+                "%" => Some(Value::Number(a % b)),
+                "**" => Some(Value::Number(a.powf(*b))),
+                "&" => Some(Value::Number(((*a as i32) & (*b as i32)) as f64)),
+                "|" => Some(Value::Number(((*a as i32) | (*b as i32)) as f64)),
+                "^" => Some(Value::Number(((*a as i32) ^ (*b as i32)) as f64)),
+                "<<" => Some(Value::Number(((*a as i32) << ((*b as i32) & 31)) as f64)),
+                ">>" => Some(Value::Number(((*a as i32) >> ((*b as i32) & 31)) as f64)),
+                ">>>" => Some(Value::Number(
+                    ((*a as i32 as u32) >> (*b as i32 as u32 & 31)) as f64,
+                )),
+                "<" => Some(Value::Bool(a < b)),
+                ">" => Some(Value::Bool(a > b)),
+                "<=" => Some(Value::Bool(a <= b)),
+                ">=" => Some(Value::Bool(a >= b)),
+                "==" | "===" => Some(Value::Bool(a == b)),
+                "!=" | "!==" => Some(Value::Bool(a != b)),
+                _ => None,
+            };
+            if let Some(v) = fast {
+                return Ok(v);
+            }
+        }
         Ok(match op {
             "+" => {
                 // String concatenation if either side is a string; otherwise
@@ -93,7 +125,7 @@ impl Interpreter {
             }
             "in" => {
                 if let (Value::String(k), Value::Object { props, .. }) = (l, r) {
-                    Value::Bool(props.borrow().iter().any(|(x, _)| x == k))
+                    Value::Bool(props.borrow().has(k))
                 } else {
                     Value::Bool(false)
                 }
@@ -136,7 +168,7 @@ impl Interpreter {
 
     pub fn keys(&self, o: &Value) -> Vec<String> {
         match o {
-            Value::Object { props, .. } => props.borrow().iter().map(|(k, _)| k.clone()).collect(),
+            Value::Object { props, .. } => props.borrow().keys(),
             Value::Array(i) => (0..i.borrow().len()).map(|x| x.to_string()).collect(),
             _ => vec![],
         }

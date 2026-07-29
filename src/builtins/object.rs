@@ -22,9 +22,7 @@ fn object_keys(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
 }
 fn object_values(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     match a.first() {
-        Some(Value::Object { props, .. }) => Ok(Value::array(
-            props.borrow().iter().map(|(_, v)| v.clone()).collect(),
-        )),
+        Some(Value::Object { props, .. }) => Ok(Value::array(props.borrow().values())),
         _ => Ok(Value::array(vec![])),
     }
 }
@@ -33,8 +31,9 @@ fn object_entries(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value,
         Some(Value::Object { props, .. }) => {
             let entries = props
                 .borrow()
-                .iter()
-                .map(|(k, v)| Value::array(vec![Value::String(k.clone()), v.clone()]))
+                .entries()
+                .into_iter()
+                .map(|(k, v)| Value::array(vec![Value::String(k), v]))
                 .collect();
             Ok(Value::array(entries))
         }
@@ -45,8 +44,8 @@ fn object_assign(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, 
     let target = a.first().cloned().unwrap_or_else(|| Value::object(vec![]));
     for src in a.iter().skip(1) {
         if let Value::Object { props, .. } = src {
-            for (k, v) in props.borrow().iter() {
-                target.set_prop(k.clone(), v.clone());
+            for (k, v) in props.borrow().entries() {
+                target.set_prop(k, v);
             }
         }
     }

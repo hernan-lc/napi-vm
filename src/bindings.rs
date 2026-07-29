@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use napi_derive::napi;
 
-use crate::builtins::setup_builtins;
 use crate::error::VmErr;
 use crate::interpreter::Interpreter;
 use crate::lexer::Lexer;
@@ -27,6 +26,7 @@ pub fn to_string(val: &Value) -> String {
                 "{{{}}}",
                 props
                     .borrow()
+                    .entries()
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k, vs(v)))
                     .collect::<Vec<_>>()
@@ -51,9 +51,8 @@ pub fn to_string(val: &Value) -> String {
 }
 
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
-    let mut interp = Interpreter::new();
+    let mut interp = Interpreter::with_builtins();
     interp.is_main = is_main;
-    setup_builtins(&interp.global);
     let mut lex = Lexer::new(source);
     let toks = lex.tokenize();
     let mut parser = Parser::new(toks);
@@ -78,8 +77,7 @@ impl Default for VM {
 impl VM {
     #[napi(constructor)]
     pub fn new() -> Self {
-        let interp = Interpreter::new();
-        setup_builtins(&interp.global);
+        let interp = Interpreter::with_builtins();
         Self {
             interp,
             modules: HashMap::new(),
