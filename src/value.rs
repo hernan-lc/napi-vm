@@ -14,13 +14,15 @@ pub enum Value {
     String(String),
     Object {
         props: Rc<RefCell<Vec<(String, Value)>>>,
-        proto: Option<Box<Value>>,
+        proto: Option<Rc<Value>>,
     },
     Array(Rc<RefCell<Vec<Value>>>),
     Function {
         name: Option<String>,
-        params: Vec<String>,
-        body: Vec<Statement>,
+        // Shared (`Rc`) so closures created in hot loops reference the same AST
+        // instead of deep-cloning the parameter list and body on every creation.
+        params: Rc<Vec<String>>,
+        body: Rc<Vec<Statement>>,
         closure: Option<Env>,
         is_arrow: bool,
         is_async: bool,
@@ -33,7 +35,9 @@ pub enum Value {
     Class {
         name: String,
         constructor: Box<Value>,
-        prototype: Box<Value>,
+        // Shared so every instance references the same prototype object (cheap
+        // `Rc` clone, and identity-comparable for `instanceof`).
+        prototype: Rc<Value>,
         statics: Rc<RefCell<Vec<(String, Value)>>>,
         superclass: Option<Box<Value>>,
     },
@@ -65,9 +69,9 @@ pub enum PromiseState {
 /// suspension is not implemented — see the roadmap.
 #[derive(Debug, Clone)]
 pub struct GeneratorInner {
-    pub body: Vec<Statement>,
+    pub body: Rc<Vec<Statement>>,
     pub closure: Option<Env>,
-    pub params: Vec<String>,
+    pub params: Rc<Vec<String>>,
     pub args: Vec<Value>,
     pub queue: Vec<Value>,
     pub started: bool,
@@ -82,7 +86,7 @@ impl Value {
         }
     }
 
-    pub fn object_with_proto(props: Vec<(String, Value)>, proto: Option<Box<Value>>) -> Self {
+    pub fn object_with_proto(props: Vec<(String, Value)>, proto: Option<Rc<Value>>) -> Self {
         Value::Object {
             props: Rc::new(RefCell::new(props)),
             proto,

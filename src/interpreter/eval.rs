@@ -49,8 +49,8 @@ impl Interpreter {
                     name,
                     Value::Function {
                         name: Some(name.clone()),
-                        params: params.clone(),
-                        body: body.clone(),
+                        params: Rc::new(params.clone()),
+                        body: Rc::new(body.clone()),
                         closure: Some(self.global.clone()),
                         is_arrow: false,
                         is_async: *is_async,
@@ -94,8 +94,8 @@ impl Interpreter {
                         } => {
                             let fn_val = Value::Function {
                                 name: Some(mname.clone()),
-                                params: mp.clone(),
-                                body: mb.clone(),
+                                params: Rc::new(mp.clone()),
+                                body: Rc::new(mb.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
@@ -132,8 +132,8 @@ impl Interpreter {
                         } => {
                             let getter_fn = Value::Function {
                                 name: Some(format!("get {}", gname)),
-                                params: vec![],
-                                body: gb.clone(),
+                                params: Rc::new(vec![]),
+                                body: Rc::new(gb.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
@@ -153,8 +153,8 @@ impl Interpreter {
                         } => {
                             let setter_fn = Value::Function {
                                 name: Some(format!("set {}", sname)),
-                                params: vec![param.clone()],
-                                body: sb.clone(),
+                                params: Rc::new(vec![param.clone()]),
+                                body: Rc::new(sb.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
@@ -203,8 +203,8 @@ impl Interpreter {
 
                 let constructor = Value::Function {
                     name: Some(name.clone()),
-                    params: ctor_params,
-                    body: full_ctor_body,
+                    params: Rc::new(ctor_params),
+                    body: Rc::new(full_ctor_body),
                     closure: Some(ctor_closure),
                     is_arrow: false,
                     is_async: false,
@@ -217,7 +217,7 @@ impl Interpreter {
                 let class_val = Value::Class {
                     name: name.clone(),
                     constructor: Box::new(constructor),
-                    prototype: Box::new(prototype),
+                    prototype: Rc::new(prototype),
                     statics: Rc::new(RefCell::new(statics)),
                     superclass: super_cls.map(Box::new),
                 };
@@ -596,8 +596,8 @@ impl Interpreter {
                         ObjectProp::Method { name, params, body } => {
                             let fn_val = Value::Function {
                                 name: Some(name.clone()),
-                                params: params.clone(),
-                                body: body.clone(),
+                                params: Rc::new(params.clone()),
+                                body: Rc::new(body.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
@@ -608,8 +608,8 @@ impl Interpreter {
                         ObjectProp::Getter { name, body } => {
                             let fn_val = Value::Function {
                                 name: Some(format!("get {}", name)),
-                                params: vec![],
-                                body: body.clone(),
+                                params: Rc::new(vec![]),
+                                body: Rc::new(body.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
@@ -620,8 +620,8 @@ impl Interpreter {
                         ObjectProp::Setter { name, param, body } => {
                             let fn_val = Value::Function {
                                 name: Some(format!("set {}", name)),
-                                params: vec![param.clone()],
-                                body: body.clone(),
+                                params: Rc::new(vec![param.clone()]),
+                                body: Rc::new(body.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
                                 is_async: false,
@@ -842,12 +842,12 @@ impl Interpreter {
             }
             Expr::ArrowFn { params, body } => Ok(Value::Function {
                 name: None,
-                params: params.clone(),
+                params: Rc::new(params.clone()),
                 closure: Some(self.global.clone()),
-                body: match body.as_ref() {
+                body: Rc::new(match body.as_ref() {
                     ExprOrBlock::Block(s) => s.clone(),
                     ExprOrBlock::Expr(e) => vec![Statement::Return(Some(e.clone()))],
-                },
+                }),
                 is_arrow: true,
                 is_async: false,
                 is_generator: false,
@@ -860,8 +860,8 @@ impl Interpreter {
                 is_generator,
             } => Ok(Value::Function {
                 name: name.clone(),
-                params: params.clone(),
-                body: body.clone(),
+                params: Rc::new(params.clone()),
+                body: Rc::new(body.clone()),
                 closure: Some(self.global.clone()),
                 is_arrow: false,
                 is_async: *is_async,

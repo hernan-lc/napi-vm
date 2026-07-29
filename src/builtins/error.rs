@@ -37,7 +37,7 @@ fn make_error_class(name: &str) -> Value {
     Value::Class {
         name: name.to_string(),
         constructor: Box::new(constructor),
-        prototype: Box::new(prototype),
+        prototype: Rc::new(prototype),
         statics: Rc::new(RefCell::new(vec![(
             "name".to_string(),
             Value::String(name.to_string()),
