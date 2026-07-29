@@ -360,8 +360,7 @@ impl Interpreter {
                         let mut out = Vec::new();
                         loop {
                             let r = self.call_this(&next_fn, a.clone(), vec![])?;
-                            let done =
-                                r.get_prop("done").map(|v| v.is_truthy()).unwrap_or(true);
+                            let done = r.get_prop("done").map(|v| v.is_truthy()).unwrap_or(true);
                             let val = r.get_prop("value").unwrap_or(Value::Undefined);
                             if done {
                                 break;

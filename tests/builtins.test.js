@@ -24,7 +24,7 @@ test("console exists as object", () => {
 
 test("console has log member", () => {
   const vm = new Vm();
-  expect(vm.run("typeof console.log;")).toBe("undefined");
+  expect(vm.run("typeof console.log;")).toBe("function");
 });
 
 test("JSON exists", () => {
@@ -82,7 +82,7 @@ test("String exists with members", () => {
 
 test("Symbol exists with iterator", () => {
   const vm = new Vm();
-  expect(vm.run("'iterator' in Symbol;")).toBe("true");
+  expect(vm.run("typeof Symbol.iterator;")).toBe("symbol");
 });
 
 test("Reflect exists with members", () => {

@@ -10,14 +10,14 @@ Execute JavaScript in an isolated environment with no access to the host system'
 - **Tree-walking interpreter** — Executes parsed JavaScript in a custom runtime
 - **Sandboxed execution** — No access to `require`, `process`, or other Node.js globals
 - **Isolated VM instances** — Each `Vm()` has independent, persistent state
-- **ES Module syntax** — `import`/`export` parsing and `import.meta` (module export wiring is incomplete — see roadmap)
+- **ES Module syntax** — `import`/`export` (named, default, namespace) with exports wired through to importers, plus `import.meta`
 - **Functions** — Regular, arrow, expressions, closures, and recursion
 - **Control flow** — `if/else`, `while`, `do...while`, `for`, `for...in`, `for...of`, `switch/case`, `break`, `continue`
 - **Error handling** — `try/catch/finally` with `throw`, catching both `throw` and runtime errors
 - **Classes & OOP** — constructors, instance methods/fields, static members, `extends`/`super`, `instanceof`
 - **Standard library** — `Math`, `JSON`, `Object`, `Array`/`String`/`Number` prototype methods, and global functions (`parseInt`, `isNaN`, …)
 
-> **Status:** the core language plus classes and a working standard library are implemented and covered by 460+ passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture). Remaining gaps are advanced areas — full async/`await` semantics, generators/`yield`, and module export wiring.
+> **Status:** the core language, classes, a working standard library, async/`await`, generators (`yield`/`next`), module export wiring, and a `Symbol` subset are implemented and covered by 500+ passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture). The main remaining gap is true generator suspension — a generator body runs eagerly to completion on the first `next()` rather than pausing at each `yield`.
 
 ## Installation
 
@@ -190,18 +190,17 @@ Implemented as native functions (`fn(&mut Interpreter, Value /*this*/, Vec<Value
 - ✅ String index access `'abc'[1]`
 - ✅ `Number.prototype` — `toFixed`
 - ✅ Global functions — `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `Number.isNaN`, `Number.isFinite`
-- 🟡 `console` — members exist as stubs (no host output yet)
-- ❌ `Array.prototype.sort`, `flat`, `flatMap`, `reduceRight`
-- ❌ `Date` (`now`, parsing)
-- ❌ Real `Error` objects with a `message`
+- ✅ `console` — `log`/`info`/`debug` write to stdout, `error`/`warn` to stderr
+- ✅ `Date` (`now`, `parse` for ISO-8601, `UTC`; all times UTC)
+- ✅ Real `Error` objects — `Error`, `TypeError`, `RangeError`, `SyntaxError`, `ReferenceError` are constructible classes with `name`/`message`, and thrown values survive `catch`
 
 ### P3 — Advanced
 
 - ✅ Prototype chain — `Value::Object` carries a `proto` pointer (shared `Rc`), underpinning `instanceof` and prototype method lookup
-- 🟡 `async` functions — declared/called and resolve to a fulfilled/rejected `Promise`; `await` is not yet implemented
-- 🟡 Generators — `function*` parses and is callable (`typeof` → `"function"`); `yield` suspension is not yet implemented
-- ❌ Module exports actually reaching importers (`register_module` currently runs a module in a throwaway interpreter and discards its exports)
-- ❌ Symbols and the iterator protocol
+- ✅ `async`/`await` — eager synchronous model (async bodies run immediately and settle a `Promise`); `await` unwraps fulfilled values and rethrows rejections, plus `Promise.resolve`/`reject`/`all`/`race`
+- ✅ Module exports reaching importers — `export const`/`function`/`class`/`default` wire through `import { }`, `import * as`, and default imports
+- 🟡 Generators — `function*`/`yield` parse; `yield`ed values are collected and drained one per `next()` call (`{value, done}`) and via `for...of`; true mid-body suspension is not implemented (infinite generators would hang)
+- 🟡 Symbols — `Symbol(desc)`, `Symbol.iterator`, and `for...of` over generators; no full iterator protocol for arbitrary iterables yet
 
 ## License
 

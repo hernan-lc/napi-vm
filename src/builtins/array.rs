@@ -308,7 +308,11 @@ fn array_flat_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resul
     Ok(Value::array(out))
 }
 
-fn array_reduce_right(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+fn array_reduce_right(
+    interp: &mut Interpreter,
+    this: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
     let items = arr_items(&this);
     let cb = a.first().cloned().unwrap_or(Value::Undefined);
     let len = items.len();

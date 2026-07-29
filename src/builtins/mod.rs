@@ -473,10 +473,7 @@ fn global_is_finite(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
 /// Format console arguments the way `console.log` does: each value stringified
 /// and joined with a single space.
 fn console_fmt(interp: &Interpreter, a: &[Value]) -> String {
-    a.iter()
-        .map(|v| interp.vs(v))
-        .collect::<Vec<_>>()
-        .join(" ")
+    a.iter().map(|v| interp.vs(v)).collect::<Vec<_>>().join(" ")
 }
 
 fn console_out(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {

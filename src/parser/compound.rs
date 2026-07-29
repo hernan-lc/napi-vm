@@ -188,7 +188,7 @@ impl Parser {
                 return Some(Statement::ExportNamed {
                     specifiers: vec![],
                     source: None,
-                })
+                });
             }
         };
         let specifiers: Vec<(String, String)> = names.into_iter().map(|n| (n.clone(), n)).collect();

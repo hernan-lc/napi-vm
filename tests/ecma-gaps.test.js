@@ -362,3 +362,195 @@ test("async function returns a promise", () => {
 test("generator function", () => {
   expect(runCode("function* g() { yield 1; } typeof g;")).toBe("function");
 });
+
+// --- Standard library: Array (extended) -------------------------------------
+
+test("Array.prototype.sort default is lexicographic", () => {
+  expect(runCode("[10, 2, 30].sort().join(',');")).toBe("10,2,30");
+});
+
+test("Array.prototype.sort with comparator", () => {
+  expect(runCode("[3, 1, 2].sort((a, b) => a - b).join(',');")).toBe("1,2,3");
+});
+
+test("Array.prototype.flat default depth 1", () => {
+  expect(runCode("[1, [2, [3]]].flat().length;")).toBe("3");
+});
+
+test("Array.prototype.flat with depth", () => {
+  expect(runCode("[1, [2, [3]]].flat(2).join(',');")).toBe("1,2,3");
+});
+
+test("Array.prototype.flatMap maps then flattens", () => {
+  expect(runCode("[1, 2, 3].flatMap((x) => [x, x * 2]).join(',');")).toBe("1,2,2,4,3,6");
+});
+
+test("Array.prototype.reduceRight", () => {
+  expect(runCode("[1, 2, 3].reduceRight((a, b) => a - b, 0);")).toBe("-6");
+});
+
+// --- Standard library: Date -------------------------------------------------
+
+test("Date.UTC at the epoch", () => {
+  expect(runCode("Date.UTC(1970, 0, 1);")).toBe("0");
+});
+
+test("Date.UTC with a time component", () => {
+  expect(runCode("Date.UTC(1970, 0, 1, 0, 0, 1);")).toBe("1000");
+});
+
+test("Date.parse ISO string at the epoch", () => {
+  expect(runCode("Date.parse('1970-01-01T00:00:00Z');")).toBe("0");
+});
+
+test("Date.parse with fractional seconds", () => {
+  expect(runCode("Date.parse('1970-01-01T00:00:00.500Z');")).toBe("500");
+});
+
+test("Date.parse applies a timezone offset", () => {
+  expect(runCode("Date.parse('1970-01-01T01:00:00+01:00');")).toBe("0");
+});
+
+test("Date.now returns a number", () => {
+  expect(runCode("typeof Date.now();")).toBe("number");
+});
+
+// --- Standard library: console ----------------------------------------------
+
+test("console.log is callable and returns undefined", () => {
+  expect(runCode("console.log('hello');")).toBe("undefined");
+});
+
+test("console.error is callable", () => {
+  expect(runCode("console.error('boom');")).toBe("undefined");
+});
+
+// --- Standard library: Error ------------------------------------------------
+
+test("new Error carries a message", () => {
+  expect(runCode("new Error('oops').message;")).toBe("oops");
+});
+
+test("new Error carries a name", () => {
+  expect(runCode("new Error('x').name;")).toBe("Error");
+});
+
+test("TypeError has its own name", () => {
+  expect(runCode("new TypeError('x').name;")).toBe("TypeError");
+});
+
+test("Error with no argument has an empty message", () => {
+  expect(runCode("new Error().message;")).toBe("");
+});
+
+test("typeof new Error is object", () => {
+  expect(runCode("typeof new Error('x');")).toBe("object");
+});
+
+test("throw/catch preserves the Error object", () => {
+  expect(runCode("try { throw new Error('bad'); } catch (e) { e.message; }")).toBe("bad");
+});
+
+test("caught Error name survives the throw", () => {
+  expect(runCode("try { throw new RangeError('r'); } catch (e) { e.name; }")).toBe("RangeError");
+});
+
+// --- Async: await & Promise combinators -------------------------------------
+
+test("await unwraps a fulfilled promise", () => {
+  expect(runCode("async function f() { return 5; } await f();")).toBe("5");
+});
+
+test("await on a non-promise returns the value", () => {
+  expect(runCode("await 42;")).toBe("42");
+});
+
+test("await rethrows a rejected promise", () => {
+  expect(runCode("try { await Promise.reject('no'); } catch (e) { e; }")).toBe("no");
+});
+
+test("Promise.resolve", () => {
+  expect(runCode("await Promise.resolve(7);")).toBe("7");
+});
+
+test("Promise.all resolves to an array", () => {
+  expect(runCode("(await Promise.all([Promise.resolve(1), 2])).join(',');")).toBe("1,2");
+});
+
+test("Promise.all rejects on first rejection", () => {
+  expect(
+    runCode("try { await Promise.all([Promise.resolve(1), Promise.reject('x')]); } catch (e) { e; }")
+  ).toBe("x");
+});
+
+test("Promise.race returns the first settled", () => {
+  expect(runCode("await Promise.race([Promise.resolve('a'), Promise.resolve('b')]);")).toBe("a");
+});
+
+// --- Generators: yield / next -----------------------------------------------
+
+test("generator next yields the first value", () => {
+  expect(runCode("function* g() { yield 1; yield 2; } const it = g(); it.next().value;")).toBe("1");
+});
+
+test("generator next advances through values", () => {
+  expect(runCode("function* g() { yield 1; yield 2; } const it = g(); it.next(); it.next().value;")).toBe("2");
+});
+
+test("generator reports done once exhausted", () => {
+  expect(runCode("function* g() { yield 1; } const it = g(); it.next(); it.next().done;")).toBe("true");
+});
+
+test("for...of drives a generator", () => {
+  expect(
+    runCode("function* g() { yield 1; yield 2; yield 3; } let s = 0; for (const x of g()) { s += x; } s;")
+  ).toBe("6");
+});
+
+test("generator receives parameters", () => {
+  expect(
+    runCode(
+      "function* range(n) { let i = 0; while (i < n) { yield i; i++; } } let s = 0; for (const x of range(3)) { s += x; } s;"
+    )
+  ).toBe("3");
+});
+
+// --- Symbols ----------------------------------------------------------------
+
+test("typeof Symbol is function", () => {
+  expect(runCode("typeof Symbol;")).toBe("function");
+});
+
+test("typeof Symbol() is symbol", () => {
+  expect(runCode("typeof Symbol('x');")).toBe("symbol");
+});
+
+test("Symbol.iterator is a symbol", () => {
+  expect(runCode("typeof Symbol.iterator;")).toBe("symbol");
+});
+
+// --- Modules: exports reach importers ---------------------------------------
+
+test("named export reaches an importer", () => {
+  const vm = new Vm();
+  vm.registerModule("math", "export const add = (a, b) => a + b;");
+  expect(vm.run("import { add } from 'math'; add(2, 3);")).toBe("5");
+});
+
+test("exported function declaration reaches an importer", () => {
+  const vm = new Vm();
+  vm.registerModule("fns", "export function double(x) { return x * 2; }");
+  expect(vm.run("import { double } from 'fns'; double(4);")).toBe("8");
+});
+
+test("default export reaches an importer", () => {
+  const vm = new Vm();
+  vm.registerModule("ans", "export default 42;");
+  expect(vm.run("import ans from 'ans'; ans;")).toBe("42");
+});
+
+test("namespace import collects exports", () => {
+  const vm = new Vm();
+  vm.registerModule("ns", "export const a = 1; export const b = 2;");
+  expect(vm.run("import * as m from 'ns'; m.a + m.b;")).toBe("3");
+});
