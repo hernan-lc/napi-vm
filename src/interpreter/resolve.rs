@@ -14,10 +14,9 @@ impl Interpreter {
             is_arrow: false,
             ..
         } = &v
+            && n.starts_with("get ")
         {
-            if n.starts_with("get ") {
-                return self.call_this(&v, o.clone(), vec![]);
-            }
+            return self.call_this(&v, o.clone(), vec![]);
         }
         Ok(v)
     }

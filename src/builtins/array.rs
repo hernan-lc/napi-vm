@@ -14,7 +14,7 @@ pub(super) fn install(e: &mut Environment) {
 // --- Array statics ----------------------------------------------------------
 
 fn array_is_array(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    Ok(Value::Bool(matches!(a.get(0), Some(Value::Array(_)))))
+    Ok(Value::Bool(matches!(a.first(), Some(Value::Array(_)))))
 }
 
 // --- Array prototype --------------------------------------------------------
@@ -44,7 +44,7 @@ pub fn array_method(name: &str) -> Option<Value> {
 
 fn array_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let cb = a.get(0).cloned().unwrap_or(Value::Undefined);
+    let cb = a.first().cloned().unwrap_or(Value::Undefined);
     let mut out = Vec::with_capacity(items.len());
     for (i, it) in items.iter().enumerate() {
         let r = interp.call_this(
@@ -59,7 +59,7 @@ fn array_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Val
 
 fn array_filter(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let cb = a.get(0).cloned().unwrap_or(Value::Undefined);
+    let cb = a.first().cloned().unwrap_or(Value::Undefined);
     let mut out = Vec::new();
     for (i, it) in items.iter().enumerate() {
         let keep = interp.call_this(
@@ -76,17 +76,17 @@ fn array_filter(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
 
 fn array_reduce(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let cb = a.get(0).cloned().unwrap_or(Value::Undefined);
+    let cb = a.first().cloned().unwrap_or(Value::Undefined);
     let (mut acc, start) = if a.len() >= 2 {
         (a[1].clone(), 0)
     } else {
-        (items.get(0).cloned().unwrap_or(Value::Undefined), 1)
+        (items.first().cloned().unwrap_or(Value::Undefined), 1)
     };
-    for i in start..items.len() {
+    for (i, item) in items.iter().enumerate().skip(start) {
         acc = interp.call_this(
             &cb,
             Value::Undefined,
-            vec![acc, items[i].clone(), Value::Number(i as f64), this.clone()],
+            vec![acc, item.clone(), Value::Number(i as f64), this.clone()],
         )?;
     }
     Ok(acc)
@@ -94,7 +94,7 @@ fn array_reduce(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
 
 fn array_for_each(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let cb = a.get(0).cloned().unwrap_or(Value::Undefined);
+    let cb = a.first().cloned().unwrap_or(Value::Undefined);
     for (i, it) in items.iter().enumerate() {
         interp.call_this(
             &cb,
@@ -107,7 +107,7 @@ fn array_for_each(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resul
 
 fn array_find(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let cb = a.get(0).cloned().unwrap_or(Value::Undefined);
+    let cb = a.first().cloned().unwrap_or(Value::Undefined);
     for (i, it) in items.iter().enumerate() {
         let hit = interp.call_this(
             &cb,
@@ -123,7 +123,7 @@ fn array_find(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
 
 fn array_some(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let cb = a.get(0).cloned().unwrap_or(Value::Undefined);
+    let cb = a.first().cloned().unwrap_or(Value::Undefined);
     for (i, it) in items.iter().enumerate() {
         let hit = interp.call_this(
             &cb,
@@ -139,7 +139,7 @@ fn array_some(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
 
 fn array_every(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let cb = a.get(0).cloned().unwrap_or(Value::Undefined);
+    let cb = a.first().cloned().unwrap_or(Value::Undefined);
     for (i, it) in items.iter().enumerate() {
         let hit = interp.call_this(
             &cb,
@@ -173,7 +173,7 @@ fn array_pop(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, V
 
 fn array_join(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let sep = match a.get(0) {
+    let sep = match a.first() {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Undefined) | None => ",".to_string(),
         Some(v) => interp.vs(v),
@@ -184,7 +184,7 @@ fn array_join(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
 
 fn array_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let target = a.get(0).cloned().unwrap_or(Value::Undefined);
+    let target = a.first().cloned().unwrap_or(Value::Undefined);
     for (i, it) in items.iter().enumerate() {
         if interp.seq(it, &target) {
             return Ok(Value::Number(i as f64));
@@ -195,7 +195,7 @@ fn array_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resul
 
 fn array_includes(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let target = a.get(0).cloned().unwrap_or(Value::Undefined);
+    let target = a.first().cloned().unwrap_or(Value::Undefined);
     for it in &items {
         if interp.seq(it, &target) {
             return Ok(Value::Bool(true));
@@ -214,7 +214,7 @@ fn array_slice(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value,
         let i = v as i64;
         if i < 0 { (len + i).max(0) } else { i.min(len) }
     };
-    let start = norm(a.get(0).map(|v| v.to_number()).unwrap_or(0.0));
+    let start = norm(a.first().map(|v| v.to_number()).unwrap_or(0.0));
     let end = match a.get(1) {
         Some(v) => norm(v.to_number()),
         None => len,

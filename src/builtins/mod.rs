@@ -449,10 +449,10 @@ fn join_str(interp: &Interpreter, v: &Value) -> String {
 // --- Global functions -------------------------------------------------------
 
 fn global_is_nan(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let n = a.get(0).map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let n = a.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
     Ok(Value::Bool(n.is_nan()))
 }
 fn global_is_finite(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let n = a.get(0).map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let n = a.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
     Ok(Value::Bool(n.is_finite()))
 }

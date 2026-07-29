@@ -99,17 +99,17 @@ impl Parser {
             }
             _ => {
                 // Labeled statement: `label: statement`
-                if let Token::Identifier(n) = self.cur() {
-                    if matches!(self.peek(), Token::Colon) {
-                        let label = n.clone();
-                        self.adv(); // identifier
-                        self.adv(); // colon
-                        let body = self.stmt()?;
-                        return Some(Statement::Labeled {
-                            label,
-                            body: Box::new(body),
-                        });
-                    }
+                if let Token::Identifier(n) = self.cur()
+                    && matches!(self.peek(), Token::Colon)
+                {
+                    let label = n.clone();
+                    self.adv(); // identifier
+                    self.adv(); // colon
+                    let body = self.stmt()?;
+                    return Some(Statement::Labeled {
+                        label,
+                        body: Box::new(body),
+                    });
                 }
                 let e = self.expr()?;
                 self.semi();
@@ -485,10 +485,10 @@ impl Parser {
                 Token::Identifier(n) => {
                     let name = n.clone();
                     self.adv();
-                    if self.eat(&Token::Equal) {
-                        if let Some(d) = self.assign() {
-                            defaults.push(Self::default_guard(&name, d));
-                        }
+                    if self.eat(&Token::Equal)
+                        && let Some(d) = self.assign()
+                    {
+                        defaults.push(Self::default_guard(&name, d));
                     }
                     names.push(name);
                 }

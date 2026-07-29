@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::Interpreter;
@@ -65,7 +64,7 @@ impl Interpreter {
             "instanceof" => {
                 // `l instanceof r`: walk l's prototype chain looking for r's
                 // prototype object (compared by shared Rc identity).
-                let target_proto: Option<Rc<RefCell<Vec<(String, Value)>>>> = match r {
+                let target_proto = match r {
                     Value::Class { prototype, .. } => match prototype.as_ref() {
                         Value::Object { props, .. } => Some(props.clone()),
                         _ => None,

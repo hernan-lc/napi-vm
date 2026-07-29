@@ -15,13 +15,13 @@ pub(super) fn install(e: &mut Environment) {
 }
 
 fn object_keys(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let v = a.get(0).cloned().unwrap_or(Value::Undefined);
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
     Ok(Value::array(
         interp.keys(&v).into_iter().map(Value::String).collect(),
     ))
 }
 fn object_values(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    match a.get(0) {
+    match a.first() {
         Some(Value::Object { props, .. }) => Ok(Value::array(
             props.borrow().iter().map(|(_, v)| v.clone()).collect(),
         )),
@@ -29,7 +29,7 @@ fn object_values(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, 
     }
 }
 fn object_entries(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    match a.get(0) {
+    match a.first() {
         Some(Value::Object { props, .. }) => {
             let entries = props
                 .borrow()
@@ -42,7 +42,7 @@ fn object_entries(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value,
     }
 }
 fn object_assign(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let target = a.get(0).cloned().unwrap_or_else(|| Value::object(vec![]));
+    let target = a.first().cloned().unwrap_or_else(|| Value::object(vec![]));
     for src in a.iter().skip(1) {
         if let Value::Object { props, .. } = src {
             for (k, v) in props.borrow().iter() {

@@ -27,7 +27,7 @@ pub fn number_method(name: &str) -> Option<Value> {
 
 fn number_to_fixed(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let n = this.to_number();
-    let digits = a.get(0).map(|v| v.to_number() as usize).unwrap_or(0);
+    let digits = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
     Ok(Value::String(format!("{:.*}", digits, n)))
 }
 
@@ -35,19 +35,19 @@ fn number_to_fixed(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
 
 fn number_is_nan(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     Ok(Value::Bool(
-        matches!(a.get(0), Some(Value::Number(n)) if n.is_nan()),
+        matches!(a.first(), Some(Value::Number(n)) if n.is_nan()),
     ))
 }
 fn number_is_finite(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     Ok(Value::Bool(
-        matches!(a.get(0), Some(Value::Number(n)) if n.is_finite()),
+        matches!(a.first(), Some(Value::Number(n)) if n.is_finite()),
     ))
 }
 
 // --- parseInt / parseFloat (global and Number.* share these) ----------------
 
 pub(super) fn parse_int(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = match a.get(0) {
+    let s = match a.first() {
         Some(Value::String(s)) => s.clone(),
         Some(v) => interp.vs(v),
         None => return Ok(Value::Number(f64::NAN)),
@@ -105,7 +105,7 @@ pub(super) fn parse_float(
     _: Value,
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
-    let s = match a.get(0) {
+    let s = match a.first() {
         Some(Value::String(s)) => s.clone(),
         Some(v) => interp.vs(v),
         None => return Ok(Value::Number(f64::NAN)),

@@ -14,15 +14,15 @@ pub(super) fn install(e: &mut Environment) {
     }
 }
 
-fn json_stringify(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let v = a.get(0).cloned().unwrap_or(Value::Undefined);
+fn json_stringify(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
     if matches!(v, Value::Undefined) {
         return Ok(Value::Undefined);
     }
-    Ok(Value::String(json_serialize(interp, &v)))
+    Ok(Value::String(json_serialize(&v)))
 }
 
-fn json_serialize(interp: &Interpreter, v: &Value) -> String {
+fn json_serialize(v: &Value) -> String {
     match v {
         Value::Null => "null".to_string(),
         Value::Undefined => "null".to_string(),
@@ -38,11 +38,7 @@ fn json_serialize(interp: &Interpreter, v: &Value) -> String {
         }
         Value::String(s) => format!("\"{}\"", escape_json(s)),
         Value::Array(items) => {
-            let parts: Vec<String> = items
-                .borrow()
-                .iter()
-                .map(|x| json_serialize(interp, x))
-                .collect();
+            let parts: Vec<String> = items.borrow().iter().map(json_serialize).collect();
             format!("[{}]", parts.join(","))
         }
         Value::Object { props, .. } => {
@@ -50,7 +46,7 @@ fn json_serialize(interp: &Interpreter, v: &Value) -> String {
                 .borrow()
                 .iter()
                 .filter(|(_, v)| !matches!(v, Value::Undefined))
-                .map(|(k, v)| format!("\"{}\":{}", escape_json(k), json_serialize(interp, v)))
+                .map(|(k, v)| format!("\"{}\":{}", escape_json(k), json_serialize(v)))
                 .collect();
             format!("{{{}}}", parts.join(","))
         }
@@ -77,7 +73,7 @@ fn escape_json(s: &str) -> String {
 }
 
 fn json_parse(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = match a.get(0) {
+    let s = match a.first() {
         Some(Value::String(s)) => s.clone(),
         _ => return vm_err("JSON.parse requires a string argument"),
     };

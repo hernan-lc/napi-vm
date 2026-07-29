@@ -46,12 +46,12 @@ impl Interpreter {
                         self.destructure(elem, &Value::Undefined)?;
                     }
                 }
-                if let Some(rest_idx) = rest_target {
-                    if let Pattern::Rest(rest_pat) = &elements[rest_idx] {
-                        let rest_vals = values[rest_idx..].to_vec();
-                        let rest_val = Value::array(rest_vals);
-                        self.destructure(rest_pat, &rest_val)?;
-                    }
+                if let Some(rest_idx) = rest_target
+                    && let Pattern::Rest(rest_pat) = &elements[rest_idx]
+                {
+                    let rest_vals = values[rest_idx..].to_vec();
+                    let rest_val = Value::array(rest_vals);
+                    self.destructure(rest_pat, &rest_val)?;
                 }
                 Ok(val.clone())
             }

@@ -663,10 +663,10 @@ mod tests {
 
     #[test]
     fn test_numbers() {
-        let mut lex = Lexer::new("42 3.14 1_000");
+        let mut lex = Lexer::new("42 3.15 1_000");
         let toks = lex.tokenize();
         assert_eq!(toks[0], Token::Number(42.0));
-        assert_eq!(toks[1], Token::Number(3.14));
+        assert_eq!(toks[1], Token::Number(3.15));
         assert_eq!(toks[2], Token::Number(1000.0));
     }
 

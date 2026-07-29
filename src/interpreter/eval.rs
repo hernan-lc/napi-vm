@@ -415,10 +415,7 @@ impl Interpreter {
 
                 // finally always runs last; its own error/return takes precedence.
                 if let Some(f) = finally {
-                    let fr = self.run(f);
-                    if fr.is_err() {
-                        return fr;
-                    }
+                    self.run(f)?;
                 }
                 after_catch
             }
@@ -445,8 +442,6 @@ impl Interpreter {
                                     break;
                                 } else if s == "__BREAK__" {
                                     break;
-                                } else if s.starts_with("__CONTINUE__") {
-                                    return Err(e);
                                 } else {
                                     return Err(e);
                                 }
@@ -612,11 +607,8 @@ impl Interpreter {
                         }
                         ObjectProp::Spread(expr) => {
                             let val = self.eval_expr(expr)?;
-                            match val {
-                                Value::Object { props: sprops, .. } => {
-                                    o.extend(sprops.borrow().iter().cloned());
-                                }
-                                _ => {}
+                            if let Value::Object { props: sprops, .. } = val {
+                                o.extend(sprops.borrow().iter().cloned());
                             }
                         }
                     }

@@ -46,7 +46,7 @@ fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
         let i = v as i64;
         if i < 0 { (len + i).max(0) } else { i.min(len) }
     };
-    let start = norm(a.get(0).map(|v| v.to_number()).unwrap_or(0.0));
+    let start = norm(a.first().map(|v| v.to_number()).unwrap_or(0.0));
     let end = match a.get(1) {
         Some(v) => norm(v.to_number()),
         None => len,
@@ -60,7 +60,7 @@ fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
 }
 fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
-    match a.get(0) {
+    match a.first() {
         Some(Value::String(sep)) => {
             let mut parts: Vec<Value> = s
                 .split(sep.as_str())
@@ -76,7 +76,7 @@ fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
 }
 fn string_includes(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
-    let needle = match a.get(0) {
+    let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v),
         None => String::new(),
@@ -85,7 +85,7 @@ fn string_includes(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resu
 }
 fn string_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
-    let needle = match a.get(0) {
+    let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v),
         None => String::new(),
@@ -96,7 +96,7 @@ fn string_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resu
 }
 fn string_char_at(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
-    let idx = a.get(0).map(|v| v.to_number() as usize).unwrap_or(0);
+    let idx = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
     Ok(Value::String(
         s.chars()
             .nth(idx)
@@ -110,7 +110,7 @@ fn string_starts_with(
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
-    let needle = match a.get(0) {
+    let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v),
         None => String::new(),
@@ -119,7 +119,7 @@ fn string_starts_with(
 }
 fn string_ends_with(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
-    let needle = match a.get(0) {
+    let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v),
         None => String::new(),
@@ -128,12 +128,12 @@ fn string_ends_with(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Res
 }
 fn string_repeat(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
-    let n = a.get(0).map(|v| v.to_number() as usize).unwrap_or(0);
+    let n = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
     Ok(Value::String(s.repeat(n)))
 }
 fn string_replace(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
-    let from = match a.get(0) {
+    let from = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v),
         None => return Ok(Value::String(s)),

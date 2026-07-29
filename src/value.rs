@@ -107,10 +107,10 @@ impl Value {
                 if key == "length" {
                     return Some(Value::Number(items.len() as f64));
                 }
-                if let Ok(idx) = key.parse::<usize>() {
-                    if idx < items.len() {
-                        return Some(items[idx].clone());
-                    }
+                if let Ok(idx) = key.parse::<usize>()
+                    && idx < items.len()
+                {
+                    return Some(items[idx].clone());
                 }
                 None
             }
@@ -128,18 +128,15 @@ impl Value {
     }
 
     pub fn set_prop(&self, key: String, val: Value) {
-        match self {
-            Value::Object { props, .. } => {
-                let mut props = props.borrow_mut();
-                for (k, v) in props.iter_mut() {
-                    if k == &key {
-                        *v = val;
-                        return;
-                    }
+        if let Value::Object { props, .. } = self {
+            let mut props = props.borrow_mut();
+            for (k, v) in props.iter_mut() {
+                if k == &key {
+                    *v = val;
+                    return;
                 }
-                props.push((key, val));
             }
-            _ => {}
+            props.push((key, val));
         }
     }
 
