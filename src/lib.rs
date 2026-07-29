@@ -24,10 +24,10 @@ fn compile_with_syntax(source: String, syntax: Syntax) -> std::result::Result<St
         )),
     );
 
-    let unresolved_mark = swc_common::Mark::new();
-    let top_level_mark = swc_common::Mark::new();
-
     GLOBALS.set(&Globals::new(), || {
+        let unresolved_mark = swc_common::Mark::new();
+        let top_level_mark = swc_common::Mark::new();
+
         let program = compiler
             .parse_js(
                 fm.clone(),
