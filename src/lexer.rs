@@ -83,6 +83,23 @@ pub enum Token {
     KwGet,
     KwSet,
     KwConstructor,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Tilde,
+    Shl,
+    Shr,
+    UShr,
+    StarStar,
+    QuestionQuestion,
+    PercentEqual,
+    AmpEqual,
+    PipeEqual,
+    CaretEqual,
+    ShlEqual,
+    ShrEqual,
+    UShrEqual,
+    StarStarEqual,
     EOF,
 }
 
@@ -183,10 +200,16 @@ impl Lexer {
                 self.pos += 1;
                 Token::Colon
             }
-            '?' => {
-                self.pos += 1;
-                Token::Question
-            }
+            '?' => match self.src.get(self.pos + 1) {
+                Some('?') => {
+                    self.pos += 2;
+                    Token::QuestionQuestion
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Question
+                }
+            },
             '.' => {
                 if self.pos + 2 < self.src.len()
                     && self.src[self.pos + 1] == '.'
@@ -227,8 +250,16 @@ impl Lexer {
                     Token::Minus
                 }
             },
-            '*' => match self.src.get(self.pos + 1) {
-                Some('=') => {
+            '*' => match (self.src.get(self.pos + 1), self.src.get(self.pos + 2)) {
+                (Some('*'), Some('=')) => {
+                    self.pos += 3;
+                    Token::StarStarEqual
+                }
+                (Some('*'), _) => {
+                    self.pos += 2;
+                    Token::StarStar
+                }
+                (Some('='), _) => {
                     self.pos += 2;
                     Token::StarEqual
                 }
@@ -247,10 +278,16 @@ impl Lexer {
                     Token::Slash
                 }
             },
-            '%' => {
-                self.pos += 1;
-                Token::Percent
-            }
+            '%' => match self.src.get(self.pos + 1) {
+                Some('=') => {
+                    self.pos += 2;
+                    Token::PercentEqual
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::Percent
+                }
+            },
             '=' => match (self.src.get(self.pos + 1), self.src.get(self.pos + 2)) {
                 (Some('='), Some('=')) => {
                     self.pos += 3;
@@ -283,12 +320,16 @@ impl Lexer {
                     Token::Not
                 }
             },
-            '<' => match self.src.get(self.pos + 1) {
-                Some('<') => {
-                    self.pos += 2;
-                    Token::Less
+            '<' => match (self.src.get(self.pos + 1), self.src.get(self.pos + 2)) {
+                (Some('<'), Some('=')) => {
+                    self.pos += 3;
+                    Token::ShlEqual
                 }
-                Some('=') => {
+                (Some('<'), _) => {
+                    self.pos += 2;
+                    Token::Shl
+                }
+                (Some('='), _) => {
                     self.pos += 2;
                     Token::LessEqual
                 }
@@ -297,28 +338,49 @@ impl Lexer {
                     Token::Less
                 }
             },
-            '>' => match self.src.get(self.pos + 1) {
-                Some('>') => {
-                    self.pos += 2;
-                    Token::Greater
+            '>' => {
+                let a = self.src.get(self.pos + 1);
+                let b = self.src.get(self.pos + 2);
+                let c = self.src.get(self.pos + 3);
+                match (a, b, c) {
+                    (Some('>'), Some('>'), Some('=')) => {
+                        self.pos += 4;
+                        Token::UShrEqual
+                    }
+                    (Some('>'), Some('>'), _) => {
+                        self.pos += 3;
+                        Token::UShr
+                    }
+                    (Some('>'), Some('='), _) => {
+                        self.pos += 3;
+                        Token::ShrEqual
+                    }
+                    (Some('>'), _, _) => {
+                        self.pos += 2;
+                        Token::Shr
+                    }
+                    (Some('='), _, _) => {
+                        self.pos += 2;
+                        Token::GreaterEqual
+                    }
+                    _ => {
+                        self.pos += 1;
+                        Token::Greater
+                    }
                 }
-                Some('=') => {
-                    self.pos += 2;
-                    Token::GreaterEqual
-                }
-                _ => {
-                    self.pos += 1;
-                    Token::Greater
-                }
-            },
+            }
             '&' => match self.src.get(self.pos + 1) {
                 Some('&') => {
                     self.pos += 2;
                     Token::And
                 }
+                Some('=') => {
+                    self.pos += 2;
+                    Token::AmpEqual
+                }
                 _ => {
                     self.pos += 1;
-                    Token::And
+                    Token::BitAnd
                 }
             },
             '|' => match self.src.get(self.pos + 1) {
@@ -326,11 +388,29 @@ impl Lexer {
                     self.pos += 2;
                     Token::Or
                 }
+                Some('=') => {
+                    self.pos += 2;
+                    Token::PipeEqual
+                }
                 _ => {
                     self.pos += 1;
-                    Token::Or
+                    Token::BitOr
                 }
             },
+            '^' => match self.src.get(self.pos + 1) {
+                Some('=') => {
+                    self.pos += 2;
+                    Token::CaretEqual
+                }
+                _ => {
+                    self.pos += 1;
+                    Token::BitXor
+                }
+            },
+            '~' => {
+                self.pos += 1;
+                Token::Tilde
+            }
             '"' | '\'' => self.read_str(c),
             c if c.is_ascii_digit() => self.read_num(),
             c if c.is_ascii_alphabetic() || c == '_' || c == '$' => self.read_ident(),
@@ -383,6 +463,19 @@ impl Lexer {
                 && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_')
             {
                 self.pos += 1;
+            }
+        }
+        // Exponent part: e/E, optional sign, then digits (e.g. 1e3, 1.5e-2).
+        if self.pos < self.src.len() && (self.src[self.pos] == 'e' || self.src[self.pos] == 'E') {
+            let mut la = self.pos + 1;
+            if la < self.src.len() && (self.src[la] == '+' || self.src[la] == '-') {
+                la += 1;
+            }
+            if la < self.src.len() && self.src[la].is_ascii_digit() {
+                self.pos = la;
+                while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+                    self.pos += 1;
+                }
             }
         }
         let n: String = self.src[s..self.pos]
@@ -461,7 +554,7 @@ mod tests {
         let mut lex = Lexer::new("42 3.14 1_000");
         let toks = lex.tokenize();
         assert_eq!(toks[0], Token::Number(42.0));
-        assert_eq!(toks[1], Token::Number(std::f64::consts::PI / 100.0));
+        assert_eq!(toks[1], Token::Number(3.14));
         assert_eq!(toks[2], Token::Number(1000.0));
     }
 

@@ -7,13 +7,5 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "2.16.4", features = ["napi8"] }
-napi-derive = "2.16.3"
-swc = "73"
-swc_common = "24"
-swc_ecma_parser = "43"
-swc_ecma_ast = "27"
-swc_ecma_codegen = "30"
-swc_ecma_visit = "27"
-swc_ecma_transforms = "60"
-anyhow = "1.0"
+napi = { version = "3.12.0", features = ["napi8"] }
+napi-derive = "3.6.1"
