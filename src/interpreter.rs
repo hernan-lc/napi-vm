@@ -20,6 +20,12 @@ impl std::fmt::Debug for Environment {
     }
 }
 
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Environment {
     pub fn new() -> Self {
         Self {
@@ -72,6 +78,12 @@ pub struct Interpreter {
     pub modules: HashMap<String, Module>,
     pub cur_mod: Option<String>,
     pub is_main: bool,
+}
+
+impl Default for Interpreter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Interpreter {

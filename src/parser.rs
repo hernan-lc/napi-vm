@@ -252,23 +252,22 @@ impl Parser {
             Token::KwImport => {
                 let saved_pos = self.pos;
                 self.adv();
-                if self.eat(&Token::Dot) {
-                    if let Token::Identifier(m) = self.cur() {
-                        if m == "meta" {
-                            self.adv();
-                            let mut expr = Expr::ImportMeta;
-                            while self.eat(&Token::Dot) {
-                                let prop = self.ident()?;
-                                expr = Expr::Member {
-                                    object: Box::new(expr),
-                                    property: Box::new(Expr::String(prop)),
-                                    computed: false,
-                                };
-                            }
-                            self.semi();
-                            return Some(Statement::Expr(expr));
-                        }
+                if self.eat(&Token::Dot)
+                    && let Token::Identifier(m) = self.cur()
+                    && m == "meta"
+                {
+                    self.adv();
+                    let mut expr = Expr::ImportMeta;
+                    while self.eat(&Token::Dot) {
+                        let prop = self.ident()?;
+                        expr = Expr::Member {
+                            object: Box::new(expr),
+                            property: Box::new(Expr::String(prop)),
+                            computed: false,
+                        };
                     }
+                    self.semi();
+                    return Some(Statement::Expr(expr));
                 }
                 self.pos = saved_pos;
                 self.import()
@@ -477,14 +476,16 @@ impl Parser {
         } else {
             Some(Box::new(ForInit::Expr(self.expr()?)))
         };
-        if init.is_some() && !matches!(self.cur(), Token::Semicolon) {
+        if let Some(init) = init.as_ref()
+            && !matches!(self.cur(), Token::Semicolon)
+        {
             if self.eat(&Token::KwIn) {
                 let o = Box::new(self.expr()?);
                 self.eat(&Token::RParen);
                 self.eat(&Token::LBrace);
                 let b = self.block_body();
                 self.eat(&Token::RBrace);
-                let n = match init.unwrap().as_ref() {
+                let n = match init.as_ref() {
                     ForInit::Var { name, .. } => name.clone(),
                     _ => return None,
                 };
@@ -500,7 +501,7 @@ impl Parser {
                 self.eat(&Token::LBrace);
                 let b = self.block_body();
                 self.eat(&Token::RBrace);
-                let n = match init.unwrap().as_ref() {
+                let n = match init.as_ref() {
                     ForInit::Var { name, .. } => name.clone(),
                     _ => return None,
                 };
@@ -1250,7 +1251,7 @@ impl Parser {
                 self.adv();
                 if self.eat(&Token::RParen) {
                     if self.eat(&Token::Arrow) {
-                        return Some(self.arrow_body(&vec![]));
+                        return Some(self.arrow_body(&[]));
                     }
                     return Some(Expr::Undefined);
                 }
@@ -1261,7 +1262,7 @@ impl Parser {
                             Expr::Identifier(x) => x.clone(),
                             _ => return None,
                         };
-                        return Some(self.arrow_body(&vec![n]));
+                        return Some(self.arrow_body(&[n]));
                     }
                     return Some(f);
                 }
@@ -1378,13 +1379,12 @@ impl Parser {
             }
             Token::KwImport => {
                 self.adv();
-                if self.eat(&Token::Dot) {
-                    if let Token::Identifier(m) = self.cur() {
-                        if m == "meta" {
-                            self.adv();
-                            return Some(Expr::ImportMeta);
-                        }
-                    }
+                if self.eat(&Token::Dot)
+                    && let Token::Identifier(m) = self.cur()
+                    && m == "meta"
+                {
+                    self.adv();
+                    return Some(Expr::ImportMeta);
                 }
                 self.semi();
                 Some(Expr::Undefined)

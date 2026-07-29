@@ -32,7 +32,7 @@ pub fn to_string(val: &Value) -> String {
             ),
             Value::Array(i) => format!(
                 "[{}]",
-                i.iter().map(|v| vs(v)).collect::<Vec<_>>().join(", ")
+                i.iter().map(vs).collect::<Vec<_>>().join(", ")
             ),
             Value::Function { name, .. } => {
                 format!("[Function: {}]", name.as_deref().unwrap_or("anonymous"))
@@ -59,6 +59,12 @@ pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
 pub struct VM {
     interp: Interpreter,
     modules: HashMap<String, String>,
+}
+
+impl Default for VM {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[napi]
