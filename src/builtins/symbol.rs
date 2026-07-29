@@ -28,7 +28,11 @@ fn symbol_call(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
 }
 
 /// `Symbol.for(key)`: returns the shared symbol for `key`, creating it if new.
-pub(crate) fn symbol_for(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+pub(crate) fn symbol_for(
+    interp: &mut Interpreter,
+    _: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
     let key = match a.first() {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Undefined) | None => "undefined".to_string(),
@@ -44,7 +48,11 @@ pub(crate) fn symbol_for(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> R
 }
 
 /// `Symbol.keyFor(sym)`: returns the registry key for a shared symbol.
-pub(crate) fn symbol_key_for(_interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+pub(crate) fn symbol_key_for(
+    _interp: &mut Interpreter,
+    _: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
     let desc = match a.first() {
         Some(Value::Symbol(d)) => d.clone(),
         _ => return Ok(Value::Undefined),
@@ -52,10 +60,10 @@ pub(crate) fn symbol_key_for(_interp: &mut Interpreter, _: Value, a: Vec<Value>)
     SYMBOL_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         for (key, val) in reg.iter() {
-            if let Value::Symbol(d) = val {
-                if *d == desc {
-                    return Ok(Value::String(key.clone()));
-                }
+            if let Value::Symbol(d) = val
+                && *d == desc
+            {
+                return Ok(Value::String(key.clone()));
             }
         }
         Ok(Value::Undefined)

@@ -515,6 +515,38 @@ test("generator receives parameters", () => {
   ).toBe("3");
 });
 
+// --- Generators: true suspension ----------------------------------------------
+
+test("infinite generator does not hang (true suspension)", () => {
+  expect(
+    runCode("function* nats() { let i = 0; while (true) { yield i; i++; } } const it = nats(); it.next(); it.next(); it.next().value;")
+  ).toBe("2");
+});
+
+test("generator next(val) sends a value into the yield expression", () => {
+  expect(
+    runCode("function* echo() { let x = yield 1; yield x + 10; } const it = echo(); it.next(); it.next(5).value;")
+  ).toBe("15");
+});
+
+test("generator with yield in a conditional", () => {
+  expect(
+    runCode("function* g(x) { if (x > 0) { yield 'pos'; } else { yield 'neg'; } } const it = g(1); it.next().value;")
+  ).toBe("pos");
+});
+
+test("generator return value is accessible via done result", () => {
+  expect(
+    runCode("function* g() { yield 1; return 42; } const it = g(); it.next(); it.next().value;")
+  ).toBe("42");
+});
+
+test("generator is its own iterator (Symbol.iterator)", () => {
+  expect(
+    runCode("function* g() { yield 1; } const it = g(); typeof it[Symbol.iterator];")
+  ).toBe("function");
+});
+
 // --- Symbols ----------------------------------------------------------------
 
 test("typeof Symbol is function", () => {
@@ -527,6 +559,40 @@ test("typeof Symbol() is symbol", () => {
 
 test("Symbol.iterator is a symbol", () => {
   expect(runCode("typeof Symbol.iterator;")).toBe("symbol");
+});
+
+test("Symbol.for returns a symbol", () => {
+  expect(runCode("typeof Symbol.for('key');")).toBe("symbol");
+});
+
+test("Symbol.keyFor retrieves the registry key", () => {
+  expect(runCode("const s = Symbol.for('myKey'); Symbol.keyFor(s);")).toBe("myKey");
+});
+
+test("well-known symbols exist", () => {
+  expect(runCode("typeof Symbol.toStringTag;")).toBe("symbol");
+  expect(runCode("typeof Symbol.hasInstance;")).toBe("symbol");
+  expect(runCode("typeof Symbol.asyncIterator;")).toBe("symbol");
+});
+
+// --- Iterator protocol --------------------------------------------------------
+
+test("for...of over an object with [Symbol.iterator]", () => {
+  expect(
+    runCode("const obj = { [Symbol.iterator]() { let i = 0; return { next() { if (i < 3) { return { value: i++, done: false }; } return { value: undefined, done: true }; } }; } }; let s = 0; for (const x of obj) { s += x; } s;")
+  ).toBe("3");
+});
+
+test("array [Symbol.iterator] returns a working iterator", () => {
+  expect(
+    runCode("const it = [10, 20, 30][Symbol.iterator](); it.next().value + it.next().value;")
+  ).toBe("30");
+});
+
+test("string [Symbol.iterator] iterates characters", () => {
+  expect(
+    runCode("const it = 'hi'[Symbol.iterator](); it.next().value + it.next().value;")
+  ).toBe("hi");
 });
 
 // --- Modules: exports reach importers ---------------------------------------

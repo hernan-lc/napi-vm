@@ -402,7 +402,6 @@ impl Interpreter {
             _ => vm_err("Not a constructor"),
         }
     }
-
 }
 
 /// Spawn the generator thread. The thread runs the generator body in its own

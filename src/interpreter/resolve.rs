@@ -250,7 +250,10 @@ fn array_iter(
     // function that reads it back. The trick: store items and cursor index
     // as hidden properties on the iterator object.
     let iter_obj = super::Value::object(vec![
-        ("__items__".to_string(), super::Value::Array(Rc::new(RefCell::new((*items_rc).clone())))),
+        (
+            "__items__".to_string(),
+            super::Value::Array(Rc::new(RefCell::new((*items_rc).clone()))),
+        ),
         ("__cursor__".to_string(), super::Value::Number(0.0)),
         (
             "next".to_string(),
@@ -286,7 +289,10 @@ fn array_iter_next(
 
     if cursor < items.len() {
         let val = items[cursor].clone();
-        this.set_prop("__cursor__".to_string(), super::Value::Number((cursor + 1) as f64));
+        this.set_prop(
+            "__cursor__".to_string(),
+            super::Value::Number((cursor + 1) as f64),
+        );
         Ok(super::call::iter_result(val, false))
     } else {
         Ok(super::call::iter_result(super::Value::Undefined, true))
@@ -303,12 +309,18 @@ fn string_iter(
     use std::rc::Rc;
 
     let chars: Vec<super::Value> = match &this {
-        super::Value::String(s) => s.chars().map(|c| super::Value::String(c.to_string())).collect(),
+        super::Value::String(s) => s
+            .chars()
+            .map(|c| super::Value::String(c.to_string()))
+            .collect(),
         _ => vec![],
     };
 
     let iter_obj = super::Value::object(vec![
-        ("__items__".to_string(), super::Value::Array(Rc::new(RefCell::new(chars)))),
+        (
+            "__items__".to_string(),
+            super::Value::Array(Rc::new(RefCell::new(chars))),
+        ),
         ("__cursor__".to_string(), super::Value::Number(0.0)),
         (
             "next".to_string(),

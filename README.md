@@ -15,9 +15,11 @@ Execute JavaScript in an isolated environment with no access to the host system'
 - **Control flow** — `if/else`, `while`, `do...while`, `for`, `for...in`, `for...of`, `switch/case`, `break`, `continue`
 - **Error handling** — `try/catch/finally` with `throw`, catching both `throw` and runtime errors
 - **Classes & OOP** — constructors, instance methods/fields, static members, `extends`/`super`, `instanceof`
+- **Generators** — `function*`/`yield` with true suspension (infinite generators, `next(val)` sent values, `for...of`)
+- **Symbols & iterators** — `Symbol()`, well-known symbols, `Symbol.for`/`keyFor`, full iterator protocol (`[Symbol.iterator]`, `for...of` over custom iterables)
 - **Standard library** — `Math`, `JSON`, `Object`, `Array`/`String`/`Number` prototype methods, and global functions (`parseInt`, `isNaN`, …)
 
-> **Status:** the core language, classes, a working standard library, async/`await`, generators (`yield`/`next`), module export wiring, and a `Symbol` subset are implemented and covered by 500+ passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture). The main remaining gap is true generator suspension — a generator body runs eagerly to completion on the first `next()` rather than pausing at each `yield`.
+> **Status:** the core language, classes, a working standard library, async/`await`, generators with true mid-body suspension (`yield`/`next`/`next(val)`), module export wiring, and a full `Symbol` + iterator protocol are implemented and covered by 535 passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture).
 
 ## Installation
 
@@ -243,8 +245,8 @@ Implemented as native functions (`fn(&mut Interpreter, Value /*this*/, Vec<Value
 - ✅ Prototype chain — `Value::Object` carries a `proto` pointer (shared `Rc`), underpinning `instanceof` and prototype method lookup
 - ✅ `async`/`await` — eager synchronous model (async bodies run immediately and settle a `Promise`); `await` unwraps fulfilled values and rethrows rejections, plus `Promise.resolve`/`reject`/`all`/`race`
 - ✅ Module exports reaching importers — `export const`/`function`/`class`/`default` wire through `import { }`, `import * as`, and default imports
-- 🟡 Generators — `function*`/`yield` parse; `yield`ed values are collected and drained one per `next()` call (`{value, done}`) and via `for...of`; true mid-body suspension is not implemented (infinite generators would hang)
-- 🟡 Symbols — `Symbol(desc)`, `Symbol.iterator`, and `for...of` over generators; no full iterator protocol for arbitrary iterables yet
+- ✅ Generators — `function*`/`yield` with true mid-body suspension (thread-based): infinite generators work, `next(val)` sends values into `yield`, yields inside loops/conditionals/try-finally all behave correctly, `for...of` drives generators, and generators are their own iterators (`[Symbol.iterator]() === this`)
+- ✅ Symbols & iterator protocol — `Symbol(desc)`, well-known symbols (`Symbol.iterator`, `Symbol.toStringTag`, `Symbol.hasInstance`, `Symbol.asyncIterator`, …), `Symbol.for`/`Symbol.keyFor` registry, computed `[Symbol.iterator]()` methods in object literals, and `for...of` over any object implementing the iterator protocol (arrays, strings, generators, and custom iterables)
 - ✅ Host bridge (Node ↔ VM) — `setGlobal`/`exposeFunction`/`callFunction` marshal structured values across the NAPI boundary over a stable raw `napi_sys` ABI (the VM stays single-threaded; exposed Node functions are persisted `napi_ref`s invoked synchronously, and thrown errors cross back as catchable exceptions). Exposed globals live on the one global scope, which `window`/`globalThis`/`self` all alias (`Value::GlobalObject`), so `window.add(1, 2)` and bare `add(1, 2)` are the same call. Not yet covered: passing a Node function *into* the VM as a first-class value, async/`postMessage`-style messaging, and a full `EventTarget`.
 
 ## License

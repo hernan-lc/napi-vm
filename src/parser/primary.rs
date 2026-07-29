@@ -157,8 +157,7 @@ impl Parser {
                                                 body,
                                             });
                                         } else if is_setter {
-                                            let param =
-                                                params.first().cloned().unwrap_or_default();
+                                            let param = params.first().cloned().unwrap_or_default();
                                             p.push(ObjectProp::Setter {
                                                 name: key_str,
                                                 param,
