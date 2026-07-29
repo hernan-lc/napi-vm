@@ -52,6 +52,7 @@ pub enum Expr {
     },
     Spread(Box<Expr>),
     This,
+    Super,
     ImportMeta,
     Template {
         quasis: Vec<String>,

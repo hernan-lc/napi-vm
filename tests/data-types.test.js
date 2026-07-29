@@ -112,7 +112,7 @@ test("delete operator", () => {
 test("type coercion in +", () => {
   expect(runCode("'5' + 3;")).toBe("53");
   expect(runCode("5 + '3';")).toBe("53");
-  expect(runCode("true + 1;")).toBe("true1");
+  expect(runCode("true + 1;")).toBe("2");
 });
 
 test("type coercion in arithmetic", () => {

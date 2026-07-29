@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::value::Value;
 use super::Interpreter;
 use crate::error::{VmErr, vm_err};
@@ -59,7 +62,36 @@ impl Interpreter {
                 }
             }
             "," => r.clone(),
-            "instanceof" => Value::Bool(false),
+            "instanceof" => {
+                // `l instanceof r`: walk l's prototype chain looking for r's
+                // prototype object (compared by shared Rc identity).
+                let target_proto: Option<Rc<RefCell<Vec<(String, Value)>>>> = match r {
+                    Value::Class { prototype, .. } => match prototype.as_ref() {
+                        Value::Object { props, .. } => Some(props.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let mut result = false;
+                if let Some(tp) = target_proto {
+                    let mut cur = match l {
+                        Value::Object { proto, .. } => proto.clone(),
+                        _ => None,
+                    };
+                    while let Some(p) = cur {
+                        if let Value::Object { props, proto } = p.as_ref() {
+                            if Rc::ptr_eq(props, &tp) {
+                                result = true;
+                                break;
+                            }
+                            cur = proto.clone();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                Value::Bool(result)
+            }
             "in" => {
                 if let (Value::String(k), Value::Object { props, .. }) = (l, r) {
                     Value::Bool(props.borrow().iter().any(|(x, _)| x == k))
@@ -85,7 +117,9 @@ impl Interpreter {
                     Value::Number(_) => "number",
                     Value::String(_) => "string",
                     Value::Object { .. } | Value::Array(_) => "object",
-                    Value::Function { .. } | Value::NativeFunction { .. } => "function",
+                    Value::Function { .. } | Value::NativeFunction { .. } | Value::Class { .. } => {
+                        "function"
+                    }
                     Value::Promise { .. } => "object",
                     Value::Generator { .. } => "object",
                     Value::Symbol(_) => "symbol",
@@ -184,6 +218,7 @@ impl Interpreter {
             Value::Array(i) => i.borrow().iter().map(|x| self.vs(x)).collect::<Vec<_>>().join(","),
             Value::Function { name, .. } => format!("function {}", name.as_deref().unwrap_or("")),
             Value::NativeFunction { name, .. } => format!("function {} [native]", name),
+            Value::Class { name, .. } => format!("class {}", name),
             Value::Promise { .. } => "[object Promise]".to_string(),
             Value::Generator { .. } => "[object Generator]".to_string(),
             Value::Symbol(_) => "Symbol()".to_string(),

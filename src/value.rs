@@ -23,6 +23,7 @@ pub enum Value {
         body: Vec<Statement>,
         closure: Option<Env>,
         is_arrow: bool,
+        is_async: bool,
     },
     NativeFunction {
         name: String,

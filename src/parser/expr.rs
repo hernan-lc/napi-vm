@@ -695,6 +695,10 @@ impl Parser {
                 self.adv();
                 Some(Expr::This)
             }
+            Token::KwSuper => {
+                self.adv();
+                Some(Expr::Super)
+            }
             Token::Backtick => {
                 self.adv();
                 let mut quasis = Vec::new();

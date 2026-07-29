@@ -78,6 +78,7 @@ impl Interpreter {
                         body: body.clone(),
                         closure: Some(self.global.clone()),
                         is_arrow: false,
+                        is_async: false,
                     },
                 );
                 Ok(Value::Undefined)
@@ -112,6 +113,7 @@ impl Interpreter {
                                 body: mb.clone(),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
+                                is_async: false,
                             };
                             if *st {
                                 statics.push((mname.clone(), fn_val));
@@ -140,6 +142,7 @@ impl Interpreter {
                                 body: gb.clone(),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
+                                is_async: false,
                             };
                             if *st {
                                 statics.push((gname.clone(), getter_fn));
@@ -154,6 +157,7 @@ impl Interpreter {
                                 body: sb.clone(),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
+                                is_async: false,
                             };
                             if *st {
                                 statics.push((sname.clone(), setter_fn));
@@ -181,12 +185,25 @@ impl Interpreter {
                 }
                 full_ctor_body.extend(ctor_body);
 
+                // For a derived class, expose the superclass constructor to the
+                // constructor body as `__super_ctor` so `super(...)` can call it.
+                let ctor_closure = match &super_cls {
+                    Some(Value::Class { constructor: super_ctor, .. }) => {
+                        let env = Rc::new(RefCell::new(Environment::child(self.global.clone())));
+                        env.borrow_mut()
+                            .set("__super_ctor", super_ctor.as_ref().clone());
+                        env
+                    }
+                    _ => self.global.clone(),
+                };
+
                 let constructor = Value::Function {
                     name: Some(name.clone()),
                     params: ctor_params,
                     body: full_ctor_body,
-                    closure: Some(self.global.clone()),
+                    closure: Some(ctor_closure),
                     is_arrow: false,
+                    is_async: false,
                 };
 
                 let prototype = Value::object_with_proto(proto_props, super_proto);
@@ -559,7 +576,7 @@ impl Interpreter {
         }
     }
 
-    fn eval_expr(&mut self, e: &Expr) -> Result<Value, VmErr> {
+    pub(crate) fn eval_expr(&mut self, e: &Expr) -> Result<Value, VmErr> {
         match e {
             Expr::Number(n) => Ok(Value::Number(*n)),
             Expr::String(s) => Ok(Value::String(s.clone())),
@@ -618,6 +635,7 @@ impl Interpreter {
                                 body: body.clone(),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
+                                is_async: false,
                             };
                             o.push((name.clone(), fn_val));
                         }
@@ -628,6 +646,7 @@ impl Interpreter {
                                 body: body.clone(),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
+                                is_async: false,
                             };
                             o.push((name.clone(), fn_val));
                         }
@@ -638,6 +657,7 @@ impl Interpreter {
                                 body: body.clone(),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
+                                is_async: false,
                             };
                             o.push((name.clone(), fn_val));
                         }
@@ -731,6 +751,21 @@ impl Interpreter {
                     }
                 }
                 match callee.as_ref() {
+                    // `super(...)` invokes the superclass constructor on the
+                    // current `this`.
+                    Expr::Super => {
+                        let this_val = self
+                            .global
+                            .borrow()
+                            .get("this")
+                            .unwrap_or(Value::Undefined);
+                        let super_ctor = self
+                            .global
+                            .borrow()
+                            .get("__super_ctor")
+                            .ok_or_else(|| VmErr::Msg("super used outside a derived class".to_string()))?;
+                        self.invoke_ctor(&super_ctor, this_val, a)
+                    }
                     // Method call: bind `this` to the receiver object.
                     Expr::Member { object, property, computed: _ } => {
                         let obj = self.eval_expr(object)?;
@@ -828,6 +863,7 @@ impl Interpreter {
                     ExprOrBlock::Expr(e) => vec![Statement::Return(Some(e.clone()))],
                 },
                 is_arrow: true,
+                is_async: false,
             }),
             Expr::FnExpr { name, params, body } => Ok(Value::Function {
                 name: name.clone(),
@@ -835,6 +871,7 @@ impl Interpreter {
                 body: body.clone(),
                 closure: Some(self.global.clone()),
                 is_arrow: false,
+                is_async: false,
             }),
             Expr::New { callee, args } => {
                 let mut a = Vec::new();
@@ -864,6 +901,7 @@ impl Interpreter {
                 }
                 Ok(Value::String(result))
             }
+            Expr::Super => vm_err("'super' must be called as a function"),
         }
     }
 
@@ -932,7 +970,7 @@ impl Interpreter {
         }
     }
 
-    fn call_this(&mut self, f: &Value, this_val: Value, args: Vec<Value>) -> Result<Value, VmErr> {
+    pub(crate) fn call_this(&mut self, f: &Value, this_val: Value, args: Vec<Value>) -> Result<Value, VmErr> {
         match f {
             Value::Function {
                 params,
@@ -1007,6 +1045,23 @@ impl Interpreter {
                 callable(self, this_val, args)
             }
             _ => vm_err("Not a function"),
+        }
+    }
+
+    /// Run a constructor (class or function) against an already-created `this`,
+    /// as done by `super(...)`. Returns `this`.
+    fn invoke_ctor(&mut self, f: &Value, this_val: Value, args: Vec<Value>) -> Result<Value, VmErr> {
+        match f {
+            Value::Class { constructor, .. } => {
+                let ctor = constructor.as_ref().clone();
+                self.call_this(&ctor, this_val.clone(), args)?;
+                Ok(this_val)
+            }
+            Value::Function { .. } => {
+                self.call_this(f, this_val.clone(), args)?;
+                Ok(this_val)
+            }
+            _ => vm_err("Not a constructor"),
         }
     }
 
@@ -1126,6 +1181,8 @@ impl Interpreter {
                     } else {
                         Ok(Value::Undefined)
                     }
+                } else if let Some(m) = crate::builtins::array_method(k) {
+                    Ok(m)
                 } else {
                     Ok(Value::Undefined)
                 }
@@ -1138,6 +1195,15 @@ impl Interpreter {
                         .nth(idx)
                         .map(|c| Value::String(c.to_string()))
                         .unwrap_or(Value::Undefined))
+                } else if let Some(m) = crate::builtins::string_method(k) {
+                    Ok(m)
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            (Value::Number(_), Value::String(k)) => {
+                if let Some(m) = crate::builtins::number_method(k) {
+                    Ok(m)
                 } else {
                     Ok(Value::Undefined)
                 }
