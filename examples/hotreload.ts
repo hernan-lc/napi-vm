@@ -16,6 +16,7 @@ import { Vm } from "../index";
 import { join } from "node:path";
 import { HotReloader } from "./lib/hot-reload";
 import { VmEventBus } from "./lib/vm-event-bus";
+import { VmWorkerPool } from "./lib/vm-worker-pool";
 
 const MODULES_DIR = join(import.meta.dir, "callbacks", "modules");
 
@@ -35,6 +36,7 @@ function bootstrap(vm: Vm, bus: VmEventBus): void {
     import { greet, farewell, announce } from "greet";
     import { add, multiply, factorial, fib, clampValue } from "math";
     import { capitalize, reverse, repeat, slugify, wordCount } from "transform";
+    import { heavyFib, whileLoop, nestedLoop, deepRecursion } from "blocking";
 
     var callbacks = {
       greet:      function(a)    { return greet(a); },
@@ -49,7 +51,11 @@ function bootstrap(vm: Vm, bus: VmEventBus): void {
       reverse:    function(a)    { return reverse(a); },
       repeat:     function(a, b) { return repeat(a, b); },
       slugify:    function(a)    { return slugify(a); },
-      wordCount:  function(a)    { return wordCount(a); }
+      wordCount:  function(a)    { return wordCount(a); },
+      heavyFib:   function(a)    { return heavyFib(a); },
+      whileLoop:  function(a)    { return whileLoop(a); },
+      nestedLoop: function(a)    { return nestedLoop(a); },
+      deepRecursion: function(a) { return deepRecursion(a); }
     };
 
     function dispatch(name, args) {
@@ -62,12 +68,6 @@ function bootstrap(vm: Vm, bus: VmEventBus): void {
       var result = dispatch(name, args);
       emit("callback", name, result);
       return JSON.stringify({ ok: true, callback: name, result: result });
-    }
-
-    /** Busy-work used by the event-loop blocking demo. */
-    function heavyFib(n) {
-      if (n <= 1) return n;
-      return heavyFib(n - 1) + heavyFib(n - 2);
     }
   `);
 }
@@ -132,10 +132,10 @@ function demoEventLoopBlocking(vm: Vm): void {
 
   // heavyFib(32) is ~O(2^32) tree-recursive calls in the interpreter —
   // enough to block for a visible duration.
-  const result = vm.run("heavyFib(32)");
+  const result = vm.run(`dispatchToJson("heavyFib", [32])`);
   const elapsed = Date.now() - t0;
 
-  console.log(`  [main] heavyFib(32) = ${result}  (took ${elapsed}ms)`);
+  console.log(`  [main] heavyFib(32) => ${result}  (took ${elapsed}ms)`);
   console.log(`  [main] tickFired after VM returned? ${tickFired}`);
   console.log(
     tickFired
@@ -170,6 +170,46 @@ function demoListenerDedup(bus: VmEventBus): void {
   bus.off("dedup-test"); // clean up
 }
 
+// ── Non-blocking worker demo ─────────────────────────────────────────
+// Runs heavy VM work inside a Worker thread so the main event loop
+// stays free. Demonstrates that setTimeout ticks fire DURING VM work
+// when using workers — unlike the sync demo above.
+
+async function demoNonBlockingWorker(): Promise<void> {
+  console.log("--- Non-Blocking Worker Demo ---\n");
+
+  const pool = new VmWorkerPool({ modulesDir: MODULES_DIR });
+
+  let tickCount = 0;
+  const t0 = Date.now();
+
+  // Schedule multiple macrotasks — they should fire DURING VM work.
+  for (let i = 0; i < 5; i++) {
+    setTimeout(() => {
+      tickCount++;
+      console.log(`  [event-loop] tick #${tickCount} fired at +${Date.now() - t0}ms`);
+    }, 50);
+  }
+
+  console.log("  [main] 5 setTimeout(50) scheduled, starting heavy VM work in worker...");
+
+  // heavyFib(32) in the worker — the main event loop stays free.
+  const result = await pool.run(`dispatchToJson("heavyFib", [32])`);
+  const elapsed = Date.now() - t0;
+
+  console.log(`  [main] worker returned: ${result}  (took ${elapsed}ms)`);
+  console.log(`  [main] ticks fired during VM work: ${tickCount}`);
+  console.log(
+    tickCount > 0
+      ? "  => ticks fired DURING VM work — the event loop was NOT blocked\n"
+      : "  => no ticks fired (unexpected with worker)\n"
+  );
+
+  // Wait for any remaining ticks.
+  await new Promise(r => setTimeout(r, 200));
+  pool.terminate();
+}
+
 // ── Main ─────────────────────────────────────────────────────────────
 
 console.log("=== napi-vm Callback System ===\n");
@@ -191,27 +231,30 @@ const unsub = bus.on("callback", (name, result) => {
 runAllCallbacks(vm);
 printRegistry(reloader);
 demoListenerDedup(bus);
-demoEventLoopBlocking(vm);
+//demoEventLoopBlocking(vm);
 
-// ── Hot-reload watcher ───────────────────────────────────────────────
+// Run async worker demo after sync demos complete.
+demoNonBlockingWorker().then(() => {
+  // ── Hot-reload watcher ───────────────────────────────────────────────
 
-console.log("--- Hot Reload Watcher ---\n");
-console.log(`Watching: ${MODULES_DIR}\n`);
+  console.log("--- Hot Reload Watcher ---\n");
+  console.log(`Watching: ${MODULES_DIR}\n`);
 
-reloader.watch();
+  reloader.watch();
 
-// Re-run the demo suite after each reload.
-const origOnReload = reloader["opts"].onReload;
-reloader["opts"].onReload = (newVm: Vm, newBus: VmEventBus) => {
-  origOnReload(newVm, newBus);
-  runAllCallbacks(newVm);
-  printRegistry(reloader);
-  console.log("Waiting for changes...\n");
-};
+  // Re-run the demo suite after each reload.
+  const origOnReload = reloader["opts"].onReload;
+  reloader["opts"].onReload = (newVm: Vm, newBus: VmEventBus) => {
+    origOnReload(newVm, newBus);
+    runAllCallbacks(newVm);
+    printRegistry(reloader);
+    console.log("Waiting for changes...\n");
+  };
 
-console.log("Hot reload active. Edit a module file to see changes.");
+  console.log("Hot reload active. Edit a module file to see changes.");
+});
+
 console.log("Press Ctrl+C to stop.\n");
-
 // Clean shutdown.
 process.on("SIGINT", () => {
   unsub();
