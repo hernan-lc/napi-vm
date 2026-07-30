@@ -29,7 +29,9 @@ pub struct FunctionData {
     pub name: Option<Rc<str>>,
     // Shared (`Rc`) so closures created in hot loops reference the same AST
     // instead of deep-cloning the parameter list and body on every creation.
-    pub params: Rc<Vec<String>>,
+    // Param names are `Rc<str>` so binding them in a call frame is a refcount
+    // bump, not a heap allocation.
+    pub params: Rc<Vec<Rc<str>>>,
     pub body: Rc<Vec<Statement>>,
     pub closure: Option<Env>,
     pub is_arrow: bool,
@@ -149,7 +151,7 @@ unsafe impl Send for GenYield {}
 pub struct GeneratorInner {
     pub body: Rc<Vec<Statement>>,
     pub closure: Option<Env>,
-    pub params: Rc<Vec<String>>,
+    pub params: Rc<Vec<Rc<str>>>,
     pub args: Vec<Value>,
     /// Sender to the generator thread (resume signals). `None` once done.
     pub to_gen: Option<mpsc::Sender<GenResume>>,
@@ -184,7 +186,7 @@ unsafe impl Send for SendValue {}
 pub struct SendGenInit {
     pub body: Rc<Vec<Statement>>,
     pub closure: Option<Env>,
-    pub params: Rc<Vec<String>>,
+    pub params: Rc<Vec<Rc<str>>>,
     pub args: Vec<Value>,
     pub to_gen_rx: mpsc::Receiver<GenResume>,
     pub from_gen_tx: mpsc::Sender<GenYield>,

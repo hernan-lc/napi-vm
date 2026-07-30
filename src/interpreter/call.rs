@@ -216,7 +216,7 @@ impl Interpreter {
                         }
                         for (i, p) in fd.params.iter().enumerate() {
                             let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
-                            vars.push((Key::from(p.as_str()), arg));
+                            vars.push((p.clone(), arg));
                         }
                         // Create the (detached) arguments object only when
                         // the body actually reads it; most functions never do.
@@ -247,7 +247,8 @@ impl Interpreter {
                                 fe.borrow_mut().set(&rest_name, Value::array(rest_args));
                             } else {
                                 let arg = if i < args.len() {
-                                    let is_rest_param = fd.params
+                                    let is_rest_param = fd
+                                        .params
                                         .get(i + 1)
                                         .map(|p| p.starts_with("..."))
                                         .unwrap_or(false);
@@ -280,7 +281,8 @@ impl Interpreter {
                 let s = std::mem::replace(&mut self.global, fe);
                 // `name` is an `Rc<str>`: cloning it for the stack frame is a
                 // refcount bump, so the hot path allocates nothing here.
-                let fname = fd.name
+                let fname = fd
+                    .name
                     .clone()
                     .unwrap_or_else(|| Rc::<str>::from("<anonymous>"));
                 self.push_frame(fname, Span::unknown());
@@ -402,7 +404,7 @@ impl Interpreter {
                         vars.push((Key::from("this"), inst.clone()));
                         for (i, p) in fd.params.iter().enumerate() {
                             let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
-                            vars.push((Key::from(p.as_str()), arg));
+                            vars.push((p.clone(), arg));
                         }
                         if fd.uses_arguments {
                             let args_obj = Value::object(
@@ -411,7 +413,8 @@ impl Interpreter {
                                     .map(|(i, v)| (i.to_string(), v.clone()))
                                     .collect(),
                             );
-                            args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
+                            args_obj
+                                .set_prop("length".to_string(), Value::Number(args.len() as f64));
                             vars.push((Key::from("arguments"), args_obj));
                         }
                         Rc::new(RefCell::new(Environment::with_bindings(parent_env, vars)))
@@ -425,7 +428,8 @@ impl Interpreter {
                                 let rest_args = args[i..].to_vec();
                                 fe.borrow_mut().set(&rest_name, Value::array(rest_args));
                             } else {
-                                let is_rest_param = fd.params
+                                let is_rest_param = fd
+                                    .params
                                     .get(i + 1)
                                     .map(|p| p.starts_with("..."))
                                     .unwrap_or(false);
@@ -444,7 +448,8 @@ impl Interpreter {
                                     .map(|(i, v)| (i.to_string(), v.clone()))
                                     .collect(),
                             );
-                            args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
+                            args_obj
+                                .set_prop("length".to_string(), Value::Number(args.len() as f64));
                             fe.borrow_mut().set("arguments", args_obj);
                         }
                         fe
@@ -487,7 +492,7 @@ impl Interpreter {
 pub(crate) fn spawn_generator_thread(
     body: Rc<Vec<Statement>>,
     closure: Option<super::Env>,
-    params: Rc<Vec<String>>,
+    params: Rc<Vec<Rc<str>>>,
     args: Vec<Value>,
     builtins_env: Option<super::Env>,
 ) -> (

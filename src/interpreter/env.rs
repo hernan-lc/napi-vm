@@ -22,6 +22,10 @@ const INLINE_CAP: usize = 8;
 /// are cloned with a refcount bump instead of a heap allocation.
 type Key = Rc<str>;
 
+// `Vars` only ever lives behind `Env = Rc<RefCell<_>>` and is never moved or
+// cloned by value, so the inline `SmallVec` (much larger than the `HashMap`
+// variant) costs nothing; the inlining is intentional for small frames.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 enum Vars {
     Small(SmallVec<[(Key, Value); INLINE_CAP]>),

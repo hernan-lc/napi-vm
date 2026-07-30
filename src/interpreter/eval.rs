@@ -12,6 +12,12 @@ use crate::parser::{
 };
 use crate::value::{ClassData, FunctionData, PromiseState, Value};
 
+/// Convert parser-owned parameter names into interned `Rc<str>` so call-frame
+/// binding is a refcount bump, not a heap allocation.
+fn intern_params(params: &[String]) -> Rc<Vec<Rc<str>>> {
+    Rc::new(params.iter().map(|p| Rc::from(p.as_str())).collect())
+}
+
 /// Whether a labeled control-flow signal targets the loop with `label`.
 /// Unlabeled signals (`None`) target the innermost loop and are handled by
 /// the callers directly; this only decides labeled ones.
@@ -54,7 +60,7 @@ impl Interpreter {
                     name,
                     Value::Function(Box::new(FunctionData {
                         name: Some(name.as_str().into()),
-                        params: Rc::new(params.clone()),
+                        params: intern_params(params),
                         body: Rc::new(body.clone()),
                         closure: Some(self.global.clone()),
                         is_arrow: false,
@@ -100,7 +106,7 @@ impl Interpreter {
                         } => {
                             let fn_val = Value::Function(Box::new(FunctionData {
                                 name: Some(mname.as_str().into()),
-                                params: Rc::new(mp.clone()),
+                                params: intern_params(mp),
                                 body: Rc::new(mb.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
@@ -161,7 +167,7 @@ impl Interpreter {
                         } => {
                             let setter_fn = Value::Function(Box::new(FunctionData {
                                 name: Some(format!("set {}", sname).into()),
-                                params: Rc::new(vec![param.clone()]),
+                                params: Rc::new(vec![Rc::from(param.as_str())]),
                                 body: Rc::new(sb.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
@@ -209,7 +215,12 @@ impl Interpreter {
 
                 let constructor = Value::Function(Box::new(FunctionData {
                     name: Some(name.as_str().into()),
-                    params: Rc::new(ctor_params),
+                    params: Rc::new(
+                        ctor_params
+                            .into_iter()
+                            .map(|p| Rc::from(p.as_str()))
+                            .collect(),
+                    ),
                     uses_arguments: stmts_reference(&full_ctor_body, "arguments"),
                     body: Rc::new(full_ctor_body),
                     closure: Some(ctor_closure),
@@ -625,7 +636,7 @@ impl Interpreter {
                         ObjectProp::Method { name, params, body } => {
                             let fn_val = Value::Function(Box::new(FunctionData {
                                 name: Some(name.as_str().into()),
-                                params: Rc::new(params.clone()),
+                                params: intern_params(params),
                                 body: Rc::new(body.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
@@ -651,7 +662,7 @@ impl Interpreter {
                         ObjectProp::Setter { name, param, body } => {
                             let fn_val = Value::Function(Box::new(FunctionData {
                                 name: Some(format!("set {}", name).into()),
-                                params: Rc::new(vec![param.clone()]),
+                                params: Rc::new(vec![Rc::from(param.as_str())]),
                                 body: Rc::new(body.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
@@ -873,7 +884,7 @@ impl Interpreter {
             }
             Expr::ArrowFn { params, body } => Ok(Value::Function(Box::new(FunctionData {
                 name: None,
-                params: Rc::new(params.clone()),
+                params: intern_params(params),
                 closure: Some(self.global.clone()),
                 uses_arguments: arrow_body_references(body, "arguments"),
                 body: Rc::new(match body.as_ref() {
@@ -892,7 +903,7 @@ impl Interpreter {
                 is_generator,
             } => Ok(Value::Function(Box::new(FunctionData {
                 name: name.as_deref().map(Rc::from),
-                params: Rc::new(params.clone()),
+                params: intern_params(params),
                 body: Rc::new(body.clone()),
                 closure: Some(self.global.clone()),
                 is_arrow: false,
