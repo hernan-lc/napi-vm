@@ -18,7 +18,7 @@ Execute JavaScript in an isolated environment with no access to the host system'
 - **Generators** — `function*`/`yield` with true suspension (infinite generators, `next(val)` sent values, `for...of`)
 - **Symbols & iterators** — `Symbol()`, well-known symbols, `Symbol.for`/`keyFor`, full iterator protocol (`[Symbol.iterator]`, `for...of` over custom iterables)
 - **Standard library** — `Math`, `JSON`, `Object`, `Array`/`String`/`Number` prototype methods, and global functions (`parseInt`, `isNaN`, …)
-- **Native inspector** *(opt-in)* — a DevTools-style foldable tree over live guest values, implemented in Rust behind the `inspector` feature (`vm.inspect` / `console.dir(obj, { inspect: true })`); shows circular structures, mouse-driven inline sessions that stay in the scrollback
+- **Native inspector** *(opt-in)* — a DevTools-style foldable tree over live guest values, implemented in Rust behind the `inspector` feature (`vm.inspect` / `console.dir(obj, { inspect: true })`); shows circular structures as a non-blocking inline dump, closed by default
 
 > **Status:** the core language, classes, a working standard library, async/`await`, generators with true mid-body suspension (`yield`/`next`/`next(val)`), module export wiring, and a full `Symbol` + iterator protocol are implemented and covered by 566 passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture).
 
@@ -153,9 +153,9 @@ for a complete working demo (run with `bun examples/hotreload.ts`).
 | `vm.removeGlobal(name)` | Remove a global binding, including exposed host functions (returns `bool`) |
 | `vm.hasGlobal(name)` | Check whether a global binding exists |
 | `vm.setImportMetaMain(bool)` | Set the value of `import.meta.main` |
-| `vm.inspect(code)` | Evaluate `code` and open the native interactive inspector on the result *(requires `--features inspector`)* |
+| `vm.inspect(code)` | Evaluate `code` and print the result through the native inspector (non-blocking inline tree) *(requires `--features inspector`)* |
 | `vm.inspectValue(value)` | Marshal a host value (or `JSON.parse(str)`) and inspect it; copies across the boundary, so no circular structures *(requires `--features inspector`)* |
-| `setInspectorConfig(opts)` | Override the inspector keymap/colors *(requires `--features inspector`)* |
+| `setInspectorConfig(opts)` | Override the inspector colors/depth *(requires `--features inspector`)* |
 | `debugParse(code)` | Parse code and return the AST as a string |
 
 ### Native inspector
@@ -167,18 +167,16 @@ tree inspector implemented entirely in Rust. Build it in:
 npx napi build --platform --release --features inspector
 ```
 
-`inspector` **implies the `mouse` feature**, so this one flag builds the full
-mouse-driven inspector and its NAPI surface (the SGR mouse helpers come along
-too).
-
-It is **off by default** because an interactive session enables raw mode +
-mouse capture and blocks the host until it is closed (the event loop pauses
-on input — no sleeps involved). Sessions render **inline** — never on an
-alternate screen — with the tree starting collapsed; each closed session
-leaves a compact listing of its final view in the scrollback, so multiple
-inspections accumulate as a list in the console alongside your
-`console.log` output, all of it visible after the app exits. Two entry
-points:
+It is **off by default** to keep the default NAPI surface minimal (it adds
+no dependencies). The inspector is a **non-blocking inline dump**: it prints
+a compact tree at the current position in the console flow — never on an
+alternate screen, never full-page — and returns immediately, so the event
+loop is never paused and there is nothing to close. The tree prints
+**closed by default** (containers show `▶` fold hints); open it level by
+level with `INSPECTOR_DEPTH` or `setInspectorConfig({ depth })`. Each dump
+stays in the scrollback like any other log line, so multiple inspections
+accumulate as a list alongside your `console.log` output, all of it visible
+after the app exits. Two entry points:
 
 ```javascript
 const { Vm, setInspectorConfig } = require('./index.js');
@@ -188,11 +186,11 @@ vm.run('var user = { name: "ada", nested: { city: "London" } };');
 // From the host: evaluate an expression and inspect the result.
 vm.inspect('user');
 
-// From guest code: console.dir with { inspect: true } opens the same TUI.
+// From guest code: console.dir with { inspect: true } uses the same tree.
 vm.run('console.dir(user, { inspect: true });');
 
 // Inspect a plain host object (or parsed JSON) directly — marshalled in.
-vm.inspectValue({ pid: process.pid, flags: ['inspector', 'mouse'] });
+vm.inspectValue({ pid: process.pid, flags: ['inspector'] });
 vm.inspectValue(JSON.parse('{"status":200}'));
 ```
 
@@ -207,21 +205,16 @@ object.
 
 Because the inspector walks the guest `Value` directly — no NAPI marshalling —
 **circular guest structures render as `[Circular *n]`** instead of being lost
-at the boundary. In a non-TTY environment (pipes, CI) both entry points fall
-back to a static, depth-limited tree dump (fold arrows + colors, expanded to
-`INSPECTOR_DEPTH`) and never block.
-
-Controls: click a `▶`/`▼` row to expand/collapse · wheel or
-`↑`/`↓`/`PgUp`/`PgDn`/`Home`/`End` to scroll · click outside the tree (or
-`q`/`esc`/`ctrl-c`) to close. See
+at the boundary. The behavior is identical in a TTY and in a pipe (CI): the
+same depth-limited dump, never blocking. See
 [`examples/inspector-native.ts`](examples/inspector-native.ts) for a full demo.
 
-Colors and the close key are configurable, highest precedence last:
+Colors and depth are configurable, highest precedence last:
 
-- **Env vars:** `INSPECTOR_KEY_QUIT` (a single character), `INSPECTOR_DEPTH`
-  (static-dump depth).
-- **`setInspectorConfig()`**: `{ colors, maxStaticDepth, keyQuit }` — omitted
-  fields keep their value.
+- **Env var:** `INSPECTOR_DEPTH` (levels to open; default `0` = fully
+  closed).
+- **`setInspectorConfig()`**: `{ colors, depth }` — omitted fields keep
+  their value.
 
 ## Sandbox limits & crash safety
 
@@ -326,8 +319,8 @@ src/
 │   ├── number.rs       # Number statics/prototype + parseInt/parseFloat
 │   ├── object.rs       # Object statics
 │   └── json.rs         # JSON.stringify / JSON.parse
-├── inspector/          # Native TUI inspector (feature = "inspector", off by default)
-│   ├── mod.rs          # Entry point + crossterm event loop
+├── inspector/          # Native inspector tree dump (feature = "inspector", off by default)
+│   ├── mod.rs          # Entry point: the non-blocking inline dump
 │   ├── tree.rs         # Lazy, cycle-aware foldable tree over Value
 │   └── config.rs       # Config: defaults, env vars, NAPI setter
 ├── value.rs            # Value enum

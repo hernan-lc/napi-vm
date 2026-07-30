@@ -51,9 +51,9 @@ pub struct Tree {
 }
 
 impl Tree {
-    /// Build a tree rooted at `value`, collapsed: the first frame shows only
-    /// the root row (`▶ …`) and the user opens what they need. Children are
-    /// built lazily on first expand.
+    /// Build a tree rooted at `value`, fully closed: nothing is expanded
+    /// until [`Tree::expand_to_depth`] opens it. Children are built lazily
+    /// on first expand.
     pub fn new(value: Value) -> Tree {
         let mut t = Tree {
             nodes: Vec::new(),
@@ -87,10 +87,6 @@ impl Tree {
         }
     }
 
-    pub fn is_expanded(&self, idx: usize) -> bool {
-        self.nodes[idx].expanded
-    }
-
     /// Set of container pointers from `idx` up to the root (inclusive).
     fn ancestor_ptrs(&self, mut idx: usize) -> HashSet<*const ()> {
         let mut set = HashSet::new();
@@ -108,7 +104,13 @@ impl Tree {
 
     /// Create a node and return its index. `ancestors` is the parent's chain,
     /// used to flag circular back-references.
-    fn new_node(&mut self, key: Option<String>, value: Value, parent: usize, ancestors: &HashSet<*const ()>) -> usize {
+    fn new_node(
+        &mut self,
+        key: Option<String>,
+        value: Value,
+        parent: usize,
+        ancestors: &HashSet<*const ()>,
+    ) -> usize {
         let depth = self.nodes[parent].depth + 1;
         let mut circular = None;
         if let Some(ptr) = container_ptr(&value)
@@ -164,18 +166,9 @@ impl Tree {
         self.nodes[idx].children = Some(child_idxs);
     }
 
-    /// Expand or collapse a node (no-op when it is not expandable).
-    pub fn toggle(&mut self, idx: usize, want: bool) {
-        if !self.is_expandable(idx) {
-            return;
-        }
-        self.ensure_children(idx);
-        self.nodes[idx].expanded = want;
-    }
-
     /// Expand every expandable node whose depth is below `max_depth`, leaving
-    /// deeper containers collapsed. Used by the static (non-TTY) dump so it
-    /// shows a bounded prefix of the tree with `▶` hints for the rest.
+    /// deeper containers closed. With `max_depth = 0` nothing opens, so the
+    /// dump prints the fully closed tree (`▶` hints only).
     pub fn expand_to_depth(&mut self, max_depth: usize) {
         let mut stack = vec![self.root];
         while let Some(idx) = stack.pop() {
@@ -240,11 +233,7 @@ impl Tree {
         let n = &self.nodes[idx];
         let indent = "  ".repeat(n.depth);
         let arrow = if self.is_expandable(idx) {
-            if n.expanded {
-                "▼ "
-            } else {
-                "▶ "
-            }
+            if n.expanded { "▼ " } else { "▶ " }
         } else {
             "  "
         };

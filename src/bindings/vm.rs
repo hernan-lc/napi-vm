@@ -429,13 +429,12 @@ impl VM {
 #[cfg(feature = "inspector")]
 #[napi]
 impl VM {
-    /// Evaluate `source` and open the native inspector on the resulting
-    /// value (a foldable, DevTools-style tree). The session renders inline —
-    /// click a row to expand/collapse, click outside to close — and the
-    /// final tree stays in the console. The value is walked directly inside
-    /// Rust — no NAPI marshalling — so circular structures render as
-    /// `[Circular *n]`. In a non-TTY environment this prints a static,
-    /// depth-limited tree dump instead and never blocks.
+    /// Evaluate `source` and print the resulting value through the native
+    /// inspector: a compact, DevTools-style tree that renders inline in the
+    /// console flow and never blocks — it prints and returns immediately,
+    /// closed by default (open it level by level with `setInspectorConfig`
+    /// or `INSPECTOR_DEPTH`). The value is walked directly inside Rust — no
+    /// NAPI marshalling — so circular structures render as `[Circular *n]`.
     ///
     /// Only available when the crate is built with `--features inspector`.
     #[napi]
@@ -460,9 +459,10 @@ impl VM {
         Ok(())
     }
 
-    /// Marshal a host (Node) value into the VM and open the inspector on it —
-    /// convenient for inspecting a plain JS object without first registering
-    /// it as a global. To inspect parsed JSON, pass `JSON.parse(str)`.
+    /// Marshal a host (Node) value into the VM and print it through the
+    /// inspector — convenient for inspecting a plain JS object without first
+    /// registering it as a global. To inspect parsed JSON, pass
+    /// `JSON.parse(str)`.
     ///
     /// Unlike `inspect(source)`, the value is *copied* across the NAPI
     /// boundary (`from_napi` is depth-bounded and not cycle-aware), so this
@@ -472,8 +472,8 @@ impl VM {
     /// Only available when the crate is built with `--features inspector`.
     #[napi]
     pub fn inspect_value(&mut self, env: Env, value: Unknown) -> napi::Result<()> {
-        let v =
-            from_napi(env.raw(), value.raw()).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let v = from_napi(env.raw(), value.raw())
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         let cfg = crate::inspector::config::current();
         crate::inspector::inspect(&v, "value", &cfg);
         Ok(())
@@ -481,24 +481,20 @@ impl VM {
 }
 
 /// Options for `setInspectorConfig`. Every field is optional; omitted fields
-/// keep their current value. The quit-key override must be exactly one
-/// character or it is ignored.
+/// keep their current value.
 #[cfg(feature = "inspector")]
 #[napi(object)]
 #[derive(Default)]
 pub struct InspectorConfig {
     /// Force colors on/off; omit to keep auto-detection.
     pub colors: Option<bool>,
-    /// How deep the static (non-TTY) dump expands containers before
-    /// collapsing them into `▶` rows.
-    pub max_static_depth: Option<u32>,
-    /// Letter that closes an interactive session (Esc and ctrl-c always
-    /// close).
-    pub key_quit: Option<String>,
+    /// How many levels deep the dump opens containers before leaving them
+    /// closed (`▶` rows). `0` prints the tree fully closed.
+    pub depth: Option<u32>,
 }
 
-/// Override the global inspector configuration (colors + close key). Changes
-/// apply to the next `vm.inspect` / `console.dir({ inspect: true })` session.
+/// Override the global inspector configuration (colors + depth). Changes
+/// apply to the next `vm.inspect` / `console.dir({ inspect: true })` dump.
 /// Only available when built with `--features inspector`.
 #[cfg(feature = "inspector")]
 #[napi]
@@ -507,14 +503,8 @@ pub fn set_inspector_config(opts: InspectorConfig) {
         if let Some(v) = opts.colors {
             cfg.colors = Some(v);
         }
-        if let Some(d) = opts.max_static_depth {
-            cfg.max_static_depth = d as usize;
-        }
-        if let Some(v) = opts.key_quit.as_deref() {
-            let mut ch = v.chars();
-            if let (Some(c), None) = (ch.next(), ch.next()) {
-                cfg.key_quit = c;
-            }
+        if let Some(d) = opts.depth {
+            cfg.depth = d as usize;
         }
     });
 }

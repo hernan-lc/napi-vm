@@ -76,21 +76,21 @@ export declare class Vm {
    */
   callFunction(name: string, args: Array<unknown>): unknown
   /**
-   * Evaluate `source` and open the native inspector on the resulting
-   * value (a foldable, DevTools-style tree). The session renders inline —
-   * click a row to expand/collapse, click outside to close — and the
-   * final tree stays in the console. The value is walked directly inside
-   * Rust — no NAPI marshalling — so circular structures render as
-   * `[Circular *n]`. In a non-TTY environment this prints a static,
-   * depth-limited tree dump instead and never blocks.
+   * Evaluate `source` and print the resulting value through the native
+   * inspector: a compact, DevTools-style tree that renders inline in the
+   * console flow and never blocks — it prints and returns immediately,
+   * closed by default (open it level by level with `setInspectorConfig`
+   * or `INSPECTOR_DEPTH`). The value is walked directly inside Rust — no
+   * NAPI marshalling — so circular structures render as `[Circular *n]`.
    *
    * Only available when the crate is built with `--features inspector`.
    */
   inspect(source: string): void
   /**
-   * Marshal a host (Node) value into the VM and open the inspector on it —
-   * convenient for inspecting a plain JS object without first registering
-   * it as a global. To inspect parsed JSON, pass `JSON.parse(str)`.
+   * Marshal a host (Node) value into the VM and print it through the
+   * inspector — convenient for inspecting a plain JS object without first
+   * registering it as a global. To inspect parsed JSON, pass
+   * `JSON.parse(str)`.
    *
    * Unlike `inspect(source)`, the value is *copied* across the NAPI
    * boundary (`from_napi` is depth-bounded and not cycle-aware), so this
@@ -109,70 +109,23 @@ export declare function debugParse(source: string): string
 
 /**
  * Options for `setInspectorConfig`. Every field is optional; omitted fields
- * keep their current value. The quit-key override must be exactly one
- * character or it is ignored.
+ * keep their current value.
  */
 export interface InspectorConfig {
   /** Force colors on/off; omit to keep auto-detection. */
   colors?: boolean
   /**
-   * How deep the static (non-TTY) dump expands containers before
-   * collapsing them into `▶` rows.
+   * How many levels deep the dump opens containers before leaving them
+   * closed (`▶` rows). `0` prints the tree fully closed.
    */
-  maxStaticDepth?: number
-  /**
-   * Letter that closes an interactive session (Esc and ctrl-c always
-   * close).
-   */
-  keyQuit?: string
+  depth?: number
 }
-
-/** ANSI sequence to disable mouse tracking (reverse of `mouse_enable_seq`). */
-export declare function mouseDisableSeq(): string
-
-/**
- * ANSI sequence to enable button-event mouse tracking in SGR mode.
- *
- * `1000` = report button press events; `1006` = SGR extended encoding
- * (gives pixel-accurate coordinates and distinguishes press from release).
- */
-export declare function mouseEnableSeq(): string
-
-/** A parsed SGR mouse event, returned to JS as a plain object. */
-export interface MouseEvent {
-  /** `"press"`, `"release"`, `"move"`, `"scroll-up"`, or `"scroll-down"`. */
-  kind: string
-  /** 0-based column. */
-  x: number
-  /** 0-based row. */
-  y: number
-  /**
-   * Button index: 0 = left, 1 = middle, 2 = right.
-   * Always 0 for scroll events.
-   */
-  button: number
-  shift: boolean
-  alt: boolean
-  ctrl: boolean
-}
-
-/**
- * Parse an SGR-encoded mouse event from raw stdin bytes.
- *
- * SGR format (mode 1006):
- *   press / move:  `\x1b[<Cb;Cx;CyM`
- *   release:       `\x1b[<Cb;Cx;Cym`
- *
- * Returns `None` when the buffer is not a valid SGR mouse sequence, so
- * callers can fall through to keyboard handling.
- */
-export declare function parseMouseEvent(buf: Buffer): MouseEvent | null
 
 export declare function runCode(source: string): string
 
 /**
- * Override the global inspector configuration (colors + close key). Changes
- * apply to the next `vm.inspect` / `console.dir({ inspect: true })` session.
+ * Override the global inspector configuration (colors + depth). Changes
+ * apply to the next `vm.inspect` / `console.dir({ inspect: true })` dump.
  * Only available when built with `--features inspector`.
  */
 export declare function setInspectorConfig(opts: InspectorConfig): void

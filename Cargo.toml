@@ -10,28 +10,21 @@ crate-type = ["cdylib", "lib"]
 
 [features]
 default = []
-# SGR mouse-event parser + ANSI tracking sequences for the TUI inspector.
-# Off by default: mouse mode changes global terminal behavior and is
-# meaningless in CI / piped environments.
+# SGR mouse-event parser + ANSI tracking sequences, exposed to JS
+# (parseMouseEvent / mouseEnableSeq / mouseDisableSeq). Independent of the
+# inspector; off by default to keep the default NAPI surface minimal.
 mouse = []
-# Interactive terminal object inspector (DevTools-style foldable tree),
-# implemented natively on the guest `Value`. Off by default: an interactive
-# session enables raw mode + mouse capture until closed (it renders inline —
-# never on an alternate screen — blocks on input, and leaves a compact
-# listing of the final view in the scrollback) and is meaningless in CI /
-# piped environments, where it transparently falls back to a static dump.
-# Implies `mouse`, so `--features inspector` is enough to build the full
-# inspector and its NAPI surface.
-inspector = ["mouse", "dep:crossterm"]
+# Native object inspector (DevTools-style foldable tree), implemented on the
+# guest `Value`. A non-blocking inline tree dump — it prints closed by
+# default (open it with `INSPECTOR_DEPTH` / setInspectorConfig) and returns
+# immediately: no session, no raw mode, no mouse, nothing to close. Off by
+# default to keep the default NAPI surface minimal; adds no dependencies.
+inspector = []
 
 [dependencies]
 napi = { version = "3.12.0", features = ["napi8"] }
 napi-derive = "3.6.1"
 smallvec = "1"
-# Cross-platform raw-mode input, key events, terminal size and alternate
-# screen for the `inspector` feature. Optional so the default build stays
-# dependency-light and never touches the terminal.
-crossterm = { version = "0.28", optional = true }
 
 [dev-dependencies]
 criterion = "0.5"

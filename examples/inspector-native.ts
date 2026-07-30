@@ -1,16 +1,20 @@
 /**
- * Native interactive object inspector — implemented entirely in Rust.
- * run anywhere:
+ * Native object inspector — a non-blocking inline tree dump, implemented
+ * entirely in Rust. Run anywhere:
  *
  *   bun examples/inspector-native.ts
+ *
+ * Every inspect() prints its tree and returns immediately: no session, no
+ * key to press, nothing blocking the event loop.
  */
 import { Vm, setInspectorConfig } from "../index";
 
-// ── Optional: customize colors / close key before any session ───────
-// Omitted fields keep their defaults. The key override must be one char.
+// ── Optional: customize colors / depth before any dump ──────────────
+// Omitted fields keep their defaults. Depth 0 (the default) prints the
+// tree fully closed (▶ hints only); remove this call to see that.
 setInspectorConfig({
-  // colors: false,      // force off (default: auto — TTY + NO_COLOR)
-  // keyQuit: "x",       // close on `x` instead of `q`
+  // colors: false,   // force off (default: auto — TTY + NO_COLOR)
+  depth: 2,           // open containers two levels deep
 });
 
 const vm = new Vm();
@@ -29,13 +33,13 @@ vm.run(`
   };
 `);
 
-// Session 1: host-driven — evaluate an expression and inspect the result.
+// Dump 1: host-driven — evaluate an expression and inspect the result.
 //vm.inspect("user");
 
-// Session 2: guest-driven — console.dir with { inspect: true }.
+// Dump 2: guest-driven — console.dir with { inspect: true }.
 vm.run('console.dir(user.address, { inspect: true });');
 
-// Session 3: a circular guest structure. The Rust inspector walks the live
+// Dump 3: a circular guest structure. The Rust inspector walks the live
 // Value, so the cycle shows up as [Circular *1] instead of being lost.
 vm.run(`
   var ring = { name: "root" };
@@ -44,24 +48,24 @@ vm.run(`
 `);
 vm.inspect("ring");
 
-// Session 4: inspect a host object directly — no setGlobal needed. The value
+// Dump 4: inspect a host object directly — no setGlobal needed. The value
 // is marshalled (copied) into the VM, so this path is for plain data; cycles
-// live on the guest side (session 3).
+// live on the guest side (dump 3).
 vm.inspectValue({
   source: "host",
   pid: process.pid,
   versions: { node: process.versions.node, platform: process.platform },
-  flags: ["inspector", "mouse"],
+  flags: ["inspector"],
 });
 
-// Session 5: inspect parsed JSON. Wrap in parens and inspect as a guest
+// Dump 5: inspect parsed JSON. Wrap in parens and inspect as a guest
 // expression, or JSON.parse + inspectValue — both work; the parens form keeps
 // it a guest value.
 const json = '{"title":"sunt aut","status":200,"tags":["a","b"]}';
 vm.run(`var payload = ${json};`);
 vm.inspect("payload");
 
-// Each closed session leaves a compact tree listing in the scrollback, so
-// this line lands right after the last inspection and the full log — every
-// console.log and every inspection — stays visible after exit.
+// Dumps are plain console output, so this lands right after the last
+// inspection and the full log stays visible after exit.
 console.log("\ndone.");
+await new Promise(resolve => setTimeout(resolve, 5000));

@@ -1,61 +1,45 @@
-//! Inspector configuration: display options and the close key, with sensible
-//! defaults, environment-variable overrides, and a process-global config that
-//! the NAPI layer can mutate via `setInspectorConfig`.
+//! Inspector configuration: display options with sensible defaults, an
+//! environment-variable override, and a process-global config that the NAPI
+//! layer can mutate via `setInspectorConfig`.
 //!
-//! Precedence (lowest to highest): built-in defaults → `INSPECTOR_*` env vars
-//! → `setInspectorConfig()` calls. A session snapshots the global config when
-//! it starts, so changes take effect on the next `inspect`/`console.dir`.
+//! Precedence (lowest to highest): built-in defaults → the `INSPECTOR_DEPTH`
+//! env var → `setInspectorConfig()` calls. A dump snapshots the global
+//! config when it starts, so changes take effect on the next
+//! `inspect`/`console.dir`.
 
 use std::sync::{LazyLock, Mutex};
 
-/// Display + input configuration for an inspector session. Sessions render
-/// inline (never on an alternate screen), block on input until closed, and
-/// are driven by the mouse (click to expand/collapse, wheel to scroll, click
-/// outside the tree to close) and the keyboard (arrows/PgUp/PgDn/Home/End to
-/// scroll; the close key, Esc, and ctrl-c to close).
+/// Display configuration for the inspector. The inspector is a non-blocking
+/// inline tree dump — there is no session and no keymap, just how much of
+/// the tree to open and whether to colorize it.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Force colors on (`Some(true)`) or off (`Some(false)`); `None` means
     /// auto-detect (TTY + `NO_COLOR`/`FORCE_COLOR`, via `colors_enabled`).
     pub colors: Option<bool>,
-    /// How deep the static (non-TTY) tree dump expands containers before
-    /// collapsing them into `▶` rows.
-    pub max_static_depth: usize,
-    /// Letter that closes an interactive session (Esc and ctrl-c always
-    /// close). Values that are not exactly one character are ignored so a
-    /// malformed environment can never break the inspector.
-    pub key_quit: char,
+    /// How many levels deep the dump opens containers before leaving them
+    /// closed (`▶` rows). `0` — the default — prints the tree fully closed.
+    pub depth: usize,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        let max_static_depth = std::env::var("INSPECTOR_DEPTH")
+        let depth = std::env::var("INSPECTOR_DEPTH")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(4);
-        let key_quit = std::env::var("INSPECTOR_KEY_QUIT")
-            .ok()
-            .and_then(|v| {
-                let mut chars = v.chars();
-                match (chars.next(), chars.next()) {
-                    (Some(c), None) => Some(c),
-                    _ => None,
-                }
-            })
-            .unwrap_or('q');
+            .unwrap_or(0);
         Config {
             colors: None,
-            max_static_depth,
-            key_quit,
+            depth,
         }
     }
 }
 
-/// Process-global config. `setInspectorConfig` mutates it; each session reads
-/// a snapshot via [`current`] when it starts.
+/// Process-global config. `setInspectorConfig` mutates it; each dump reads a
+/// snapshot via [`current`] when it starts.
 pub static CONFIG: LazyLock<Mutex<Config>> = LazyLock::new(|| Mutex::new(Config::default()));
 
-/// Clone the current global config (a snapshot for one session).
+/// Clone the current global config (a snapshot for one dump).
 pub fn current() -> Config {
     CONFIG.lock().unwrap().clone()
 }
