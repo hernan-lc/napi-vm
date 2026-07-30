@@ -50,7 +50,7 @@ impl Interpreter {
                     Ok(Value::Number(items.borrow().len() as f64))
                 } else if k == "__symbol_iterator__" {
                     Ok(Value::NativeFunction {
-                        name: "[Symbol.iterator]".to_string(),
+                        name: "[Symbol.iterator]".into(),
                         callable: array_iter,
                     })
                 } else if let Ok(idx) = k.parse::<usize>() {
@@ -71,7 +71,7 @@ impl Interpreter {
                     Ok(Value::Number(s.chars().count() as f64))
                 } else if k == "__symbol_iterator__" {
                     Ok(Value::NativeFunction {
-                        name: "[Symbol.iterator]".to_string(),
+                        name: "[Symbol.iterator]".into(),
                         callable: string_iter,
                     })
                 } else if let Ok(idx) = k.parse::<usize>() {
@@ -122,14 +122,14 @@ impl Interpreter {
             (Value::Generator { .. }, Value::String(k)) => {
                 if k == "next" {
                     Ok(Value::NativeFunction {
-                        name: "next".to_string(),
+                        name: "next".into(),
                         callable: super::call::generator_next,
                     })
                 } else if k == "__symbol_iterator__" {
                     // Generators are their own iterators: [Symbol.iterator]()
                     // returns `this`.
                     Ok(Value::NativeFunction {
-                        name: "[Symbol.iterator]".to_string(),
+                        name: "[Symbol.iterator]".into(),
                         callable: generator_iter_self,
                     })
                 } else {
@@ -139,7 +139,7 @@ impl Interpreter {
             (Value::NativeFunction { name, .. }, Value::String(k)) => {
                 // Well-known symbols and static methods on `Symbol`. A native
                 // function cannot carry properties, so they are resolved here.
-                if name == "Symbol" {
+                if name.as_ref() == "Symbol" {
                     match k.as_str() {
                         "iterator" => Ok(Value::Symbol("Symbol.iterator".to_string())),
                         "toStringTag" => Ok(Value::Symbol("Symbol.toStringTag".to_string())),
@@ -148,11 +148,11 @@ impl Interpreter {
                         "species" => Ok(Value::Symbol("Symbol.species".to_string())),
                         "asyncIterator" => Ok(Value::Symbol("Symbol.asyncIterator".to_string())),
                         "for" => Ok(Value::NativeFunction {
-                            name: "for".to_string(),
+                            name: "for".into(),
                             callable: crate::builtins::symbol_for,
                         }),
                         "keyFor" => Ok(Value::NativeFunction {
-                            name: "keyFor".to_string(),
+                            name: "keyFor".into(),
                             callable: crate::builtins::symbol_key_for,
                         }),
                         _ => Ok(Value::Undefined),
@@ -164,7 +164,7 @@ impl Interpreter {
 
             (Value::HostFunction { name, .. }, Value::String(k)) => {
                 if k == "name" {
-                    Ok(Value::String(name.clone()))
+                    Ok(Value::String(name.to_string()))
                 } else {
                     Ok(Value::Undefined)
                 }
@@ -173,19 +173,19 @@ impl Interpreter {
             // `str[Symbol.iterator]`, `gen[Symbol.iterator]`.
             (Value::Array(_), Value::Symbol(desc)) if desc == "Symbol.iterator" => {
                 Ok(Value::NativeFunction {
-                    name: "[Symbol.iterator]".to_string(),
+                    name: "[Symbol.iterator]".into(),
                     callable: array_iter,
                 })
             }
             (Value::String(_), Value::Symbol(desc)) if desc == "Symbol.iterator" => {
                 Ok(Value::NativeFunction {
-                    name: "[Symbol.iterator]".to_string(),
+                    name: "[Symbol.iterator]".into(),
                     callable: string_iter,
                 })
             }
             (Value::Generator { .. }, Value::Symbol(desc)) if desc == "Symbol.iterator" => {
                 Ok(Value::NativeFunction {
-                    name: "[Symbol.iterator]".to_string(),
+                    name: "[Symbol.iterator]".into(),
                     callable: generator_iter_self,
                 })
             }
@@ -265,7 +265,7 @@ fn array_iter(
         (
             "next".to_string(),
             super::Value::NativeFunction {
-                name: "next".to_string(),
+                name: "next".into(),
                 callable: array_iter_next,
             },
         ),
@@ -333,7 +333,7 @@ fn string_iter(
         (
             "next".to_string(),
             super::Value::NativeFunction {
-                name: "next".to_string(),
+                name: "next".into(),
                 callable: array_iter_next, // same logic: walk __items__ by __cursor__
             },
         ),

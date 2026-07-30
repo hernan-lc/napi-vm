@@ -434,7 +434,7 @@ type NativeFn = fn(&mut Interpreter, Value, Vec<Value>) -> Result<Value, VmErr>;
 
 fn nf(name: &str, callable: NativeFn) -> Value {
     Value::NativeFunction {
-        name: name.to_string(),
+        name: name.into(),
         callable,
     }
 }

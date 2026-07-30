@@ -120,6 +120,21 @@ impl Environment {
         }
     }
 
+    /// Create a child frame from a pre-built binding list. The call fast
+    /// path uses this to bind `this` + params in one allocation, with no
+    /// per-parameter `RefCell` borrows or insertion scans.
+    pub fn with_bindings(p: Env, vars: Vec<(String, Value)>) -> Self {
+        let vars = if vars.len() > PROMOTE_AT {
+            Vars::Large(vars.into_iter().collect())
+        } else {
+            Vars::Small(vars)
+        };
+        Self {
+            vars,
+            parent: Some(p),
+        }
+    }
+
     pub fn get(&self, n: &str) -> Option<Value> {
         if let Some(v) = self.vars.get(n) {
             Some(v.clone())

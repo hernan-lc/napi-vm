@@ -53,7 +53,7 @@ impl Interpreter {
                 self.global.borrow_mut().set(
                     name,
                     Value::Function {
-                        name: Some(name.clone()),
+                        name: Some(name.as_str().into()),
                         params: Rc::new(params.clone()),
                         body: Rc::new(body.clone()),
                         closure: Some(self.global.clone()),
@@ -99,7 +99,7 @@ impl Interpreter {
                             body: mb,
                         } => {
                             let fn_val = Value::Function {
-                                name: Some(mname.clone()),
+                                name: Some(mname.as_str().into()),
                                 params: Rc::new(mp.clone()),
                                 body: Rc::new(mb.clone()),
                                 closure: Some(self.global.clone()),
@@ -138,7 +138,7 @@ impl Interpreter {
                             body: gb,
                         } => {
                             let getter_fn = Value::Function {
-                                name: Some(format!("get {}", gname)),
+                                name: Some(format!("get {}", gname).into()),
                                 params: Rc::new(vec![]),
                                 body: Rc::new(gb.clone()),
                                 closure: Some(self.global.clone()),
@@ -160,7 +160,7 @@ impl Interpreter {
                             body: sb,
                         } => {
                             let setter_fn = Value::Function {
-                                name: Some(format!("set {}", sname)),
+                                name: Some(format!("set {}", sname).into()),
                                 params: Rc::new(vec![param.clone()]),
                                 body: Rc::new(sb.clone()),
                                 closure: Some(self.global.clone()),
@@ -211,7 +211,7 @@ impl Interpreter {
                 };
 
                 let constructor = Value::Function {
-                    name: Some(name.clone()),
+                    name: Some(name.as_str().into()),
                     params: Rc::new(ctor_params),
                     uses_arguments: stmts_reference(&full_ctor_body, "arguments"),
                     body: Rc::new(full_ctor_body),
@@ -627,7 +627,7 @@ impl Interpreter {
                         }
                         ObjectProp::Method { name, params, body } => {
                             let fn_val = Value::Function {
-                                name: Some(name.clone()),
+                                name: Some(name.as_str().into()),
                                 params: Rc::new(params.clone()),
                                 body: Rc::new(body.clone()),
                                 closure: Some(self.global.clone()),
@@ -640,7 +640,7 @@ impl Interpreter {
                         }
                         ObjectProp::Getter { name, body } => {
                             let fn_val = Value::Function {
-                                name: Some(format!("get {}", name)),
+                                name: Some(format!("get {}", name).into()),
                                 params: Rc::new(vec![]),
                                 body: Rc::new(body.clone()),
                                 closure: Some(self.global.clone()),
@@ -653,7 +653,7 @@ impl Interpreter {
                         }
                         ObjectProp::Setter { name, param, body } => {
                             let fn_val = Value::Function {
-                                name: Some(format!("set {}", name)),
+                                name: Some(format!("set {}", name).into()),
                                 params: Rc::new(vec![param.clone()]),
                                 body: Rc::new(body.clone()),
                                 closure: Some(self.global.clone()),
@@ -894,7 +894,7 @@ impl Interpreter {
                 is_async,
                 is_generator,
             } => Ok(Value::Function {
-                name: name.clone(),
+                name: name.as_deref().map(Rc::from),
                 params: Rc::new(params.clone()),
                 body: Rc::new(body.clone()),
                 closure: Some(self.global.clone()),

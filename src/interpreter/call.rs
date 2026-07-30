@@ -206,71 +206,91 @@ impl Interpreter {
                     ));
                 }
                 let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
-                let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
-                // Regular functions bind their own `this`; arrows inherit the
-                // enclosing lexical `this` through the closure chain.
-                if !is_arrow {
-                    fe.borrow_mut().set("this", this_val);
-                }
-                let mut has_rest = false;
-                let mut rest_idx = 0;
-                let mut rest_name = String::new();
-
-                for (i, p) in params.iter().enumerate() {
-                    if p.starts_with("...") {
-                        has_rest = true;
-                        rest_idx = i;
-                        rest_name = p.trim_start_matches("...").to_string();
-                        break;
-                    }
-                }
-
-                if has_rest {
-                    for (i, p) in params.iter().enumerate() {
-                        if i == rest_idx {
-                            let rest_args = args[i..].to_vec();
-                            fe.borrow_mut().set(&rest_name, Value::array(rest_args));
-                        } else {
-                            let arg = if i < args.len() {
-                                let is_rest_param = params
-                                    .get(i + 1)
-                                    .map(|p| p.starts_with("..."))
-                                    .unwrap_or(false);
-                                if !is_rest_param && i >= rest_idx {
-                                    Value::Undefined
-                                } else {
-                                    args.get(i).cloned().unwrap_or(Value::Undefined)
-                                }
-                            } else {
-                                Value::Undefined
-                            };
-                            fe.borrow_mut().set(p, arg);
+                let rest_idx = params.iter().position(|p| p.starts_with("..."));
+                let fe = match rest_idx {
+                    // Fast path (the overwhelming majority of calls): no rest
+                    // parameter. Build the whole frame — `this`, params, and
+                    // the optional `arguments` object — as one binding list
+                    // and allocate the environment exactly once. No
+                    // per-parameter `RefCell` borrows, no insertion scans.
+                    None => {
+                        let mut vars: Vec<(String, Value)> =
+                            Vec::with_capacity(params.len() + 2);
+                        // Regular functions bind their own `this`; arrows
+                        // inherit the enclosing lexical `this` through the
+                        // closure chain.
+                        if !is_arrow {
+                            vars.push(("this".to_string(), this_val));
                         }
+                        for (i, p) in params.iter().enumerate() {
+                            let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
+                            vars.push((p.clone(), arg));
+                        }
+                        // Create the (detached) arguments object only when
+                        // the body actually reads it; most functions never do.
+                        if *uses_arguments {
+                            let args_obj = Value::object(
+                                args.iter()
+                                    .enumerate()
+                                    .map(|(i, v)| (i.to_string(), v.clone()))
+                                    .collect(),
+                            );
+                            args_obj
+                                .set_prop("length".to_string(), Value::Number(args.len() as f64));
+                            vars.push(("arguments".to_string(), args_obj));
+                        }
+                        Rc::new(RefCell::new(Environment::with_bindings(parent_env, vars)))
                     }
-                } else {
-                    for (i, p) in params.iter().enumerate() {
-                        let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
-                        fe.borrow_mut().set(p, arg);
+                    // Slow path: rest parameters need positional fixups that
+                    // are not worth special-casing into the batch builder.
+                    Some(rest_idx) => {
+                        let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
+                        if !is_arrow {
+                            fe.borrow_mut().set("this", this_val);
+                        }
+                        let rest_name = params[rest_idx].trim_start_matches("...").to_string();
+                        for (i, p) in params.iter().enumerate() {
+                            if i == rest_idx {
+                                let rest_args = args[i..].to_vec();
+                                fe.borrow_mut().set(&rest_name, Value::array(rest_args));
+                            } else {
+                                let arg = if i < args.len() {
+                                    let is_rest_param = params
+                                        .get(i + 1)
+                                        .map(|p| p.starts_with("..."))
+                                        .unwrap_or(false);
+                                    if !is_rest_param && i >= rest_idx {
+                                        Value::Undefined
+                                    } else {
+                                        args.get(i).cloned().unwrap_or(Value::Undefined)
+                                    }
+                                } else {
+                                    Value::Undefined
+                                };
+                                fe.borrow_mut().set(p, arg);
+                            }
+                        }
+                        if *uses_arguments {
+                            let args_obj = Value::object(
+                                args.iter()
+                                    .enumerate()
+                                    .map(|(i, v)| (i.to_string(), v.clone()))
+                                    .collect(),
+                            );
+                            args_obj
+                                .set_prop("length".to_string(), Value::Number(args.len() as f64));
+                            fe.borrow_mut().set("arguments", args_obj);
+                        }
+                        fe
                     }
-                }
-
-                // Create the (detached) arguments object only when the body
-                // actually reads it; most functions never do.
-                if *uses_arguments {
-                    let args_obj = Value::object(
-                        args.iter()
-                            .enumerate()
-                            .map(|(i, v)| (i.to_string(), v.clone()))
-                            .collect(),
-                    );
-                    args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
-                    fe.borrow_mut().set("arguments", args_obj);
-                }
+                };
 
                 let s = self.global.clone();
                 self.global = fe;
-                let fname = name.clone().unwrap_or_else(|| "<anonymous>".to_string());
-                self.push_frame(&fname, Span::unknown());
+                // `name` is an `Rc<str>`: cloning it for the stack frame is a
+                // refcount bump, so the hot path allocates nothing here.
+                let fname = name.clone().unwrap_or_else(|| Rc::<str>::from("<anonymous>"));
+                self.push_frame(fname, Span::unknown());
                 let r = self.run(body);
                 // Convert a bare message into a located runtime error *before*
                 // popping the frame, so the snapshot carries the full call

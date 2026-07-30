@@ -561,7 +561,7 @@ impl VM {
             .register(raw)
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         let host_fn = Value::HostFunction {
-            name: name.clone(),
+            name: name.as_str().into(),
             id,
         };
         self.interp.global.borrow_mut().set(&name, host_fn);

@@ -26,7 +26,7 @@ pub(super) fn install(e: &mut Environment) {
 
 fn make_error_class(name: &str) -> Value {
     let constructor = Value::NativeFunction {
-        name: name.to_string(),
+        name: name.into(),
         callable: error_ctor,
     };
     let prototype = Value::object(vec![
