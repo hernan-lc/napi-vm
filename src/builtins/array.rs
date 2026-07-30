@@ -160,6 +160,9 @@ fn array_every(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<V
 fn array_push(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     if let Value::Array(items) = &this {
         let mut b = items.borrow_mut();
+        if b.len().saturating_add(a.len()) > crate::value::MAX_ARRAY_LEN {
+            return Err(crate::value::limit_err("Maximum array length exceeded"));
+        }
         for x in a {
             b.push(x);
         }
@@ -183,6 +186,16 @@ fn array_join(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
         Some(v) => interp.vs(v),
     };
     let parts: Vec<String> = items.iter().map(|v| join_str(interp, v)).collect();
+    // Pre-check the joined size: joining a million long strings could
+    // allocate far past the string cap before `join` returns.
+    let total: usize = parts
+        .iter()
+        .map(|p| p.len())
+        .sum::<usize>()
+        .saturating_add(sep.len().saturating_mul(parts.len().saturating_sub(1)));
+    if total > crate::value::MAX_STRING_LEN {
+        return Err(crate::value::limit_err("Maximum string length exceeded"));
+    }
     Ok(Value::String(parts.join(&sep)))
 }
 
@@ -232,9 +245,12 @@ fn array_slice(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value,
 fn array_concat(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let mut out = arr_items(&this);
     for v in a {
-        match v {
+        match &v {
             Value::Array(items) => out.extend(items.borrow().iter().cloned()),
-            other => out.push(other),
+            _ => out.push(v),
+        }
+        if out.len() > crate::value::MAX_ARRAY_LEN {
+            return Err(crate::value::limit_err("Maximum array length exceeded"));
         }
     }
     Ok(Value::array(out))
@@ -276,20 +292,24 @@ fn array_flat(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, 
     let depth = a.first().map(|v| v.to_number()).unwrap_or(1.0);
     let depth = if depth.is_nan() { 0.0 } else { depth };
 
-    fn flatten(items: &[Value], depth: f64, out: &mut Vec<Value>) {
+    fn flatten(items: &[Value], depth: f64, out: &mut Vec<Value>) -> Result<(), VmErr> {
         for it in items {
             if depth > 0.0
                 && let Value::Array(inner) = it
             {
-                flatten(&inner.borrow(), depth - 1.0, out);
+                flatten(&inner.borrow(), depth - 1.0, out)?;
             } else {
                 out.push(it.clone());
             }
+            if out.len() > crate::value::MAX_ARRAY_LEN {
+                return Err(crate::value::limit_err("Maximum array length exceeded"));
+            }
         }
+        Ok(())
     }
 
     let mut out = Vec::new();
-    flatten(&items, depth, &mut out);
+    flatten(&items, depth, &mut out)?;
     Ok(Value::array(out))
 }
 
@@ -303,9 +323,12 @@ fn array_flat_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resul
             Value::Undefined,
             vec![it.clone(), Value::Number(i as f64), this.clone()],
         )?;
-        match r {
+        match &r {
             Value::Array(inner) => out.extend(inner.borrow().iter().cloned()),
-            other => out.push(other),
+            _ => out.push(r),
+        }
+        if out.len() > crate::value::MAX_ARRAY_LEN {
+            return Err(crate::value::limit_err("Maximum array length exceeded"));
         }
     }
     Ok(Value::array(out))

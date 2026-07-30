@@ -19,7 +19,7 @@ Execute JavaScript in an isolated environment with no access to the host system'
 - **Symbols & iterators** — `Symbol()`, well-known symbols, `Symbol.for`/`keyFor`, full iterator protocol (`[Symbol.iterator]`, `for...of` over custom iterables)
 - **Standard library** — `Math`, `JSON`, `Object`, `Array`/`String`/`Number` prototype methods, and global functions (`parseInt`, `isNaN`, …)
 
-> **Status:** the core language, classes, a working standard library, async/`await`, generators with true mid-body suspension (`yield`/`next`/`next(val)`), module export wiring, and a full `Symbol` + iterator protocol are implemented and covered by 535 passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture).
+> **Status:** the core language, classes, a working standard library, async/`await`, generators with true mid-body suspension (`yield`/`next`/`next(val)`), module export wiring, and a full `Symbol` + iterator protocol are implemented and covered by 566 passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture).
 
 ## Installation
 
@@ -97,9 +97,8 @@ vm.removeGlobal("hostLog");
 Host-side listeners registered via the event bus survive across reloads
 because they live on the bus, not in the VM. The VM only ever sees a single
 `emit` global that is replaced atomically on each cycle, so there is never a
-duplicate-listener window. See [`examples/callback.ts`](examples/callback.ts)
-for a complete working demo (run with `bun examples/callback.ts`, or build
-with `npm run build:examples`).
+duplicate-listener window. See [`examples/hotreload.ts`](examples/hotreload.ts)
+for a complete working demo (run with `bun examples/hotreload.ts`).
 
 > **Event-loop note:** the interpreter is synchronous — `vm.run()` blocks the
 > Node event loop until the computation finishes. A `setTimeout(0)` scheduled
@@ -116,6 +115,7 @@ with `npm run build:examples`).
 | `vm.setGlobal(name, value)` | Define a global from a structured Node value (reachable as `name` and `window.name`) |
 | `vm.exposeFunction(name, fn)` | Expose a Node function to the VM as a callable global; throws propagate into the VM |
 | `vm.callFunction(name, args)` | Call a VM-defined global function; `args` is an array, returns a live JS value |
+| `vm.setLoopLimit(n)` | Cap loop iterations per execution (default 100M); exceeding it throws a catchable `RangeError` |
 | `vm.getGlobal(name)` | Read a global, stringified |
 | `vm.registerModule(name, code)` | Register an ES module so its exports are importable by later `run` calls |
 | `vm.removeModule(name)` | Remove a registered module (returns `bool`); call before re-registering on hot-reload |
@@ -126,13 +126,63 @@ with `npm run build:examples`).
 | `vm.setImportMetaMain(bool)` | Set the value of `import.meta.main` |
 | `debugParse(code)` | Parse code and return the AST as a string |
 
+## Sandbox limits & crash safety
+
+"Sandboxed" here means both **isolation** (guest code cannot see `require`,
+`process`, the filesystem, or the network) and **containment**: hostile or
+buggy guest code cannot kill the host process. Every known process-killing
+vector is guarded in the interpreter, and each guard raises a *catchable*
+guest error — the same behavior V8 provides.
+[`examples/crash.ts`](examples/crash.ts) is an executable catalogue of all 14
+vectors: it runs each one in a disposable subprocess, scores how it died, and
+fails (exit 1) if any case crashes, hangs, or disagrees with its pinned
+`expected` verdict — i.e. it doubles as a CI regression gate
+(`bun examples/crash.ts`). Current matrix: all 14 contained.
+
+| Vector | Example | Behavior | Guard |
+|--------|---------|----------|-------|
+| Deep recursion | `function f(){ return f(); } f();` | ✅ catchable `RangeError: Maximum call stack size exceeded` | Call-depth counter (`MAX_CALL_DEPTH = 256`) checked before each VM call frame |
+| Deep parse | 100k nested parens | ✅ catchable `RangeError: Maximum parse depth exceeded` | Parser nesting cap (`MAX_PARSE_DEPTH = 256`) with a depth latch |
+| Cyclic structures | `let o={}; o.self=o; o;` | ✅ prints `{self: [Circular]}` | Visited-set of `Rc` pointers + depth cap in `to_string` |
+| Cyclic JSON | `JSON.stringify(o)` on a cycle | ✅ catchable `TypeError: Converting circular structure to JSON` | Visited-set in `JSON.stringify`; depth cap `MAX_JSON_DEPTH = 512` (also bounds `JSON.parse`) |
+| Deep nesting teardown | build `[ [ [ 0 ] ] ]` 1M deep | ✅ runs, then tears down cleanly | `Drop for Value` is iterative (explicit work stack) — O(1) native stack at any depth |
+| Memory exhaustion | `while(true) a.push(…)` / `s = s + s` | ✅ catchable `RangeError: Maximum array/string length exceeded` | Hard caps `MAX_ARRAY_LEN = 262,144`, `MAX_STRING_LEN = 16 MB` on every growth path (push, concat, repeat, join, spread…) |
+| Infinite loop | `while(true){}` | ✅ catchable `RangeError: Maximum loop iterations exceeded` | Per-execution loop budget (default 100M, tunable via `vm.setLoopLimit`), consumed per iteration, refilled at each NAPI entry |
+| Generator misuse | recursive `yield*`, abandoned generators | ✅ absorbed / clean | Generators run on 8 MB scoped threads; thread failure surfaces as `{done: true}`, never as a host crash |
+| Runtime errors, host-fn throws | `undefinedVar.foo;` | ✅ catchable error objects | Internal errors surface to `catch (e)` as real objects with `name`/`message` |
+
+Why the guards matter: a native stack overflow or an allocation failure is a
+**signal** (`SIGSEGV`/`SIGTRAP`), not an exception — `try/catch` in the VM,
+`uncaughtException` in Node, and napi-rs's `catch_unwind` all fail to
+intercept it; the process simply dies. Containment therefore means checking
+depth, cycles, sizes, and budgets *before* the native runtime gets into
+trouble, and converting every limit into an ordinary catchable error.
+
+### Remaining residue: isolate operationally for full untrusted-code use
+
+The in-process guards stop every known way guest code can *kill* the host,
+but no in-process VM can provide complete untrusted-code containment without
+OS help. Two residues are inherent:
+
+- **CPU time is bounded per execution, not preemptible.** The loop budget
+  stops `while (true) {}` within ~100M iterations (a couple of seconds), but
+  the interpreter is synchronous: while guest code runs, the Node event loop
+  is blocked. For strict latency guarantees, run guest code in a worker or
+  child process with a watchdog.
+- **Memory is capped per allocation shape, not metered in total.** The size
+  caps keep any single structure survivable, but there is no aggregate heap
+  quota. For a hard ceiling, run the VM under `ulimit -v` or a cgroup memory
+  limit — exactly the pattern `examples/crash.ts` uses for its OOM cases.
+
+A crash in a disposable subprocess costs one child, not the host; that
+harness is a working template for operational isolation.
+
 ## Scripts
 
 | Command | Description |
 |---------|-------------|
 | `npm run build` | Build optimized native binary |
 | `npm run build:debug` | Build debug binary |
-| `npm run build:examples` | Build TS examples to `examples/dist/` via `bun build` |
 | `bun test` | Run the test suite |
 | `npm run bench` | End-to-end JS benchmark through the NAPI binding |
 | `npm run bench:rust` | Criterion microbenchmarks of the interpreter pipeline |

@@ -44,7 +44,7 @@ fn promise_all(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, Vm
     };
     let mut out = Vec::with_capacity(items.len());
     for it in items {
-        match it {
+        match &it {
             // The first rejection short-circuits the whole combinator.
             Value::Promise {
                 state: PromiseState::Rejected,
@@ -52,13 +52,13 @@ fn promise_all(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, Vm
             } => {
                 return Ok(Value::Promise {
                     state: PromiseState::Rejected,
-                    value,
+                    value: value.clone(),
                 });
             }
             Value::Promise { value, .. } => {
-                out.push(value.map(|b| *b).unwrap_or(Value::Undefined));
+                out.push(value.as_ref().map(|b| (**b).clone()).unwrap_or(Value::Undefined));
             }
-            other => out.push(other),
+            _ => out.push(it),
         }
     }
     Ok(Value::Promise {

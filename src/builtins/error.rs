@@ -50,8 +50,9 @@ fn make_error_class(name: &str) -> Value {
 /// the instance's prototype (set per-class above), so one native function
 /// serves all five.
 fn error_ctor(interp: &mut Interpreter, this: Value, args: Vec<Value>) -> Result<Value, VmErr> {
-    let name = match this.get_prop("name") {
-        Some(Value::String(s)) => s,
+    let name_prop = this.get_prop("name");
+    let name = match &name_prop {
+        Some(Value::String(s)) => s.clone(),
         _ => "Error".to_string(),
     };
     let msg = match args.first() {

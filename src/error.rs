@@ -123,6 +123,35 @@ fn throw_display(v: &Value) -> String {
     }
 }
 
+/// Build the guest-visible error value for an internal error message.
+/// Messages may carry a `"Name: message"` prefix naming one of the standard
+/// error types (as produced by `limit_err` and the interpreter guards);
+/// anything else becomes a plain `Error`. This is what lets guest code do
+/// `try { ... } catch (e) { e.message }` on internally raised errors.
+pub fn error_value_from_msg(message: &str) -> Value {
+    const NAMES: &[&str] = &[
+        "TypeError",
+        "RangeError",
+        "SyntaxError",
+        "ReferenceError",
+        "Error",
+    ];
+    for n in NAMES {
+        if let Some(rest) = message.strip_prefix(n)
+            && let Some(rest) = rest.strip_prefix(": ")
+        {
+            return Value::Error {
+                name: (*n).to_string(),
+                message: rest.to_string(),
+            };
+        }
+    }
+    Value::Error {
+        name: "Error".to_string(),
+        message: message.to_string(),
+    }
+}
+
 pub fn vm_ret(v: Value) -> Result<Value, VmErr> {
     Err(VmErr::Ret(v))
 }

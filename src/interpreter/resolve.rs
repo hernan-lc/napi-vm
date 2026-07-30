@@ -205,6 +205,13 @@ impl Interpreter {
                 }
                 Ok(Value::Undefined)
             }
+            // Internal errors surface to guest `catch` blocks as error objects
+            // with readable `name`/`message` properties.
+            (Value::Error { message, name }, Value::String(k)) => match k.as_str() {
+                "message" => Ok(Value::String(message.clone())),
+                "name" => Ok(Value::String(name.clone())),
+                _ => Ok(Value::Undefined),
+            },
             _ => Ok(Value::Undefined),
         }
     }
@@ -278,7 +285,8 @@ fn array_iter_next(
     this: super::Value,
     _args: Vec<super::Value>,
 ) -> Result<super::Value, crate::error::VmErr> {
-    let items = match this.get_prop("__items__") {
+    let items_prop = this.get_prop("__items__");
+    let items = match &items_prop {
         Some(super::Value::Array(a)) => a.borrow().clone(),
         _ => vec![],
     };

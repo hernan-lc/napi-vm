@@ -45,8 +45,17 @@ impl Interpreter {
                 // numeric addition (booleans/null/etc. coerce via to_number).
                 // The string side is pushed directly instead of round-tripping
                 // through `vs` (which would clone it).
+                // Unbounded string growth (`s = s + s` in a loop) would
+                // exhaust host memory and abort the process; cap the result
+                // and fail with a catchable RangeError instead.
+                use crate::value::MAX_STRING_LEN;
                 match (l, r) {
                     (Value::String(a), Value::String(b)) => {
+                        if a.len().saturating_add(b.len()) > MAX_STRING_LEN {
+                            return Err(crate::value::limit_err(
+                                "Maximum string length exceeded",
+                            ));
+                        }
                         let mut s = String::with_capacity(a.len() + b.len());
                         s.push_str(a);
                         s.push_str(b);
@@ -54,6 +63,11 @@ impl Interpreter {
                     }
                     (Value::String(a), _) => {
                         let rb = self.vs(r);
+                        if a.len().saturating_add(rb.len()) > MAX_STRING_LEN {
+                            return Err(crate::value::limit_err(
+                                "Maximum string length exceeded",
+                            ));
+                        }
                         let mut s = String::with_capacity(a.len() + rb.len());
                         s.push_str(a);
                         s.push_str(&rb);
@@ -61,6 +75,11 @@ impl Interpreter {
                     }
                     (_, Value::String(b)) => {
                         let lb = self.vs(l);
+                        if lb.len().saturating_add(b.len()) > MAX_STRING_LEN {
+                            return Err(crate::value::limit_err(
+                                "Maximum string length exceeded",
+                            ));
+                        }
                         let mut s = String::with_capacity(lb.len() + b.len());
                         s.push_str(&lb);
                         s.push_str(b);
@@ -257,6 +276,24 @@ impl Interpreter {
     }
 
     pub fn vs(&self, v: &Value) -> String {
+        // Only arrays recurse here (objects print opaquely), so the cycle and
+        // depth guards only need to cover the array branch — but both are
+        // load-bearing: a cyclic (`a.push(a)`) or million-deep array would
+        // otherwise overflow the native stack during stringification.
+        let mut visited: std::collections::HashSet<*const ()> =
+            std::collections::HashSet::new();
+        self.vs_rec(v, &mut visited, 0)
+    }
+
+    /// Maximum array nesting rendered by `vs`; deeper levels print as `...`.
+    const MAX_PRINT_DEPTH: usize = 128;
+
+    fn vs_rec(
+        &self,
+        v: &Value,
+        visited: &mut std::collections::HashSet<*const ()>,
+        depth: usize,
+    ) -> String {
         match v {
             Value::Undefined => "undefined".to_string(),
             Value::Null => "null".to_string(),
@@ -271,12 +308,26 @@ impl Interpreter {
             Value::String(s) => s.clone(),
             Value::Object { .. } => "[object Object]".to_string(),
             Value::GlobalObject => "[object global]".to_string(),
-            Value::Array(i) => i
-                .borrow()
-                .iter()
-                .map(|x| self.vs(x))
-                .collect::<Vec<_>>()
-                .join(","),
+            Value::Array(i) => {
+                if depth >= Self::MAX_PRINT_DEPTH {
+                    return "...".to_string();
+                }
+                // Path-based cycle detection (Rc pointer identity): insert
+                // on the way down, remove on the way up, so shared-but-acyclic
+                // references still print fully.
+                let ptr = Rc::as_ptr(i) as *const ();
+                if !visited.insert(ptr) {
+                    return "[Circular]".to_string();
+                }
+                let s = i
+                    .borrow()
+                    .iter()
+                    .map(|x| self.vs_rec(x, visited, depth + 1))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                visited.remove(&ptr);
+                s
+            }
             Value::Function { name, .. } => format!("function {}", name.as_deref().unwrap_or("")),
             Value::NativeFunction { name, .. } => format!("function {} [native]", name),
             Value::HostFunction { name, .. } => format!("function {} [native]", name),

@@ -9,11 +9,23 @@ pub use ast::*;
 use crate::lexer::Token;
 use crate::span::Span;
 
+/// Maximum statement/expression nesting the parser accepts. The parser is
+/// recursive descent, so each nesting level costs native stack frames;
+/// 100k-deep parentheses would overflow the stack and SIGSEGV the host.
+/// Bailing out at 256 turns that into a catchable parse error. Legitimate
+/// code rarely nests beyond a few dozen levels.
+const MAX_PARSE_DEPTH: u32 = 256;
+
 pub struct Parser {
     toks: Vec<(Token, Span)>,
     pos: usize,
     /// Sentinel EOF token used as a fallback when pos is out of bounds.
     eof_tok: (Token, Span),
+    /// Current statement/expression nesting depth.
+    depth: u32,
+    /// Set once when nesting exceeds `MAX_PARSE_DEPTH`; `parse()` stops and
+    /// callers (the NAPI layer) surface it as an error.
+    pub depth_exceeded: bool,
 }
 
 impl Parser {
@@ -22,6 +34,8 @@ impl Parser {
             toks: t.into_iter().map(|t| (t, Span::unknown())).collect(),
             pos: 0,
             eof_tok: (Token::EOF, Span::unknown()),
+            depth: 0,
+            depth_exceeded: false,
         }
     }
 
@@ -30,12 +44,14 @@ impl Parser {
             toks: t,
             pos: 0,
             eof_tok: (Token::EOF, Span::unknown()),
+            depth: 0,
+            depth_exceeded: false,
         }
     }
 
     pub fn parse(&mut self) -> Vec<Statement> {
         let mut s = Vec::new();
-        while !self.eof() {
+        while !self.eof() && !self.depth_exceeded {
             if let Some(st) = self.stmt() {
                 s.push(st);
             } else {
@@ -43,6 +59,27 @@ impl Parser {
             }
         }
         s
+    }
+
+    /// Enter one level of statement/expression nesting. Returns `false` (and
+    /// latches `depth_exceeded`) once the limit is passed; callers return
+    /// `None` so parsing unwinds instead of recursing further.
+    pub(crate) fn enter(&mut self) -> bool {
+        if self.depth_exceeded {
+            return false;
+        }
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth_exceeded = true;
+            false
+        } else {
+            true
+        }
+    }
+
+    /// Leave one nesting level (paired with a successful `enter`).
+    pub(crate) fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     pub(crate) fn cur(&self) -> &Token {

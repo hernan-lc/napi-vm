@@ -12,17 +12,41 @@ pub(super) fn install(e: &mut Environment) {
     }
 }
 
+/// Maximum nesting `JSON.stringify` / `JSON.parse` will walk. Real engines
+/// throw a `RangeError` here; without a limit a million-deep structure
+/// overflows the native stack.
+const MAX_JSON_DEPTH: usize = 512;
+
 fn json_stringify(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let v = a.first().cloned().unwrap_or(Value::Undefined);
     if matches!(v, Value::Undefined) {
         return Ok(Value::Undefined);
     }
     let mut out = String::new();
-    json_serialize(&v, &mut out);
+    // Path-based visited set (Rc pointer identity) so cyclic structures
+    // throw a catchable TypeError — matching `JSON.stringify` in V8 —
+    // instead of recursing until the native stack overflows.
+    let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
+    json_serialize(&v, &mut out, &mut visited, 0)?;
     Ok(Value::String(out))
 }
 
-fn json_serialize(v: &Value, out: &mut String) {
+fn json_serialize(
+    v: &Value,
+    out: &mut String,
+    visited: &mut std::collections::HashSet<*const ()>,
+    depth: usize,
+) -> Result<(), VmErr> {
+    if depth > MAX_JSON_DEPTH {
+        return Err(VmErr::Msg(
+            "RangeError: Maximum JSON depth exceeded".to_string(),
+        ));
+    }
+    if out.len() > crate::value::MAX_STRING_LEN {
+        return Err(VmErr::Msg(
+            "RangeError: Maximum string length exceeded".to_string(),
+        ));
+    }
     match v {
         Value::Null => out.push_str("null"),
         Value::Undefined => out.push_str("null"),
@@ -43,17 +67,30 @@ fn json_serialize(v: &Value, out: &mut String) {
             out.push('"');
         }
         Value::Array(items) => {
+            let ptr = std::rc::Rc::as_ptr(items) as *const ();
+            if !visited.insert(ptr) {
+                return Err(VmErr::Msg(
+                    "TypeError: Converting circular structure to JSON".to_string(),
+                ));
+            }
             out.push('[');
             let items = items.borrow();
             for (i, it) in items.iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
-                json_serialize(it, out);
+                json_serialize(it, out, visited, depth + 1)?;
             }
             out.push(']');
+            visited.remove(&ptr);
         }
         Value::Object { props, .. } => {
+            let ptr = std::rc::Rc::as_ptr(props) as *const ();
+            if !visited.insert(ptr) {
+                return Err(VmErr::Msg(
+                    "TypeError: Converting circular structure to JSON".to_string(),
+                ));
+            }
             out.push('{');
             let props = props.borrow();
             let mut first = true;
@@ -68,12 +105,14 @@ fn json_serialize(v: &Value, out: &mut String) {
                 out.push('"');
                 escape_json(k, out);
                 out.push_str("\":");
-                json_serialize(v, out);
+                json_serialize(v, out, visited, depth + 1)?;
             }
             out.push('}');
+            visited.remove(&ptr);
         }
         _ => out.push_str("null"),
     }
+    Ok(())
 }
 
 fn escape_json(s: &str, out: &mut String) {
@@ -110,6 +149,9 @@ fn json_parse(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmE
 struct JsonParser<'a> {
     bytes: &'a [u8],
     pos: usize,
+    /// Current container nesting; bounded by `MAX_JSON_DEPTH` so a deeply
+    /// nested document errors out instead of overflowing the native stack.
+    depth: usize,
 }
 
 impl<'a> JsonParser<'a> {
@@ -117,6 +159,7 @@ impl<'a> JsonParser<'a> {
         Self {
             bytes: s.as_bytes(),
             pos: 0,
+            depth: 0,
         }
     }
 
@@ -149,6 +192,18 @@ impl<'a> JsonParser<'a> {
     }
 
     fn value(&mut self) -> Result<Value, VmErr> {
+        self.depth += 1;
+        if self.depth > MAX_JSON_DEPTH {
+            return Err(VmErr::Msg(
+                "RangeError: Maximum JSON depth exceeded".to_string(),
+            ));
+        }
+        let r = self.value_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn value_inner(&mut self) -> Result<Value, VmErr> {
         self.skip_ws();
         match self.peek() {
             Some(b'{') => self.object(),

@@ -84,12 +84,19 @@ fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
     let s = str_this(interp, &this);
     match a.first() {
         Some(Value::String(sep)) => {
-            let mut parts: Vec<Value> = s
-                .split(sep.as_str())
-                .map(|p| Value::String(p.to_string()))
-                .collect();
-            if let Some(l) = a.get(1) {
-                parts.truncate(l.to_number().max(0.0) as usize);
+            let limit = match a.get(1) {
+                Some(l) => (l.to_number().max(0.0) as usize).min(crate::value::MAX_ARRAY_LEN),
+                None => crate::value::MAX_ARRAY_LEN,
+            };
+            let mut parts: Vec<Value> = Vec::new();
+            for p in s.split(sep.as_str()) {
+                if parts.len() >= limit {
+                    break;
+                }
+                if parts.len() >= crate::value::MAX_ARRAY_LEN {
+                    return Err(crate::value::limit_err("Maximum array length exceeded"));
+                }
+                parts.push(Value::String(p.to_string()));
             }
             Ok(Value::array(parts))
         }
@@ -151,6 +158,9 @@ fn string_ends_with(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Res
 fn string_repeat(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
     let n = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    if s.len().saturating_mul(n) > crate::value::MAX_STRING_LEN {
+        return Err(crate::value::limit_err("Maximum string length exceeded"));
+    }
     Ok(Value::String(s.repeat(n)))
 }
 fn string_replace(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
@@ -183,6 +193,21 @@ fn string_replace_all(
         Some(v) => interp.vs(v),
         None => String::new(),
     };
+    // Estimate the result size before allocating: replacing millions of
+    // matches with a long string could otherwise exhaust host memory. An
+    // empty pattern matches at every char boundary (len+1 insertions).
+    let matches = if from.is_empty() {
+        s.chars().count() as i128 + 1
+    } else {
+        s.matches(&from).count() as i128
+    };
+    let delta_per = to.len() as i128 - from.len() as i128;
+    if matches > 0 && delta_per > 0 {
+        let estimate = s.len() as i128 + matches * delta_per;
+        if estimate > crate::value::MAX_STRING_LEN as i128 {
+            return Err(crate::value::limit_err("Maximum string length exceeded"));
+        }
+    }
     Ok(Value::String(s.replace(&from, &to)))
 }
 fn string_char_code_at(

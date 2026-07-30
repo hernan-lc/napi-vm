@@ -6,7 +6,15 @@ use crate::lexer::Token;
 
 impl Parser {
     pub(crate) fn expr(&mut self) -> Option<Expr> {
-        self.comma()
+        // Nesting guard: parenthesized sub-expressions, call arguments and
+        // similar re-enter `expr()` recursively, so this counter bounds the
+        // parser's native stack depth. See `Parser::enter`.
+        if !self.enter() {
+            return None;
+        }
+        let r = self.comma();
+        self.leave();
+        r
     }
 
     /// The comma operator sits at the lowest precedence. It is only parsed in

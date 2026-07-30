@@ -6,6 +6,23 @@ use crate::error::VmErr;
 use crate::interpreter::{Env, Interpreter};
 use crate::parser::Statement;
 
+/// Hard cap on array length. Guest code that grows an array past this gets a
+/// catchable `RangeError` instead of exhausting host memory (which would
+/// abort the process — Rust's allocator does not return errors, it dies).
+/// `Value` is a fat enum (~120 bytes), and arrays of arrays multiply that:
+/// 262k slots of 8-element inner arrays is already ~290MB, so the cap is
+/// sized to keep worst-case guest allocations survivable for the host.
+pub const MAX_ARRAY_LEN: usize = 262_144;
+
+/// Hard cap (bytes) on any string the VM produces — concatenation, `repeat`,
+/// `join`, `replaceAll`, `JSON.stringify`. Same rationale as `MAX_ARRAY_LEN`.
+pub const MAX_STRING_LEN: usize = 16 * 1024 * 1024;
+
+/// Convenience constructor for the guest-visible limit errors.
+pub fn limit_err(msg: &str) -> VmErr {
+    VmErr::Msg(format!("RangeError: {}", msg))
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Undefined,
@@ -208,6 +225,11 @@ impl Value {
                 }
                 None
             }
+            Value::Error { message, name } => match key {
+                "message" => Some(Value::String(message.clone())),
+                "name" => Some(Value::String(name.clone())),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -241,6 +263,7 @@ impl Value {
                         .unwrap_or(false)
             }
             Value::String(_) => key == "length",
+            Value::Error { .. } => key == "message" || key == "name",
             _ => false,
         }
     }
@@ -269,6 +292,102 @@ impl Value {
             Value::Null => 0.0,
             Value::Undefined => f64::NAN,
             _ => 0.0,
+        }
+    }
+
+    /// Move the direct child `Value`s out of `self` into `work`, leaving
+    /// shallow placeholders behind. See the `Drop` impl for why.
+    fn take_children(&mut self, work: &mut Vec<Value>) {
+        match self {
+            Value::Array(items) => {
+                // Only drain when we own the buffer outright; a shared Rc
+                // keeps its contents until the last reference drops.
+                if Rc::strong_count(items) == 1
+                    && let Some(cell) = Rc::get_mut(items)
+                {
+                    work.extend(cell.get_mut().drain(..));
+                }
+            }
+            Value::Object { props, proto } => {
+                if Rc::strong_count(props) == 1
+                    && let Some(cell) = Rc::get_mut(props)
+                {
+                    work.extend(cell.get_mut().drain(..).map(|(_, v)| v));
+                }
+                if let Some(p) = proto.take()
+                    && let Ok(inner) = Rc::try_unwrap(p)
+                {
+                    work.push(inner);
+                }
+            }
+            Value::Function { closure, .. } => {
+                if let Some(env) = closure.take() {
+                    crate::interpreter::Environment::drain_chain(env, work);
+                }
+            }
+            Value::Class {
+                constructor,
+                prototype,
+                statics,
+                superclass,
+                ..
+            } => {
+                work.push(std::mem::replace(constructor.as_mut(), Value::Undefined));
+                if let Some(s) = superclass.take() {
+                    work.push(*s);
+                }
+                if Rc::strong_count(prototype) == 1
+                    && let Some(p) = Rc::get_mut(prototype)
+                {
+                    p.take_children(work);
+                }
+                if Rc::strong_count(statics) == 1
+                    && let Some(cell) = Rc::get_mut(statics)
+                {
+                    work.extend(cell.get_mut().drain(..).map(|(_, v)| v));
+                }
+            }
+            Value::Promise { value, .. } => {
+                if let Some(v) = value.take() {
+                    work.push(*v);
+                }
+            }
+            Value::Generator { inner } => {
+                if Rc::strong_count(inner) == 1
+                    && let Some(cell) = Rc::get_mut(inner)
+                {
+                    let g = cell.get_mut();
+                    work.extend(g.args.drain(..));
+                    if let Some(v) = g.return_value.take() {
+                        work.push(v);
+                    }
+                    if let Some(env) = g.closure.take() {
+                        crate::interpreter::Environment::drain_chain(env, work);
+                    }
+                }
+            }
+            // All remaining variants hold no heap-nested `Value`s.
+            _ => {}
+        }
+    }
+}
+
+/// Dropping a deeply nested value (guest code can build `a = [a]` a million
+/// times in a loop) would recurse once per nesting level in the derived
+/// `Drop` glue and overflow the native stack *during teardown* — after the
+/// guest code already finished successfully. This iterative implementation
+/// drains children onto an explicit work stack instead, so teardown depth is
+/// always O(1) regardless of structure depth. Cyclic `Rc` graphs (which Rust
+/// would simply leak) are skipped via the strong-count checks, so they can
+/// neither recurse infinitely nor crash.
+impl Drop for Value {
+    fn drop(&mut self) {
+        let mut work: Vec<Value> = Vec::new();
+        self.take_children(&mut work);
+        while let Some(mut v) = work.pop() {
+            v.take_children(&mut work);
+            // `v` drops here with its children already removed: a shallow,
+            // non-recursive drop.
         }
     }
 }

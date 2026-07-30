@@ -256,6 +256,7 @@ impl Interpreter {
                 let label = self.active_label.take();
                 let mut r = Value::Undefined;
                 loop {
+                    self.consume_loop()?;
                     let t = self.eval_expr(test)?;
                     if !self.truthy(&t) {
                         break;
@@ -274,6 +275,7 @@ impl Interpreter {
                 let label = self.active_label.take();
                 let mut r = Value::Undefined;
                 loop {
+                    self.consume_loop()?;
                     match self.run(body) {
                         Err(VmErr::Break(None)) => break,
                         Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
@@ -313,6 +315,7 @@ impl Interpreter {
                 let mut r = Value::Undefined;
                 let label = self.active_label.take();
                 loop {
+                    self.consume_loop()?;
                     if let Some(t) = test {
                         let tv = self.eval_expr(t)?;
                         if !self.truthy(&tv) {
@@ -338,6 +341,7 @@ impl Interpreter {
                 let mut r = Value::Undefined;
                 let label = self.active_label.take();
                 for k in ks {
+                    self.consume_loop()?;
                     self.global.borrow_mut().set(name, Value::String(k));
                     match self.run(body) {
                         Err(VmErr::Break(None)) => break,
@@ -359,11 +363,20 @@ impl Interpreter {
                         let next_fn = self.prop(&a, &Value::String("next".to_string()))?;
                         let mut out = Vec::new();
                         loop {
+                            // Budgeted: an infinite generator collected into a
+                            // Vec would otherwise OOM before the body loop's
+                            // budget ever ran.
+                            self.consume_loop()?;
                             let r = self.call_this(&next_fn, a.clone(), vec![])?;
                             let done = r.get_prop("done").map(|v| v.is_truthy()).unwrap_or(true);
                             let val = r.get_prop("value").unwrap_or(Value::Undefined);
                             if done {
                                 break;
+                            }
+                            if out.len() >= crate::value::MAX_ARRAY_LEN {
+                                return Err(crate::value::limit_err(
+                                    "Maximum array length exceeded",
+                                ));
                             }
                             out.push(val);
                         }
@@ -386,6 +399,7 @@ impl Interpreter {
                 let mut r = Value::Undefined;
                 let label = self.active_label.take();
                 for i in items {
+                    self.consume_loop()?;
                     self.global.borrow_mut().set(name, i);
                     match self.run(body) {
                         Err(VmErr::Break(None)) => break,
@@ -431,10 +445,13 @@ impl Interpreter {
                     Err(VmErr::Throw(val)) => self.run_catch(catch, val),
                     // Control-flow signals are not catchable.
                     Err(e @ (VmErr::Break(_) | VmErr::Continue(_))) => Err(e),
-                    // Runtime errors (e.g. undeclared identifier) are catchable.
-                    Err(VmErr::Msg(m)) => self.run_catch(catch, Value::String(m)),
+                    // Runtime errors (e.g. undeclared identifier, limit guards)
+                    // are catchable as real error objects with `name`/`message`.
+                    Err(VmErr::Msg(m)) => {
+                        self.run_catch(catch, crate::error::error_value_from_msg(&m))
+                    }
                     Err(VmErr::RuntimeError { message, .. }) => {
-                        self.run_catch(catch, Value::String(message))
+                        self.run_catch(catch, crate::error::error_value_from_msg(&message))
                     }
                     other => other,
                 };
@@ -563,7 +580,7 @@ impl Interpreter {
                     match x {
                         Expr::Spread(inner) => {
                             let inner_val = self.eval_expr(inner)?;
-                            match inner_val {
+                            match &inner_val {
                                 Value::Array(arr) => v.extend(arr.borrow().iter().cloned()),
                                 Value::String(s) => {
                                     v.extend(s.chars().map(|c| Value::String(c.to_string())))
@@ -572,6 +589,9 @@ impl Interpreter {
                             }
                         }
                         _ => v.push(self.eval_expr(x)?),
+                    }
+                    if v.len() > crate::value::MAX_ARRAY_LEN {
+                        return Err(crate::value::limit_err("Maximum array length exceeded"));
                     }
                 }
                 Ok(Value::array(v))
@@ -646,7 +666,7 @@ impl Interpreter {
                         }
                         ObjectProp::Spread(expr) => {
                             let val = self.eval_expr(expr)?;
-                            if let Value::Object { props: sprops, .. } = val {
+                            if let Value::Object { props: sprops, .. } = &val {
                                 o.extend(sprops.borrow().iter().cloned());
                             }
                         }
@@ -728,7 +748,7 @@ impl Interpreter {
                     match x {
                         Expr::Spread(inner) => {
                             let inner_val = self.eval_expr(inner)?;
-                            match inner_val {
+                            match &inner_val {
                                 Value::Array(arr) => a.extend(arr.borrow().iter().cloned()),
                                 _ => a.push(inner_val),
                             }
@@ -917,9 +937,12 @@ impl Interpreter {
                 // is already settled, so unwrap a fulfilled value or re-throw a
                 // rejection reason. Awaiting a non-promise yields it unchanged.
                 let v = self.eval_expr(inner)?;
-                if let Value::Promise { state, value } = v {
-                    let inner_val = value.map(|b| *b).unwrap_or(Value::Undefined);
-                    if state == PromiseState::Rejected {
+                if let Value::Promise { state, value } = &v {
+                    let inner_val = value
+                        .as_ref()
+                        .map(|b| (**b).clone())
+                        .unwrap_or(Value::Undefined);
+                    if *state == PromiseState::Rejected {
                         vm_throw(inner_val)
                     } else {
                         Ok(inner_val)
@@ -967,11 +990,15 @@ impl Interpreter {
         }
         let mut out = Vec::new();
         loop {
+            self.consume_loop()?;
             let r = self.call_this(&next_fn, iterator.clone(), vec![])?;
             let done = r.get_prop("done").map(|v| v.is_truthy()).unwrap_or(true);
             let val = r.get_prop("value").unwrap_or(Value::Undefined);
             if done {
                 break;
+            }
+            if out.len() >= crate::value::MAX_ARRAY_LEN {
+                return Err(crate::value::limit_err("Maximum array length exceeded"));
             }
             out.push(val);
         }

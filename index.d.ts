@@ -5,6 +5,12 @@ export declare class Vm {
   run(source: string): string
   registerModule(name: string, source: string): void
   setImportMetaMain(isMain: boolean): void
+  /**
+   * Cap the number of loop iterations a single execution may perform
+   * (default 100M). When the budget runs out, the VM throws a catchable
+   * `RangeError` instead of freezing the host event loop forever.
+   */
+  setLoopLimit(n: number): void
   getGlobal(name: string): string
   /**
    * Define a global variable in the VM from a structured Node value. The

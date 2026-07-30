@@ -16,8 +16,15 @@ use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::Value;
 
+/// Maximum nesting `to_string` renders before abbreviating. Together with
+/// the visited set this makes stringifying any guest structure total:
+/// cyclic values print `[Circular]` and very deep ones print `[Object]` /
+/// `[Array]` instead of overflowing the native stack.
+const MAX_PRINT_DEPTH: usize = 128;
+
 pub fn to_string(val: &Value) -> String {
-    fn vs(v: &Value) -> String {
+    let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
+    fn vs(v: &Value, visited: &mut std::collections::HashSet<*const ()>, depth: usize) -> String {
         match v {
             Value::Undefined => "undefined".to_string(),
             Value::Null => "null".to_string(),
@@ -30,20 +37,44 @@ pub fn to_string(val: &Value) -> String {
                 }
             }
             Value::String(s) => s.clone(),
-            Value::Object { props, .. } => format!(
-                "{{{}}}",
-                props
-                    .borrow()
-                    .iter()
-                    .map(|(k, v)| format!("{}: {}", k, vs(v)))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            Value::Object { props, .. } => {
+                if depth >= MAX_PRINT_DEPTH {
+                    return "[Object]".to_string();
+                }
+                let ptr = Rc::as_ptr(props) as *const ();
+                if !visited.insert(ptr) {
+                    return "[Circular]".to_string();
+                }
+                let s = format!(
+                    "{{{}}}",
+                    props
+                        .borrow()
+                        .iter()
+                        .map(|(k, v)| format!("{}: {}", k, vs(v, visited, depth + 1)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                visited.remove(&ptr);
+                s
+            }
             Value::Array(i) => {
-                format!(
+                if depth >= MAX_PRINT_DEPTH {
+                    return "[Array]".to_string();
+                }
+                let ptr = Rc::as_ptr(i) as *const ();
+                if !visited.insert(ptr) {
+                    return "[Circular]".to_string();
+                }
+                let s = format!(
                     "[{}]",
-                    i.borrow().iter().map(vs).collect::<Vec<_>>().join(", ")
-                )
+                    i.borrow()
+                        .iter()
+                        .map(|v| vs(v, visited, depth + 1))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                visited.remove(&ptr);
+                s
             }
             Value::Function { name, .. } => {
                 format!("[Function: {}]", name.as_deref().unwrap_or("anonymous"))
@@ -58,17 +89,23 @@ pub fn to_string(val: &Value) -> String {
             Value::Error { message, .. } => message.clone(),
         }
     }
-    vs(val)
+    vs(val, &mut visited, 0)
 }
 
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
     let mut interp = Interpreter::with_builtins();
     interp.is_main = is_main;
     interp.set_source(source);
+    interp.begin_execution();
     let mut lex = Lexer::new(source);
     let toks = lex.tokenize_with_spans();
     let mut parser = Parser::new_with_spans(toks);
     let stmts = parser.parse();
+    if parser.depth_exceeded {
+        return Err(VmErr::Msg(
+            "RangeError: Maximum parse depth exceeded".to_string(),
+        ));
+    }
     let val = interp.run(&stmts)?;
     Ok(to_string(&val))
 }
@@ -127,11 +164,23 @@ fn set_str_prop(
     }
 }
 
+/// Maximum nesting marshalled across the NAPI boundary in either direction.
+/// A guest (or host) structure deeper than this yields a catchable error
+/// instead of overflowing the native stack in the recursive walkers below.
+const MAX_MARSHAL_DEPTH: usize = 512;
+
+fn to_napi(env: sys::napi_env, v: &Value) -> Result<sys::napi_value, VmErr> {
+    to_napi_d(env, v, 0)
+}
+
 /// Marshal a VM `Value` into a raw N-API value.
 ///
 /// Functions, promises, generators and other VM-only values have no faithful
 /// representation in this direction yet and are surfaced as `undefined`.
-fn to_napi(env: sys::napi_env, v: &Value) -> Result<sys::napi_value, VmErr> {
+fn to_napi_d(env: sys::napi_env, v: &Value, depth: usize) -> Result<sys::napi_value, VmErr> {
+    if depth > MAX_MARSHAL_DEPTH {
+        return Err(VmErr::Msg("value is too deep to marshal".to_string()));
+    }
     unsafe {
         let mut out = ptr::null_mut();
         match v {
@@ -148,7 +197,7 @@ fn to_napi(env: sys::napi_env, v: &Value) -> Result<sys::napi_value, VmErr> {
                     &mut out,
                 ))?;
                 for (i, item) in items.iter().enumerate() {
-                    let ev = to_napi(env, item)?;
+                    let ev = to_napi_d(env, item, depth + 1)?;
                     chk(sys::napi_set_element(env, out, i as u32, ev))?;
                 }
             }
@@ -156,7 +205,7 @@ fn to_napi(env: sys::napi_env, v: &Value) -> Result<sys::napi_value, VmErr> {
                 chk(sys::napi_create_object(env, &mut out))?;
                 let props = props.borrow();
                 for (k, val) in props.iter() {
-                    let ev = to_napi(env, val)?;
+                    let ev = to_napi_d(env, val, depth + 1)?;
                     let ck = CString::new(k.as_str())
                         .map_err(|_| VmErr::Msg("object key contains NUL".to_string()))?;
                     chk(sys::napi_set_named_property(env, out, ck.as_ptr(), ev))?;
@@ -216,11 +265,18 @@ fn get_named_str(env: sys::napi_env, obj: sys::napi_value, key: &str) -> Result<
     }
 }
 
+fn from_napi(env: sys::napi_env, raw: sys::napi_value) -> Result<Value, VmErr> {
+    from_napi_d(env, raw, 0)
+}
+
 /// Marshal a raw N-API value into a VM `Value`.
 ///
 /// JavaScript functions are not marshalled into callable VM values here; use
 /// `Vm.exposeFunction` to make a Node function callable from the VM.
-fn from_napi(env: sys::napi_env, raw: sys::napi_value) -> Result<Value, VmErr> {
+fn from_napi_d(env: sys::napi_env, raw: sys::napi_value, depth: usize) -> Result<Value, VmErr> {
+    if depth > MAX_MARSHAL_DEPTH {
+        return Err(VmErr::Msg("value is too deep to marshal".to_string()));
+    }
     unsafe {
         if raw.is_null() {
             return Ok(Value::Undefined);
@@ -262,11 +318,16 @@ fn from_napi(env: sys::napi_env, raw: sys::napi_value) -> Result<Value, VmErr> {
                 if is_array {
                     let mut len: u32 = 0;
                     chk(sys::napi_get_array_length(env, raw, &mut len))?;
-                    let mut items = Vec::with_capacity(len as usize);
+                    let mut items = Vec::with_capacity(len.min(crate::value::MAX_ARRAY_LEN as u32) as usize);
                     for i in 0..len {
+                        if i as usize >= crate::value::MAX_ARRAY_LEN {
+                            return Err(VmErr::Msg(
+                                "RangeError: Maximum array length exceeded".to_string(),
+                            ));
+                        }
                         let mut ev = ptr::null_mut();
                         chk(sys::napi_get_element(env, raw, i, &mut ev))?;
-                        items.push(from_napi(env, ev)?);
+                        items.push(from_napi_d(env, ev, depth + 1)?);
                     }
                     Value::array(items)
                 } else {
@@ -281,7 +342,7 @@ fn from_napi(env: sys::napi_env, raw: sys::napi_value) -> Result<Value, VmErr> {
                         let key_str = read_string(env, key)?;
                         let mut pv = ptr::null_mut();
                         chk(sys::napi_get_property(env, raw, key, &mut pv))?;
-                        props.push((key_str, from_napi(env, pv)?));
+                        props.push((key_str, from_napi_d(env, pv, depth + 1)?));
                     }
                     Value::object(props)
                 }
@@ -402,10 +463,16 @@ impl VM {
     #[napi]
     pub fn run(&mut self, source: String) -> napi::Result<String> {
         self.interp.set_source(&source);
+        self.interp.begin_execution();
         let mut lex = Lexer::new(&source);
         let toks = lex.tokenize_with_spans();
         let mut parser = Parser::new_with_spans(toks);
         let stmts = parser.parse();
+        if parser.depth_exceeded {
+            return Err(napi::Error::from_reason(
+                "RangeError: Maximum parse depth exceeded",
+            ));
+        }
         let result = self.interp.run(&stmts);
         match result {
             Ok(v) => Ok(to_string(&v)),
@@ -423,10 +490,17 @@ impl VM {
         // visible to later `import` statements in the same VM. (Running it in a
         // throwaway interpreter, as before, discarded every export.)
         self.interp.cur_mod = Some(name.clone());
+        self.interp.begin_execution();
         let mut lex = Lexer::new(&source);
         let toks = lex.tokenize_with_spans();
         let mut parser = Parser::new_with_spans(toks);
         let stmts = parser.parse();
+        if parser.depth_exceeded {
+            self.interp.cur_mod = None;
+            return Err(napi::Error::from_reason(
+                "RangeError: Maximum parse depth exceeded",
+            ));
+        }
         let result = self.interp.run(&stmts);
         self.interp.cur_mod = None;
         result.map_err(|e| napi::Error::from_reason(e.to_string()))?;
@@ -437,6 +511,14 @@ impl VM {
     #[napi]
     pub fn set_import_meta_main(&mut self, is_main: bool) {
         self.interp.is_main = is_main;
+    }
+
+    /// Cap the number of loop iterations a single execution may perform
+    /// (default 100M). When the budget runs out, the VM throws a catchable
+    /// `RangeError` instead of freezing the host event loop forever.
+    #[napi]
+    pub fn set_loop_limit(&mut self, n: u32) {
+        self.interp.set_loop_budget(n as u64);
     }
 
     #[napi]
@@ -539,6 +621,7 @@ impl VM {
         let callee = self.interp.global.borrow().get(&name).ok_or_else(|| {
             napi::Error::from_reason(format!("callFunction: '{}' is not defined", name))
         })?;
+        self.interp.begin_execution();
         let result = self
             .interp
             .call_this(&callee, Value::Undefined, vm_args)
@@ -564,5 +647,10 @@ pub fn debug_parse(source: String) -> napi::Result<String> {
     let toks = lex.tokenize_with_spans();
     let mut parser = Parser::new_with_spans(toks);
     let stmts = parser.parse();
+    if parser.depth_exceeded {
+        return Err(napi::Error::from_reason(
+            "RangeError: Maximum parse depth exceeded",
+        ));
+    }
     Ok(format!("{:?}", stmts))
 }

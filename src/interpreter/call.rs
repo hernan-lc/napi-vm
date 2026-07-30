@@ -197,6 +197,14 @@ impl Interpreter {
                         inner: Rc::new(RefCell::new(inner)),
                     });
                 }
+                // Recursion guard: each VM call costs several native frames,
+                // so unbounded guest recursion would SIGSEGV the host. Fail
+                // with a catchable RangeError instead (V8 semantics).
+                if self.get_stack().len() >= crate::interpreter::MAX_CALL_DEPTH {
+                    return Err(VmErr::Msg(
+                        "RangeError: Maximum call stack size exceeded".to_string(),
+                    ));
+                }
                 let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
                 let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
                 // Regular functions bind their own `this`; arrows inherit the
@@ -493,7 +501,16 @@ pub(crate) fn spawn_generator_thread(
 
     // Use a function boundary so the compiler sees only `SendGenInit` (which is
     // `Send`) crossing the thread boundary, not the individual `Rc` fields.
-    std::thread::spawn(move || run_generator_thread(init));
+    //
+    // The thread gets an 8MB stack to match the main thread's: the recursion
+    // limit (`MAX_CALL_DEPTH`) is calibrated against 8MB, and the default 2MB
+    // thread stack would overflow well before the limit kicks in. If the
+    // spawn fails, `init` is dropped, both channels close, and the main
+    // thread's `recv()` sees a disconnect, which it already handles as a
+    // completed generator.
+    let _ = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || run_generator_thread(init));
 
     (to_gen_tx, from_gen_rx)
 }
@@ -588,8 +605,8 @@ pub(crate) fn generator_next(
 ) -> Result<Value, VmErr> {
     use crate::value::{GenResume, GenYield};
 
-    let inner_rc = match this {
-        Value::Generator { inner } => inner,
+    let inner_rc = match &this {
+        Value::Generator { inner } => inner.clone(),
         _ => return Ok(iter_result(Value::Undefined, true)),
     };
 

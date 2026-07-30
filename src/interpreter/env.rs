@@ -57,6 +57,16 @@ impl Vars {
         }
     }
 
+    /// Move all bound values out of this frame (keys are dropped). Used by
+    /// the iterative `Drop` of `Value` to tear down closure chains without
+    /// recursing.
+    fn drain_into(&mut self, work: &mut Vec<Value>) {
+        match self {
+            Vars::Small(vars) => work.extend(vars.drain(..).map(|(_, v)| v)),
+            Vars::Large(map) => work.extend(map.drain().map(|(_, v)| v)),
+        }
+    }
+
     /// Bind `n` in this frame, assuming it is not already bound. Small frames
     /// are promoted to a hash map once they outgrow `PROMOTE_AT`.
     fn insert_new(&mut self, n: &str, v: Value) {
@@ -163,6 +173,23 @@ impl Environment {
     /// spawner to find the builtins frame.
     pub fn parent_env(&self) -> Option<Env> {
         self.parent.clone()
+    }
+
+    /// Iteratively drain a scope chain into `work` for the iterative `Drop`
+    /// of `Value`. Walks parent frames one Rc at a time; stops at the first
+    /// shared frame (shared scopes stay alive and drop themselves later).
+    pub(crate) fn drain_chain(env: Env, work: &mut Vec<Value>) {
+        let mut cur = Some(env);
+        while let Some(e) = cur {
+            match Rc::try_unwrap(e) {
+                Ok(cell) => {
+                    let mut env = cell.into_inner();
+                    env.vars.drain_into(work);
+                    cur = env.parent.take();
+                }
+                Err(_) => break,
+            }
+        }
     }
 
     /// Return all variable names bound in this frame (not walking the parent

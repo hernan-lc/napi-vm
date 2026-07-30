@@ -16,6 +16,24 @@ use crate::parser::Statement;
 use crate::span::Span;
 use crate::value::Value;
 
+/// Maximum number of VM call frames (guest-visible recursion depth). Each VM
+/// call maps onto several native Rust frames in the tree-walker, so unbounded
+/// guest recursion would overflow the *native* stack — a SIGSEGV that no
+/// try/catch can intercept. Checking the depth here turns that into a
+/// catchable `RangeError`, the way V8 does. 256 keeps a wide margin under the
+/// native limit on both the main thread (8MB typical) and generator threads
+/// (8MB, see `spawn_generator_thread`).
+pub const MAX_CALL_DEPTH: usize = 256;
+
+/// Default cap on loop iterations per top-level execution (`vm.run`,
+/// `registerModule`, `callFunction`). The interpreter is synchronous and has
+/// no preemption, so `while (true) {}` would otherwise freeze the host event
+/// loop forever; this budget turns it into a catchable `RangeError`.
+/// 100M iterations is far above any legitimate computation (the benchmark
+/// workloads stay under a few million) while still stopping an empty
+/// infinite loop within a couple of seconds.
+pub const DEFAULT_LOOP_BUDGET: u64 = 100_000_000;
+
 pub struct Interpreter {
     pub global: Env,
     pub modules: HashMap<String, Module>,
@@ -37,6 +55,12 @@ pub struct Interpreter {
     /// The source code for the current module/script, used to extract
     /// source lines for error context. Stored as lines for efficient lookup.
     source_lines: Vec<String>,
+    /// Configured per-execution loop-iteration cap.
+    loop_budget: u64,
+    /// Remaining loop iterations in the current execution. Refilled by
+    /// `begin_execution()` at each NAPI entry point; decremented by
+    /// `consume_loop()` on every loop iteration.
+    loops_remaining: u64,
 }
 
 /// Channel endpoints available to a generator body during execution.
@@ -65,6 +89,8 @@ impl Interpreter {
             gen_channel: None,
             call_stack: Vec::new(),
             source_lines: Vec::new(),
+            loop_budget: DEFAULT_LOOP_BUDGET,
+            loops_remaining: DEFAULT_LOOP_BUDGET,
         }
     }
 
@@ -86,6 +112,32 @@ impl Interpreter {
             r = self.eval_stmt(s)?;
         }
         Ok(r)
+    }
+
+    /// Refill the loop budget. Called at each NAPI entry point (`run`,
+    /// `registerModule`, `callFunction`) so every top-level execution gets a
+    /// full budget. Not called from `run` itself: block bodies and loop
+    /// bodies re-enter it recursively and must not refill mid-execution.
+    pub fn begin_execution(&mut self) {
+        self.loops_remaining = self.loop_budget;
+    }
+
+    /// Change the loop-iteration cap (exposed to Node as `setLoopLimit`).
+    pub fn set_loop_budget(&mut self, n: u64) {
+        self.loop_budget = n;
+        self.loops_remaining = n;
+    }
+
+    /// Account one loop iteration against the budget. Every loop construct
+    /// calls this per iteration, so guest code can never spin forever.
+    pub(crate) fn consume_loop(&mut self) -> Result<(), VmErr> {
+        if self.loops_remaining == 0 {
+            return Err(VmErr::Msg(
+                "RangeError: Maximum loop iterations exceeded".to_string(),
+            ));
+        }
+        self.loops_remaining -= 1;
+        Ok(())
     }
 
     /// Set the source code for the current script/module. Used to extract

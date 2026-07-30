@@ -6,6 +6,16 @@ use crate::lexer::Token;
 
 impl Parser {
     pub(crate) fn stmt(&mut self) -> Option<Statement> {
+        // Nesting guard for nested blocks / control flow; see `Parser::enter`.
+        if !self.enter() {
+            return None;
+        }
+        let r = self.stmt_inner();
+        self.leave();
+        r
+    }
+
+    fn stmt_inner(&mut self) -> Option<Statement> {
         match self.cur() {
             Token::KwVar => self.var_decl(VarKind::Var),
             Token::KwLet => self.var_decl(VarKind::Let),
