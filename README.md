@@ -154,6 +154,7 @@ for a complete working demo (run with `bun examples/hotreload.ts`).
 | `vm.hasGlobal(name)` | Check whether a global binding exists |
 | `vm.setImportMetaMain(bool)` | Set the value of `import.meta.main` |
 | `vm.inspect(code)` | Evaluate `code` and open the native interactive inspector on the result *(requires `--features inspector`)* |
+| `vm.inspectValue(value)` | Marshal a host value (or `JSON.parse(str)`) and inspect it; copies across the boundary, so no circular structures *(requires `--features inspector`)* |
 | `setInspectorConfig(opts)` | Override the inspector keymap/colors *(requires `--features inspector`)* |
 | `debugParse(code)` | Parse code and return the AST as a string |
 
@@ -166,8 +167,12 @@ tree inspector implemented entirely in Rust. Build it in:
 npx napi build --platform --release --features inspector
 ```
 
+`inspector` **implies the `mouse` feature**, so this one flag builds the full
+keyboard + mouse inspector and its NAPI surface (the SGR mouse helpers used by
+the TypeScript `examples/inspector.ts` come along too).
+
 It is **off by default** because it takes over the terminal (raw mode +
-alternate screen). Two entry points:
+alternate screen + mouse capture). Two entry points:
 
 ```javascript
 const { Vm, setInspectorConfig } = require('./index.js');
@@ -179,7 +184,20 @@ vm.inspect('user');
 
 // From guest code: console.dir with { inspect: true } opens the same TUI.
 vm.run('console.dir(user, { inspect: true });');
+
+// Inspect a plain host object (or parsed JSON) directly — marshalled in.
+vm.inspectValue({ pid: process.pid, flags: ['inspector', 'mouse'] });
+vm.inspectValue(JSON.parse('{"status":200}'));
 ```
+
+`vm.inspect(code)` inspects the **live guest value** (cycles render as
+`[Circular *n]`, any expression works). `vm.inspectValue(value)` is the
+convenience path for host data: it **copies** the value across the boundary
+(`from_napi` is depth-bounded, not cycle-aware), so it cannot show circular
+structures — build those inside the VM and inspect the expression instead.
+To inspect a JSON string as a guest value, parenthesize it —
+`vm.inspect('(' + json + ')')` — since a bare `{"a":1}` is a JS block, not an
+object.
 
 Because the inspector walks the guest `Value` directly — no NAPI marshalling —
 **circular guest structures render as `[Circular *n]`** instead of being lost
@@ -188,7 +206,9 @@ back to a static, cycle-safe pretty dump and never block.
 
 Default keys (vi-style): `↑/↓` or `j/k` move · `→`/`space`/`enter`/`l` expand ·
 `←`/`h` collapse or go to parent · `e` expand all · `c` collapse all ·
-`q`/`esc`/`ctrl-c` quit.
+`q`/`esc`/`ctrl-c` quit. Mouse: click a row to focus it (click the focused row
+to toggle), scroll wheel to move. See
+[`examples/inspector-native.ts`](examples/inspector-native.ts) for a full demo.
 
 Shortcuts and colors are configurable, highest precedence last:
 

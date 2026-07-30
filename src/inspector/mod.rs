@@ -150,6 +150,31 @@ fn apply(tree: &mut Tree, action: Action, cursor: &mut usize, start: &mut usize)
     false
 }
 
+/// Handle a mouse event: scroll wheels move the cursor, a left click focuses
+/// a row (and toggles it when clicking the already-focused, expandable row).
+/// The two header lines above the tree viewport are accounted for.
+fn handle_mouse(tree: &mut Tree, m: MouseEvent, cursor: &mut usize, start: &mut usize) {
+    let n = tree.visible_rows().len();
+    match m.kind {
+        MouseEventKind::ScrollUp => *cursor = cursor.saturating_sub(3),
+        MouseEventKind::ScrollDown => *cursor = (*cursor + 3).min(n.saturating_sub(1)),
+        MouseEventKind::Down(MouseButton::Left) => {
+            // Terminal rows 0 and 1 are the title + hint; the tree starts at 2.
+            let tree_row = (m.row as usize).saturating_sub(2) + *start;
+            if tree_row < n {
+                let idx = tree.visible_rows()[tree_row];
+                if tree_row == *cursor && tree.is_expandable(idx) {
+                    let want = !tree.is_expanded(idx);
+                    tree.toggle(idx, want);
+                } else {
+                    *cursor = tree_row;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Breadcrumb path from the root to the focused node, e.g. `Object › address`.
 fn breadcrumb(tree: &Tree, idx: Option<usize>) -> String {
     let Some(mut idx) = idx else {
@@ -232,6 +257,9 @@ fn run_session(
     terminal::enable_raw_mode()?;
     stdout.execute(EnterAlternateScreen)?;
     stdout.execute(cursor::Hide)?;
+    // Click to focus/toggle, scroll wheel to move. Scoped to this session and
+    // released on the way out (the `mouse` feature, implied by `inspector`).
+    stdout.execute(EnableMouseCapture)?;
 
     let mut cursor: usize = 0;
     let mut start: usize = 0;
@@ -254,17 +282,21 @@ fn run_session(
         stdout.write_all(frame.as_bytes())?;
         stdout.flush()?;
 
-        // Only key presses drive the session; resize and other events simply
-        // fall through to a re-render.
-        if let Event::Key(k) = event::read()? {
-            let action = classify(&keys, &k);
-            if apply(&mut tree, action, &mut cursor, &mut start) {
-                break Ok(());
+        match event::read()? {
+            Event::Key(k) => {
+                let action = classify(&keys, &k);
+                if apply(&mut tree, action, &mut cursor, &mut start) {
+                    break Ok(());
+                }
             }
+            Event::Mouse(m) => handle_mouse(&mut tree, m, &mut cursor, &mut start),
+            // Resize and other events simply fall through to a re-render.
+            _ => {}
         }
     };
 
     terminal::disable_raw_mode()?;
+    stdout.execute(DisableMouseCapture)?;
     stdout.execute(cursor::Show)?;
     stdout.execute(LeaveAlternateScreen)?;
     result

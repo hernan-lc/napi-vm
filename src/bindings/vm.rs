@@ -457,6 +457,25 @@ impl VM {
         crate::inspector::inspect(&value, &source, &cfg);
         Ok(())
     }
+
+    /// Marshal a host (Node) value into the VM and open the inspector on it —
+    /// convenient for inspecting a plain JS object without first registering
+    /// it as a global. To inspect parsed JSON, pass `JSON.parse(str)`.
+    ///
+    /// Unlike `inspect(source)`, the value is *copied* across the NAPI
+    /// boundary (`from_napi` is depth-bounded and not cycle-aware), so this
+    /// path cannot show circular structures. For those, build the value inside
+    /// the VM and inspect the expression instead.
+    ///
+    /// Only available when the crate is built with `--features inspector`.
+    #[napi]
+    pub fn inspect_value(&mut self, env: Env, value: Unknown) -> napi::Result<()> {
+        let v =
+            from_napi(env.raw(), value.raw()).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let cfg = crate::inspector::config::current();
+        crate::inspector::inspect(&v, "value", &cfg);
+        Ok(())
+    }
 }
 
 /// Options for `setInspectorConfig`. Every field is optional; omitted fields
