@@ -173,10 +173,6 @@ impl Painter {
     pub(crate) fn bold(&self, s: String) -> String {
         self.wrap("1", s)
     }
-    #[cfg(feature = "inspector")]
-    pub(crate) fn inverse(&self, s: String) -> String {
-        self.wrap("7", s)
-    }
 }
 
 /// Quote and escape a string as a single-quoted JS literal.

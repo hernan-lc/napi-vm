@@ -76,11 +76,13 @@ export declare class Vm {
    */
   callFunction(name: string, args: Array<unknown>): unknown
   /**
-   * Evaluate `source` and open the native interactive inspector on the
-   * resulting value (a foldable, DevTools-style tree). The value is walked
-   * directly inside Rust — no NAPI marshalling — so circular structures
-   * render as `[Circular *n]`. In a non-TTY environment this prints a
-   * static pretty dump instead and never blocks.
+   * Evaluate `source` and open the native inspector on the resulting
+   * value (a foldable, DevTools-style tree). The session renders inline —
+   * click a row to expand/collapse, click outside to close — and the
+   * final tree stays in the console. The value is walked directly inside
+   * Rust — no NAPI marshalling — so circular structures render as
+   * `[Circular *n]`. In a non-TTY environment this prints a static,
+   * depth-limited tree dump instead and never blocks.
    *
    * Only available when the crate is built with `--features inspector`.
    */
@@ -107,20 +109,21 @@ export declare function debugParse(source: string): string
 
 /**
  * Options for `setInspectorConfig`. Every field is optional; omitted fields
- * keep their current value. Letter-key overrides must be exactly one
- * character or they are ignored.
+ * keep their current value. The quit-key override must be exactly one
+ * character or it is ignored.
  */
 export interface InspectorConfig {
   /** Force colors on/off; omit to keep auto-detection. */
   colors?: boolean
-  /** Reserved for static-fallback tuning. */
+  /**
+   * How deep the static (non-TTY) dump expands containers before
+   * collapsing them into `▶` rows.
+   */
   maxStaticDepth?: number
-  keyUp?: string
-  keyDown?: string
-  keyExpand?: string
-  keyCollapse?: string
-  keyExpandAll?: string
-  keyCollapseAll?: string
+  /**
+   * Letter that closes an interactive session (Esc and ctrl-c always
+   * close).
+   */
   keyQuit?: string
 }
 
@@ -168,7 +171,7 @@ export declare function parseMouseEvent(buf: Buffer): MouseEvent | null
 export declare function runCode(source: string): string
 
 /**
- * Override the global inspector configuration (keymap + colors). Changes
+ * Override the global inspector configuration (colors + close key). Changes
  * apply to the next `vm.inspect` / `console.dir({ inspect: true })` session.
  * Only available when built with `--features inspector`.
  */

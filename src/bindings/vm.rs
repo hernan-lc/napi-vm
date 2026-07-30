@@ -429,11 +429,13 @@ impl VM {
 #[cfg(feature = "inspector")]
 #[napi]
 impl VM {
-    /// Evaluate `source` and open the native interactive inspector on the
-    /// resulting value (a foldable, DevTools-style tree). The value is walked
-    /// directly inside Rust — no NAPI marshalling — so circular structures
-    /// render as `[Circular *n]`. In a non-TTY environment this prints a
-    /// static pretty dump instead and never blocks.
+    /// Evaluate `source` and open the native inspector on the resulting
+    /// value (a foldable, DevTools-style tree). The session renders inline —
+    /// click a row to expand/collapse, click outside to close — and the
+    /// final tree stays in the console. The value is walked directly inside
+    /// Rust — no NAPI marshalling — so circular structures render as
+    /// `[Circular *n]`. In a non-TTY environment this prints a static,
+    /// depth-limited tree dump instead and never blocks.
     ///
     /// Only available when the crate is built with `--features inspector`.
     #[napi]
@@ -479,40 +481,28 @@ impl VM {
 }
 
 /// Options for `setInspectorConfig`. Every field is optional; omitted fields
-/// keep their current value. Letter-key overrides must be exactly one
-/// character or they are ignored.
+/// keep their current value. The quit-key override must be exactly one
+/// character or it is ignored.
 #[cfg(feature = "inspector")]
 #[napi(object)]
 #[derive(Default)]
 pub struct InspectorConfig {
     /// Force colors on/off; omit to keep auto-detection.
     pub colors: Option<bool>,
-    /// Reserved for static-fallback tuning.
+    /// How deep the static (non-TTY) dump expands containers before
+    /// collapsing them into `▶` rows.
     pub max_static_depth: Option<u32>,
-    pub key_up: Option<String>,
-    pub key_down: Option<String>,
-    pub key_expand: Option<String>,
-    pub key_collapse: Option<String>,
-    pub key_expand_all: Option<String>,
-    pub key_collapse_all: Option<String>,
+    /// Letter that closes an interactive session (Esc and ctrl-c always
+    /// close).
     pub key_quit: Option<String>,
 }
 
-/// Override the global inspector configuration (keymap + colors). Changes
+/// Override the global inspector configuration (colors + close key). Changes
 /// apply to the next `vm.inspect` / `console.dir({ inspect: true })` session.
 /// Only available when built with `--features inspector`.
 #[cfg(feature = "inspector")]
 #[napi]
 pub fn set_inspector_config(opts: InspectorConfig) {
-    fn one(s: &Option<String>) -> Option<char> {
-        s.as_deref().and_then(|v| {
-            let mut ch = v.chars();
-            match (ch.next(), ch.next()) {
-                (Some(c), None) => Some(c),
-                _ => None,
-            }
-        })
-    }
     crate::inspector::config::update(|cfg| {
         if let Some(v) = opts.colors {
             cfg.colors = Some(v);
@@ -520,26 +510,11 @@ pub fn set_inspector_config(opts: InspectorConfig) {
         if let Some(d) = opts.max_static_depth {
             cfg.max_static_depth = d as usize;
         }
-        if let Some(ch) = one(&opts.key_up) {
-            cfg.keys.up = ch;
-        }
-        if let Some(ch) = one(&opts.key_down) {
-            cfg.keys.down = ch;
-        }
-        if let Some(ch) = one(&opts.key_expand) {
-            cfg.keys.expand = ch;
-        }
-        if let Some(ch) = one(&opts.key_collapse) {
-            cfg.keys.collapse = ch;
-        }
-        if let Some(ch) = one(&opts.key_expand_all) {
-            cfg.keys.expand_all = ch;
-        }
-        if let Some(ch) = one(&opts.key_collapse_all) {
-            cfg.keys.collapse_all = ch;
-        }
-        if let Some(ch) = one(&opts.key_quit) {
-            cfg.keys.quit = ch;
+        if let Some(v) = opts.key_quit.as_deref() {
+            let mut ch = v.chars();
+            if let (Some(c), None) = (ch.next(), ch.next()) {
+                cfg.key_quit = c;
+            }
         }
     });
 }

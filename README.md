@@ -18,7 +18,7 @@ Execute JavaScript in an isolated environment with no access to the host system'
 - **Generators** — `function*`/`yield` with true suspension (infinite generators, `next(val)` sent values, `for...of`)
 - **Symbols & iterators** — `Symbol()`, well-known symbols, `Symbol.for`/`keyFor`, full iterator protocol (`[Symbol.iterator]`, `for...of` over custom iterables)
 - **Standard library** — `Math`, `JSON`, `Object`, `Array`/`String`/`Number` prototype methods, and global functions (`parseInt`, `isNaN`, …)
-- **Native inspector** *(opt-in)* — a DevTools-style foldable tree over live guest values, implemented in Rust behind the `inspector` feature (`vm.inspect` / `console.dir(obj, { inspect: true })`); shows circular structures, configurable keys
+- **Native inspector** *(opt-in)* — a DevTools-style foldable tree over live guest values, implemented in Rust behind the `inspector` feature (`vm.inspect` / `console.dir(obj, { inspect: true })`); shows circular structures, mouse-driven inline sessions
 
 > **Status:** the core language, classes, a working standard library, async/`await`, generators with true mid-body suspension (`yield`/`next`/`next(val)`), module export wiring, and a full `Symbol` + iterator protocol are implemented and covered by 566 passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture).
 
@@ -168,11 +168,13 @@ npx napi build --platform --release --features inspector
 ```
 
 `inspector` **implies the `mouse` feature**, so this one flag builds the full
-keyboard + mouse inspector and its NAPI surface (the SGR mouse helpers used by
-the TypeScript `examples/inspector.ts` come along too).
+mouse-driven inspector and its NAPI surface (the SGR mouse helpers come along
+too).
 
-It is **off by default** because it takes over the terminal (raw mode +
-alternate screen + mouse capture). Two entry points:
+It is **off by default** because an interactive session enables raw mode +
+mouse capture until it is closed. Sessions render **inline** — they never
+take over the screen — and each closed session stays in the scrollback, so
+multiple inspections accumulate as a list in the console. Two entry points:
 
 ```javascript
 const { Vm, setInspectorConfig } = require('./index.js');
@@ -202,20 +204,19 @@ object.
 Because the inspector walks the guest `Value` directly — no NAPI marshalling —
 **circular guest structures render as `[Circular *n]`** instead of being lost
 at the boundary. In a non-TTY environment (pipes, CI) both entry points fall
-back to a static, cycle-safe pretty dump and never block.
+back to a static, depth-limited tree dump (fold arrows + colors, expanded to
+`INSPECTOR_DEPTH`) and never block.
 
-Default keys (vi-style): `↑/↓` or `j/k` move · `→`/`space`/`enter`/`l` expand ·
-`←`/`h` collapse or go to parent · `e` expand all · `c` collapse all ·
-`q`/`esc`/`ctrl-c` quit. Mouse: click a row to focus it (click the focused row
-to toggle), scroll wheel to move. See
+Controls: click a `▶`/`▼` row to expand/collapse · scroll wheel to scroll ·
+click outside the tree (or `q`/`esc`/`ctrl-c`) to close. See
 [`examples/inspector-native.ts`](examples/inspector-native.ts) for a full demo.
 
-Shortcuts and colors are configurable, highest precedence last:
+Colors and the close key are configurable, highest precedence last:
 
-- **Env vars:** `INSPECTOR_KEY_UP/DOWN/EXPAND/COLLAPSE/EXPAND_ALL/COLLAPSE_ALL/QUIT`
-  (each a single character).
-- **`setInspectorConfig()`**: `{ colors, keyUp, keyDown, keyExpand, keyCollapse,
-  keyExpandAll, keyCollapseAll, keyQuit }` — omitted fields keep their value.
+- **Env vars:** `INSPECTOR_KEY_QUIT` (a single character), `INSPECTOR_DEPTH`
+  (static-dump depth).
+- **`setInspectorConfig()`**: `{ colors, maxStaticDepth, keyQuit }` — omitted
+  fields keep their value.
 
 ## Sandbox limits & crash safety
 
@@ -323,7 +324,7 @@ src/
 ├── inspector/          # Native TUI inspector (feature = "inspector", off by default)
 │   ├── mod.rs          # Entry point + crossterm event loop
 │   ├── tree.rs         # Lazy, cycle-aware foldable tree over Value
-│   └── config.rs       # Keymap/config: defaults, env vars, NAPI setter
+│   └── config.rs       # Config: defaults, env vars, NAPI setter
 ├── value.rs            # Value enum
 ├── error.rs            # Error types
 └── bindings.rs         # NAPI bindings to Node.js

@@ -7,7 +7,7 @@
  * crate, so cycles render as `[Circular *n]` and nothing is copied out.
  *
  * Requires the `inspector` Cargo feature, which implies `mouse` — so a single
- * flag builds the full keyboard + mouse inspector and its NAPI surface:
+ * flag builds the full mouse-driven inspector and its NAPI surface:
  *
  *   npx napi build --platform --release --features inspector
  *
@@ -28,29 +28,32 @@
  *   `vm.inspect("(" + json + ")")` — `{"a":1}` alone is a JS block, not an
  *   object, so it must be parenthesized (or assigned to a variable first).
  *
- * Controls (defaults, vi-style):
- *   ↑/↓ or j/k      move          →/space/enter/l   expand
- *   ←/h             collapse / go to parent         e/c   expand/collapse all
- *   mouse click     focus / toggle row              scroll wheel   move
- *   q / esc / ctrl-c  quit
+ * Sessions render inline — they never take over the screen — and every
+ * closed session stays in the console, so multiple inspections accumulate
+ * as a list.
  *
- * Shortcuts and colors are configurable — env vars (`INSPECTOR_KEY_QUIT=x`,
- * …) or `setInspectorConfig({ keyQuit: "x", colors: false, … })`.
+ * Controls:
+ *   click ▶/▼ row     expand / collapse
+ *   scroll wheel      scroll the tree
+ *   click outside     close (or q / esc / ctrl-c)
+ *
+ * Colors and the close key are configurable — env vars
+ * (`INSPECTOR_KEY_QUIT=x`, `INSPECTOR_DEPTH=2`) or
+ * `setInspectorConfig({ keyQuit: "x", colors: false, … })`.
  *
  * In a non-TTY environment (pipes, CI) both entry points fall back to a
- * static, cycle-safe pretty dump and never block, so this file is safe to run
- * anywhere:
+ * static, depth-limited tree dump and never block, so this file is safe to
+ * run anywhere:
  *
  *   bun examples/inspector-native.ts
  */
 import { Vm, setInspectorConfig } from "../index";
 
-// ── Optional: customize the keymap / colors before any session ──────
-// Omitted fields keep their defaults. Letter overrides must be one char.
+// ── Optional: customize colors / close key before any session ───────
+// Omitted fields keep their defaults. The key override must be one char.
 setInspectorConfig({
   // colors: false,      // force off (default: auto — TTY + NO_COLOR)
-  // keyQuit: "x",       // quit on `x` instead of `q`
-  // keyExpandAll: "E",
+  // keyQuit: "x",       // close on `x` instead of `q`
 });
 
 const vm = new Vm();
@@ -70,7 +73,7 @@ vm.run(`
 `);
 
 console.log("=== Native Inspector Demo ===");
-console.log("(in a TTY: arrow keys / mouse to navigate, q to quit each session)\n");
+console.log("(in a TTY: click ▶/▼ to expand, click outside to close each session)\n");
 
 // Session 1: host-driven — evaluate an expression and inspect the result.
 vm.inspect("user");

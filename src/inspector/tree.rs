@@ -91,10 +91,6 @@ impl Tree {
         self.nodes[idx].expanded
     }
 
-    pub fn parent_of(&self, idx: usize) -> Option<usize> {
-        self.nodes[idx].parent
-    }
-
     /// Set of container pointers from `idx` up to the root (inclusive).
     fn ancestor_ptrs(&self, mut idx: usize) -> HashSet<*const ()> {
         let mut set = HashSet::new();
@@ -177,23 +173,20 @@ impl Tree {
         self.nodes[idx].expanded = want;
     }
 
-    /// Recursively expand (`want = true`) or collapse every expandable node.
-    pub fn set_all(&mut self, want: bool) {
+    /// Expand every expandable node whose depth is below `max_depth`, leaving
+    /// deeper containers collapsed. Used by the static (non-TTY) dump so it
+    /// shows a bounded prefix of the tree with `▶` hints for the rest.
+    pub fn expand_to_depth(&mut self, max_depth: usize) {
         let mut stack = vec![self.root];
         while let Some(idx) = stack.pop() {
-            if self.is_expandable(idx) {
+            if self.nodes[idx].depth < max_depth && self.is_expandable(idx) {
                 self.ensure_children(idx);
-                self.nodes[idx].expanded = want;
+                self.nodes[idx].expanded = true;
                 if let Some(children) = self.nodes[idx].children.clone() {
                     stack.extend(children);
                 }
             }
         }
-    }
-
-    /// Re-open the root after a collapse-all so the tree is never empty.
-    pub fn expand_root(&mut self) {
-        self.toggle(self.root, true);
     }
 
     /// Pre-order list of currently visible node indices (root first, then the

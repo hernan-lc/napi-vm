@@ -1,4 +1,4 @@
-//! Inspector configuration: the keymap and display options, with sensible
+//! Inspector configuration: display options and the close key, with sensible
 //! defaults, environment-variable overrides, and a process-global config that
 //! the NAPI layer can mutate via `setInspectorConfig`.
 //!
@@ -8,81 +8,43 @@
 
 use std::sync::{LazyLock, Mutex};
 
-/// Letter shortcuts for the inspector. The structural keys — arrow keys,
-/// space, enter, esc, ctrl-c — are always active and not configurable; these
-/// configure the mnemonic *letter* keys (vi-style by default).
-#[derive(Debug, Clone)]
-pub struct Keymap {
-    pub up: char,
-    pub down: char,
-    pub expand: char,
-    pub collapse: char,
-    pub expand_all: char,
-    pub collapse_all: char,
-    pub quit: char,
-}
-
-impl Default for Keymap {
-    fn default() -> Self {
-        Keymap {
-            up: 'k',
-            down: 'j',
-            expand: 'l',
-            collapse: 'h',
-            expand_all: 'e',
-            collapse_all: 'c',
-            quit: 'q',
-        }
-    }
-}
-
-impl Keymap {
-    /// Override individual letters from `INSPECTOR_KEY_*` env vars, e.g.
-    /// `INSPECTOR_KEY_QUIT=x`. Values that are not exactly one character are
-    /// ignored so a malformed environment can never break the inspector.
-    fn apply_env(&mut self) {
-        fn read(slot: &mut char, var: &str) {
-            if let Ok(v) = std::env::var(var) {
-                let mut chars = v.chars();
-                if let (Some(c), None) = (chars.next(), chars.next()) {
-                    *slot = c;
-                }
-            }
-        }
-        read(&mut self.up, "INSPECTOR_KEY_UP");
-        read(&mut self.down, "INSPECTOR_KEY_DOWN");
-        read(&mut self.expand, "INSPECTOR_KEY_EXPAND");
-        read(&mut self.collapse, "INSPECTOR_KEY_COLLAPSE");
-        read(&mut self.expand_all, "INSPECTOR_KEY_EXPAND_ALL");
-        read(&mut self.collapse_all, "INSPECTOR_KEY_COLLAPSE_ALL");
-        read(&mut self.quit, "INSPECTOR_KEY_QUIT");
-    }
-}
-
-/// Display + input configuration for an inspector session.
+/// Display + input configuration for an inspector session. Sessions are
+/// mouse-driven (click to expand/collapse, wheel to scroll, click outside to
+/// close); the only keyboard input is the close key, Esc, and ctrl-c.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Force colors on (`Some(true)`) or off (`Some(false)`); `None` means
     /// auto-detect (TTY + `NO_COLOR`/`FORCE_COLOR`, via `colors_enabled`).
     pub colors: Option<bool>,
-    /// Reserved for future static-fallback tuning; the non-TTY dump already
-    /// delegates to the cycle-safe pretty printer.
+    /// How deep the static (non-TTY) tree dump expands containers before
+    /// collapsing them into `▶` rows.
     pub max_static_depth: usize,
-    pub keys: Keymap,
+    /// Letter that closes an interactive session (Esc and ctrl-c always
+    /// close). Values that are not exactly one character are ignored so a
+    /// malformed environment can never break the inspector.
+    pub key_quit: char,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        let mut keys = Keymap::default();
-        keys.apply_env();
         let max_static_depth = std::env::var("INSPECTOR_DEPTH")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(4);
+        let key_quit = std::env::var("INSPECTOR_KEY_QUIT")
+            .ok()
+            .and_then(|v| {
+                let mut chars = v.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => Some(c),
+                    _ => None,
+                }
+            })
+            .unwrap_or('q');
         Config {
             colors: None,
             max_static_depth,
-            keys,
+            key_quit,
         }
     }
 }
