@@ -174,7 +174,7 @@ pub fn setup_builtins(env: &Env) {
     e.set("window", Value::GlobalObject);
 
     let with_members: &[(&str, &[&str])] = &[
-        ("console", &["log", "error", "warn", "info", "debug"]),
+        ("console", &["log", "error", "warn", "info", "debug", "dir"]),
         ("Object", &["keys", "values", "entries", "assign"]),
         ("Array", &["isArray", "from", "of"]),
         ("String", &["fromCharCode"]),
@@ -423,6 +423,7 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
         c.set_prop("debug".to_string(), nf("debug", console_out));
         c.set_prop("error".to_string(), nf("error", console_err));
         c.set_prop("warn".to_string(), nf("warn", console_err));
+        c.set_prop("dir".to_string(), nf("dir", console_dir));
     }
 }
 
@@ -492,5 +493,19 @@ fn console_out(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
 
 fn console_err(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     eprintln!("{}", console_fmt(interp, &a));
+    Ok(Value::Undefined)
+}
+
+/// `console.dir`: print each value with the deep, browser-style expander
+/// (`bindings::to_string`) — nested objects/arrays render inline instead of
+/// the opaque `[object Object]` that `console.log` uses. Cycle- and
+/// depth-safe by construction of that formatter.
+fn console_dir(_interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let s = a
+        .iter()
+        .map(|v| crate::bindings::to_string(v))
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!("{}", s);
     Ok(Value::Undefined)
 }

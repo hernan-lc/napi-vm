@@ -39,6 +39,17 @@ export declare class Vm {
    * Internally, the VM runs on a dedicated thread so that `await` can park
    * without blocking the Node event loop. Async host calls are dispatched
    * back to the main thread via a ThreadsafeFunction.
+   *
+   * **Throughput caveat:** each call spawns a new OS thread. Under
+   * sustained high-frequency use (>100 calls/sec for extended periods),
+   * the thread spawn/cleanup cycle can exhaust native resources and crash
+   * the process. For high-frequency event handlers (chat messages, ticks),
+   * prefer the synchronous `run()` which completes in microseconds for
+   * typical workloads and never spawns a thread. Reserve `runAsync` for
+   * genuinely heavy or long-running computation where blocking the event
+   * loop is unacceptable.
+   *
+   * The caller must not call `run`/`runAsync` concurrently on the same VM.
    */
   runAsync(source: string): unknown
   /**
