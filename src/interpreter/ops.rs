@@ -181,14 +181,14 @@ impl Interpreter {
                     Value::Number(_) => "number",
                     Value::String(_) => "string",
                     Value::Object { .. } | Value::Array(_) | Value::GlobalObject => "object",
-                    Value::Function { .. }
+                    Value::Function(_)
                     | Value::NativeFunction { .. }
                     | Value::HostFunction { .. }
-                    | Value::Class { .. } => "function",
+                    | Value::Class(_) => "function",
                     Value::Promise { .. } => "object",
                     Value::Generator { .. } => "object",
                     Value::Symbol(_) => "symbol",
-                    Value::Error { .. } => "object",
+                    Value::Error(_) => "object",
                 }
                 .to_string(),
             ),

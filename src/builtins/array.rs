@@ -269,7 +269,7 @@ fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
         let cmp = a.first().cloned().unwrap_or(Value::Undefined);
         if matches!(
             cmp,
-            Value::Function { .. } | Value::NativeFunction { .. } | Value::HostFunction { .. }
+            Value::Function(_) | Value::NativeFunction { .. } | Value::HostFunction { .. }
         ) {
             // Comparator callback: negative/positive/zero ordering.
             items.borrow_mut().sort_by(|x, y| {

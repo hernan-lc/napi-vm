@@ -18,10 +18,14 @@ const PROMOTE_AT: usize = 16;
 /// params, so 8 slots cover the overwhelming majority without heap-allocating.
 const INLINE_CAP: usize = 8;
 
+/// Binding key: `Rc<str>` so parameter names shared across millions of calls
+/// are cloned with a refcount bump instead of a heap allocation.
+type Key = Rc<str>;
+
 #[derive(Clone)]
 enum Vars {
-    Small(SmallVec<[(String, Value); INLINE_CAP]>),
-    Large(HashMap<String, Value>),
+    Small(SmallVec<[(Key, Value); INLINE_CAP]>),
+    Large(HashMap<Key, Value>),
 }
 
 impl Vars {
@@ -34,7 +38,7 @@ impl Vars {
 
     fn get(&self, n: &str) -> Option<&Value> {
         match self {
-            Vars::Small(v) => v.iter().find(|(k, _)| k == n).map(|(_, v)| v),
+            Vars::Small(v) => v.iter().find(|(k, _)| &**k == n).map(|(_, v)| v),
             Vars::Large(m) => m.get(n),
         }
     }
@@ -45,7 +49,7 @@ impl Vars {
     fn try_set(&mut self, n: &str, v: Value) -> Result<(), Value> {
         match self {
             Vars::Small(vars) => {
-                if let Some(slot) = vars.iter_mut().find(|(k, _)| k == n) {
+                if let Some(slot) = vars.iter_mut().find(|(k, _)| &**k == n) {
                     slot.1 = v;
                     Ok(())
                 } else {
@@ -79,15 +83,15 @@ impl Vars {
         match self {
             Vars::Small(vars) => {
                 if vars.len() >= PROMOTE_AT {
-                    let mut map: HashMap<String, Value> = vars.drain(..).collect();
-                    map.insert(n.to_string(), v);
+                    let mut map: HashMap<Key, Value> = vars.drain(..).collect();
+                    map.insert(Rc::from(n), v);
                     *self = Vars::Large(map);
                 } else {
-                    vars.push((n.to_string(), v));
+                    vars.push((Rc::from(n), v));
                 }
             }
             Vars::Large(map) => {
-                map.insert(n.to_string(), v);
+                map.insert(Rc::from(n), v);
             }
         }
     }
@@ -127,13 +131,13 @@ impl Environment {
     }
 
     /// Create a child frame from a pre-built binding list. The call fast
-    /// path uses this to bind `this` + params in one allocation, with no
+    /// path uses this to bind `this` + params in one shot, with no
     /// per-parameter `RefCell` borrows or insertion scans.
-    pub fn with_bindings(p: Env, vars: Vec<(String, Value)>) -> Self {
+    pub fn with_bindings(p: Env, vars: SmallVec<[(Key, Value); INLINE_CAP]>) -> Self {
         let vars = if vars.len() > PROMOTE_AT {
             Vars::Large(vars.into_iter().collect())
         } else {
-            Vars::Small(SmallVec::from_vec(vars))
+            Vars::Small(vars)
         };
         Self {
             vars,
@@ -174,7 +178,7 @@ impl Environment {
     pub fn remove(&mut self, n: &str) -> bool {
         match &mut self.vars {
             Vars::Small(vars) => {
-                if let Some(pos) = vars.iter().position(|(k, _)| k == n) {
+                if let Some(pos) = vars.iter().position(|(k, _)| &**k == n) {
                     vars.remove(pos);
                     true
                 } else {
@@ -218,8 +222,8 @@ impl Environment {
     /// globals.
     pub fn own_keys(&self) -> Vec<String> {
         match &self.vars {
-            Vars::Small(v) => v.iter().map(|(k, _)| k.clone()).collect(),
-            Vars::Large(m) => m.keys().cloned().collect(),
+            Vars::Small(v) => v.iter().map(|(k, _)| k.to_string()).collect(),
+            Vars::Large(m) => m.keys().map(|k| k.to_string()).collect(),
         }
     }
 

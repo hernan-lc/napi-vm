@@ -4,11 +4,15 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use smallvec::SmallVec;
+
 use super::{Environment, Interpreter};
 use crate::error::{RuntimeErrorData, VmErr, vm_err};
 use crate::parser::{Pattern, Statement};
 use crate::span::Span;
 use crate::value::{GeneratorInner, PromiseState, Value};
+
+type Key = Rc<str>;
 
 impl Interpreter {
     pub(super) fn destructure(&mut self, pat: &Pattern, val: &Value) -> Result<Value, VmErr> {
@@ -203,16 +207,16 @@ impl Interpreter {
                     // and allocate the environment exactly once. No
                     // per-parameter `RefCell` borrows, no insertion scans.
                     None => {
-                        let mut vars: Vec<(String, Value)> = Vec::with_capacity(fd.params.len() + 2);
+                        let mut vars: SmallVec<[(Key, Value); 8]> = SmallVec::new();
                         // Regular functions bind their own `this`; arrows
                         // inherit the enclosing lexical `this` through the
                         // closure chain.
                         if !fd.is_arrow {
-                            vars.push(("this".to_string(), this_val));
+                            vars.push((Key::from("this"), this_val));
                         }
                         for (i, p) in fd.params.iter().enumerate() {
                             let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
-                            vars.push((p.clone(), arg));
+                            vars.push((Key::from(p.as_str()), arg));
                         }
                         // Create the (detached) arguments object only when
                         // the body actually reads it; most functions never do.
@@ -225,7 +229,7 @@ impl Interpreter {
                             );
                             args_obj
                                 .set_prop("length".to_string(), Value::Number(args.len() as f64));
-                            vars.push(("arguments".to_string(), args_obj));
+                            vars.push((Key::from("arguments"), args_obj));
                         }
                         Rc::new(RefCell::new(Environment::with_bindings(parent_env, vars)))
                     }
@@ -394,11 +398,11 @@ impl Interpreter {
                 let rest_idx = fd.params.iter().position(|p| p.starts_with("..."));
                 let fe = match rest_idx {
                     None => {
-                        let mut vars: Vec<(String, Value)> = Vec::with_capacity(fd.params.len() + 2);
-                        vars.push(("this".to_string(), inst.clone()));
+                        let mut vars: SmallVec<[(Key, Value); 8]> = SmallVec::new();
+                        vars.push((Key::from("this"), inst.clone()));
                         for (i, p) in fd.params.iter().enumerate() {
                             let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
-                            vars.push((p.clone(), arg));
+                            vars.push((Key::from(p.as_str()), arg));
                         }
                         if fd.uses_arguments {
                             let args_obj = Value::object(
@@ -408,7 +412,7 @@ impl Interpreter {
                                     .collect(),
                             );
                             args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
-                            vars.push(("arguments".to_string(), args_obj));
+                            vars.push((Key::from("arguments"), args_obj));
                         }
                         Rc::new(RefCell::new(Environment::with_bindings(parent_env, vars)))
                     }
