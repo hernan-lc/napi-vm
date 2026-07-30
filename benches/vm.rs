@@ -7,7 +7,7 @@
 //!   how much of the pipeline is parsing versus evaluation.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use node_vm::{Interpreter, Lexer, Parser, Statement, setup_builtins};
+use napi_vm::{Interpreter, Lexer, Parser, Statement, setup_builtins};
 
 /// Lex + parse a source string into statements.
 fn parse(src: &str) -> Vec<Statement> {

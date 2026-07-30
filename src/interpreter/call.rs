@@ -214,8 +214,7 @@ impl Interpreter {
                     // and allocate the environment exactly once. No
                     // per-parameter `RefCell` borrows, no insertion scans.
                     None => {
-                        let mut vars: Vec<(String, Value)> =
-                            Vec::with_capacity(params.len() + 2);
+                        let mut vars: Vec<(String, Value)> = Vec::with_capacity(params.len() + 2);
                         // Regular functions bind their own `this`; arrows
                         // inherit the enclosing lexical `this` through the
                         // closure chain.
@@ -289,7 +288,9 @@ impl Interpreter {
                 self.global = fe;
                 // `name` is an `Rc<str>`: cloning it for the stack frame is a
                 // refcount bump, so the hot path allocates nothing here.
-                let fname = name.clone().unwrap_or_else(|| Rc::<str>::from("<anonymous>"));
+                let fname = name
+                    .clone()
+                    .unwrap_or_else(|| Rc::<str>::from("<anonymous>"));
                 self.push_frame(fname, Span::unknown());
                 let r = self.run(body);
                 // Convert a bare message into a located runtime error *before*
