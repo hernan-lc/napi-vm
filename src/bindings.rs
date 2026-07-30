@@ -1092,6 +1092,17 @@ impl VM {
     /// Internally, the VM runs on a dedicated thread so that `await` can park
     /// without blocking the Node event loop. Async host calls are dispatched
     /// back to the main thread via a ThreadsafeFunction.
+    ///
+    /// **Throughput caveat:** each call spawns a new OS thread. Under
+    /// sustained high-frequency use (>100 calls/sec for extended periods),
+    /// the thread spawn/cleanup cycle can exhaust native resources and crash
+    /// the process. For high-frequency event handlers (chat messages, ticks),
+    /// prefer the synchronous `run()` which completes in microseconds for
+    /// typical workloads and never spawns a thread. Reserve `runAsync` for
+    /// genuinely heavy or long-running computation where blocking the event
+    /// loop is unacceptable.
+    ///
+    /// The caller must not call `run`/`runAsync` concurrently on the same VM.
     #[napi]
     pub fn run_async(&mut self, env: Env, source: String) -> napi::Result<Unknown<'_>> {
         let raw_env = env.raw();
@@ -1146,7 +1157,7 @@ impl VM {
 
         let source_clone = source.clone();
         std::thread::Builder::new()
-            .stack_size(8 * 1024 * 1024)
+            .stack_size(2 * 1024 * 1024)
             .spawn(move || {
                 let interp = unsafe { &mut *(interp_ptr.0 as *mut Interpreter) };
                 interp.set_source(&source_clone);

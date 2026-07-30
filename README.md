@@ -141,7 +141,7 @@ for a complete working demo (run with `bun examples/hotreload.ts`).
 | `vm.setGlobal(name, value)` | Define a global from a structured Node value (reachable as `name` and `window.name`) |
 | `vm.exposeFunction(name, fn)` | Expose a sync Node function to the VM as a callable global; throws propagate into the VM |
 | `vm.exposeAsyncFunction(name, fn)` | Expose an async Node function; VM must `await` the call (use with `runAsync`) |
-| `vm.runAsync(code)` | Execute code on a VM thread; returns a `Promise<string>` that resolves when done. Supports `await` on async host functions |
+| `vm.runAsync(code)` | Execute code on a VM thread; returns a `Promise<string>` that resolves when done. Supports `await` on async host functions. **Not for high-frequency use** — each call spawns an OS thread; sustained >100 calls/sec can crash. Use `vm.run()` for event handlers. |
 | `vm.callFunction(name, args)` | Call a VM-defined global function; `args` is an array, returns a live JS value |
 | `vm.setLoopLimit(n)` | Cap loop iterations per execution (default 100M); exceeding it throws a catchable `RangeError` |
 | `vm.getGlobal(name)` | Read a global, stringified |
@@ -213,6 +213,7 @@ harness is a working template for operational isolation.
 | `npm run build:debug` | Build debug binary |
 | `bun test` | Run the test suite |
 | `npm run bench` | End-to-end JS benchmark through the NAPI binding |
+| `npm run bench:stress` | Stress tests: hot-reload cycles, listener leaks, large JSON emit, middleware pressure (`--quick` for CI) |
 | `npm run bench:rust` | Criterion microbenchmarks of the interpreter pipeline |
 
 ## Benchmarks

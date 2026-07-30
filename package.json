@@ -15,6 +15,7 @@
     "build:debug": "npx napi build --platform",
     "test": "bun test",
     "bench": "node bench/bench.js",
+    "bench:stress": "bun bench/stress.ts",
     "bench:rust": "cargo bench"
   },
   "repository": {
