@@ -12,8 +12,6 @@ export interface ModuleEntry {
 
 export interface HotReloadOptions {
   modulesDir: string;
-  /** Optional static validation before a module reaches the VM. */
-  validate?: (source: string, name: string) => string[];
   /** Called after every successful reload with the fresh VM + bus. */
   onReload?: (vm: Vm, bus: VmEventBus) => void;
   /** Debounce window in ms (default 100). */
@@ -46,7 +44,6 @@ export class HotReloader {
 
   constructor(opts: HotReloadOptions) {
     this.opts = {
-      validate: () => [],
       onReload: () => {},
       debounceMs: 100,
       ...opts,
@@ -133,17 +130,6 @@ export class HotReloader {
   }
 
   private loadModule(vm: Vm, name: string, source: string): void {
-    const errors = this.opts.validate(source, name);
-    if (errors.length > 0) {
-      this.registry.set(name, {
-        name,
-        file: `${name}.js`,
-        status: "error",
-        error: errors.join("; "),
-      });
-      console.log(`  [ERROR] ${name}: ${errors.join("; ")}`);
-      return;
-    }
     try {
       vm.registerModule(name, source);
       this.registry.set(name, { name, file: `${name}.js`, status: "active" });

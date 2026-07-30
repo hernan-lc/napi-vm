@@ -19,37 +19,6 @@ import { VmEventBus } from "./lib/vm-event-bus";
 
 const MODULES_DIR = join(import.meta.dir, "callbacks", "modules");
 
-// ── Blocked-pattern validation (same rules as before) ────────────────
-
-const BLOCKED_PATTERNS = [
-  /\bwhile\s*\(\s*true\s*\)/,
-  /\bfor\s*\(\s*;\s*;\s*\)/,
-  /\beval\s*\(/,
-  /\bFunction\s*\(/,
-  /\bsetTimeout\s*\(/,
-  /\bsetInterval\s*\(/,
-  /\bimportScripts\s*\(/,
-  /\bprocess\s*\./,
-  /\brequire\s*\(/,
-  /\b__dirname\b/,
-  /\b__filename\b/,
-];
-
-function validateCode(source: string, _name: string): string[] {
-  const errors: string[] = [];
-  const lines = source.split("\n");
-  for (let i = 0; i < BLOCKED_PATTERNS.length; i++) {
-    for (let j = 0; j < lines.length; j++) {
-      if (BLOCKED_PATTERNS[i].test(lines[j])) {
-        errors.push(`Line ${j + 1}: blocked pattern '${BLOCKED_PATTERNS[i].source}'`);
-      }
-    }
-  }
-  if (source.length === 0) errors.push("Module source is empty");
-  if (!source.includes("export")) errors.push("Module must export at least one symbol");
-  return errors;
-}
-
 // ── Bootstrap: wire host functions + dispatch into a fresh VM ────────
 
 function bootstrap(vm: Vm, bus: VmEventBus): void {
@@ -207,7 +176,6 @@ console.log("=== napi-vm Callback System ===\n");
 
 const reloader = new HotReloader({
   modulesDir: MODULES_DIR,
-  validate: validateCode,
   onReload: (vm, bus) => bootstrap(vm, bus),
 });
 
