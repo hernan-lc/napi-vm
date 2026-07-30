@@ -6,9 +6,80 @@ use crate::value::Value;
 
 pub type Env = Rc<RefCell<Environment>>;
 
+/// Frames with more bindings than this are promoted from a flat vector to a
+/// hash map. Call frames (params + `this`) almost never reach the threshold,
+/// so they pay no hashing and no hash-table allocation; the builtins frame
+/// (dozens of names) promotes once and stays a map.
+const PROMOTE_AT: usize = 16;
+
+#[derive(Clone)]
+enum Vars {
+    Small(Vec<(String, Value)>),
+    Large(HashMap<String, Value>),
+}
+
+impl Vars {
+    fn len(&self) -> usize {
+        match self {
+            Vars::Small(v) => v.len(),
+            Vars::Large(m) => m.len(),
+        }
+    }
+
+    fn get(&self, n: &str) -> Option<&Value> {
+        match self {
+            Vars::Small(v) => v.iter().find(|(k, _)| k == n).map(|(_, v)| v),
+            Vars::Large(m) => m.get(n),
+        }
+    }
+
+    /// Update `n` in place if it is already bound in this frame. Returns the
+    /// value back to the caller on a miss so it can be inserted or forwarded
+    /// up the scope chain without cloning.
+    fn try_set(&mut self, n: &str, v: Value) -> Result<(), Value> {
+        match self {
+            Vars::Small(vars) => {
+                if let Some(slot) = vars.iter_mut().find(|(k, _)| k == n) {
+                    slot.1 = v;
+                    Ok(())
+                } else {
+                    Err(v)
+                }
+            }
+            Vars::Large(map) => {
+                if let Some(slot) = map.get_mut(n) {
+                    *slot = v;
+                    Ok(())
+                } else {
+                    Err(v)
+                }
+            }
+        }
+    }
+
+    /// Bind `n` in this frame, assuming it is not already bound. Small frames
+    /// are promoted to a hash map once they outgrow `PROMOTE_AT`.
+    fn insert_new(&mut self, n: &str, v: Value) {
+        match self {
+            Vars::Small(vars) => {
+                if vars.len() >= PROMOTE_AT {
+                    let mut map: HashMap<String, Value> = vars.drain(..).collect();
+                    map.insert(n.to_string(), v);
+                    *self = Vars::Large(map);
+                } else {
+                    vars.push((n.to_string(), v));
+                }
+            }
+            Vars::Large(map) => {
+                map.insert(n.to_string(), v);
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Environment {
-    vars: HashMap<String, Value>,
+    vars: Vars,
     parent: Option<Env>,
 }
 
@@ -27,14 +98,14 @@ impl Default for Environment {
 impl Environment {
     pub fn new() -> Self {
         Self {
-            vars: HashMap::new(),
+            vars: Vars::Small(Vec::new()),
             parent: None,
         }
     }
 
     pub fn child(p: Env) -> Self {
         Self {
-            vars: HashMap::new(),
+            vars: Vars::Small(Vec::new()),
             parent: Some(p),
         }
     }
@@ -52,21 +123,18 @@ impl Environment {
     pub fn set(&mut self, n: &str, v: Value) {
         // Reuse the existing key allocation when the variable is already bound
         // (the common case in loops); only allocate on first insertion.
-        if let Some(slot) = self.vars.get_mut(n) {
-            *slot = v;
-        } else {
-            self.vars.insert(n.to_string(), v);
+        if let Err(v) = self.vars.try_set(n, v) {
+            self.vars.insert_new(n, v);
         }
     }
 
     pub fn assign(&mut self, n: &str, v: Value) -> bool {
-        if let Some(slot) = self.vars.get_mut(n) {
-            *slot = v;
-            true
-        } else if let Some(ref p) = self.parent {
-            p.borrow_mut().assign(n, v)
-        } else {
-            false
+        match self.vars.try_set(n, v) {
+            Ok(()) => true,
+            Err(v) => match self.parent {
+                Some(ref p) => p.borrow_mut().assign(n, v),
+                None => false,
+            },
         }
     }
 
