@@ -221,7 +221,10 @@ impl Lexer {
     fn read_template(&mut self) -> Vec<crate::span::SpannedToken> {
         self.pos += 1; // consume opening backtick
         self.col += 1;
-        let mut toks = vec![(Token::Backtick, crate::span::Span::new(self.line, self.col - 1))];
+        let mut toks = vec![(
+            Token::Backtick,
+            crate::span::Span::new(self.line, self.col - 1),
+        )];
         let mut quasi = String::new();
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
@@ -387,7 +390,9 @@ impl Lexer {
             '`' => {
                 let toks = self.read_template();
                 let mut it = toks.into_iter();
-                let first = it.next().unwrap_or((Token::Backtick, crate::span::Span::unknown()));
+                let first = it
+                    .next()
+                    .unwrap_or((Token::Backtick, crate::span::Span::unknown()));
                 // Buffer the rest (reversed, since `pending` is popped from the back).
                 for (t, s) in it.rev() {
                     self.pending.push(t);

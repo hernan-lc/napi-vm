@@ -49,13 +49,6 @@ impl Parser {
         &self.toks.get(self.pos).unwrap_or(&self.eof_tok).0
     }
 
-    pub(crate) fn cur_span(&self) -> Span {
-        self.toks
-            .get(self.pos)
-            .map(|(_, s)| *s)
-            .unwrap_or(self.eof_tok.1)
-    }
-
     pub(crate) fn peek(&self) -> &Token {
         &self.toks.get(self.pos + 1).unwrap_or(&self.eof_tok).0
     }

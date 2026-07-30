@@ -2,8 +2,28 @@
 
 use super::{NativeFn, nf, str_this};
 use crate::error::VmErr;
-use crate::interpreter::Interpreter;
+use crate::interpreter::{Environment, Interpreter};
 use crate::value::Value;
+
+pub(super) fn install(e: &mut Environment) {
+    if let Some(s) = e.get("String") {
+        s.set_prop(
+            "fromCharCode".to_string(),
+            nf("fromCharCode", string_from_char_code),
+        );
+    }
+}
+
+fn string_from_char_code(_: &mut Interpreter, _this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let s: String = a
+        .iter()
+        .filter_map(|v| {
+            let n = v.to_number() as u32;
+            char::from_u32(n)
+        })
+        .collect();
+    Ok(Value::String(s))
+}
 
 /// Dispatch table for `String.prototype` methods, looked up by `prop()`.
 pub fn string_method(name: &str) -> Option<Value> {
@@ -147,7 +167,11 @@ fn string_replace(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resul
     };
     Ok(Value::String(s.replacen(&from, &to, 1)))
 }
-fn string_replace_all(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+fn string_replace_all(
+    interp: &mut Interpreter,
+    this: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
     let from = match a.first() {
         Some(Value::String(n)) => n.clone(),
@@ -161,7 +185,11 @@ fn string_replace_all(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> R
     };
     Ok(Value::String(s.replace(&from, &to)))
 }
-fn string_char_code_at(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+fn string_char_code_at(
+    interp: &mut Interpreter,
+    this: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
     let idx = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
     match s.chars().nth(idx) {
@@ -174,7 +202,9 @@ fn string_substring(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Res
     let chars: Vec<char> = s.chars().collect();
     let len = chars.len() as i64;
     let norm = |v: f64| -> i64 {
-        if v.is_nan() { return 0; }
+        if v.is_nan() {
+            return 0;
+        }
         let i = v as i64;
         if i < 0 { 0 } else { i.min(len) }
     };

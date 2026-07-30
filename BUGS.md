@@ -139,7 +139,7 @@ non-negative clamping.
 
 **Severity:** Low  
 **File:** `src/builtins/string.rs:134-147`  
-**Status:** Not fixed (by design, but `replaceAll` is missing)
+**Status:** Fixed (`replaceAll` added)
 
 ### Description
 

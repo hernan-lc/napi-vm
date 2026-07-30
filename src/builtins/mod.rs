@@ -403,6 +403,7 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     math::install(e);
     object::install(e);
     array::install(e);
+    string::install(e);
     number::install(e);
     json::install(e);
     date::install(e);

@@ -64,10 +64,10 @@ impl fmt::Display for VmErr {
                 stack,
             } => {
                 write!(f, "{}", message)?;
-                if let Some(span) = span {
-                    if !span.is_unknown() {
-                        write!(f, "\n  at {}", span)?;
-                    }
+                if let Some(span) = span
+                    && !span.is_unknown()
+                {
+                    write!(f, "\n  at {}", span)?;
                 }
                 for frame in stack.iter().rev() {
                     write!(f, "\n{}", frame)?;

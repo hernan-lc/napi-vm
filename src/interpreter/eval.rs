@@ -671,9 +671,9 @@ impl Interpreter {
                         Expr::Identifier(n) => {
                             let (cur, new_val) = {
                                 let env = self.global.borrow();
-                                let cur = env
-                                    .get(n)
-                                    .ok_or_else(|| VmErr::Msg(format!("ReferenceError: {} is not defined", n)))?;
+                                let cur = env.get(n).ok_or_else(|| {
+                                    VmErr::Msg(format!("ReferenceError: {} is not defined", n))
+                                })?;
                                 let nv = if *op == UnOp::Inc {
                                     Value::Number(self.tn(&cur) + 1.0)
                                 } else {
@@ -808,11 +808,9 @@ impl Interpreter {
                 match target.as_ref() {
                     Expr::Identifier(n) => {
                         let fv = if let Some(bin) = op.bin_op() {
-                            let c = self
-                                .global
-                                .borrow()
-                                .get(n)
-                                .ok_or_else(|| VmErr::Msg(format!("ReferenceError: {} is not defined", n)))?;
+                            let c = self.global.borrow().get(n).ok_or_else(|| {
+                                VmErr::Msg(format!("ReferenceError: {} is not defined", n))
+                            })?;
                             self.bin_op(bin, &c, &v)?
                         } else {
                             v

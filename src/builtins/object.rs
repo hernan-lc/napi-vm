@@ -65,9 +65,7 @@ fn object_get_own_property_names(
     match v {
         Value::GlobalObject => {
             let names = interp.global_keys();
-            Ok(Value::array(
-                names.into_iter().map(Value::String).collect(),
-            ))
+            Ok(Value::array(names.into_iter().map(Value::String).collect()))
         }
         _ => Ok(Value::array(
             interp.keys(&v).into_iter().map(Value::String).collect(),
