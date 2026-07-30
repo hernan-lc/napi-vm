@@ -8,9 +8,11 @@
 
 use std::sync::{LazyLock, Mutex};
 
-/// Display + input configuration for an inspector session. Sessions are
-/// mouse-driven (click to expand/collapse, wheel to scroll, click outside to
-/// close); the only keyboard input is the close key, Esc, and ctrl-c.
+/// Display + input configuration for an inspector session. Sessions render
+/// inline (never on an alternate screen), block on input until closed, and
+/// are driven by the mouse (click to expand/collapse, wheel to scroll, click
+/// outside the tree to close) and the keyboard (arrows/PgUp/PgDn/Home/End to
+/// scroll; the close key, Esc, and ctrl-c to close).
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Force colors on (`Some(true)`) or off (`Some(false)`); `None` means

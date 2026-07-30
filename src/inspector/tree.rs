@@ -51,8 +51,9 @@ pub struct Tree {
 }
 
 impl Tree {
-    /// Build a tree rooted at `value`, with the root pre-expanded so the first
-    /// frame already shows its immediate children.
+    /// Build a tree rooted at `value`, collapsed: the first frame shows only
+    /// the root row (`▶ …`) and the user opens what they need. Children are
+    /// built lazily on first expand.
     pub fn new(value: Value) -> Tree {
         let mut t = Tree {
             nodes: Vec::new(),
@@ -65,11 +66,10 @@ impl Tree {
             value,
             parent: None,
             depth: 0,
-            expanded: true,
+            expanded: false,
             children: None,
             circular: None,
         });
-        t.ensure_children(0);
         t
     }
 

@@ -16,11 +16,12 @@ default = []
 mouse = []
 # Interactive terminal object inspector (DevTools-style foldable tree),
 # implemented natively on the guest `Value`. Off by default: an interactive
-# session enables raw mode + mouse capture until closed (it renders inline
-# and never takes over the screen) and is meaningless in CI / piped
-# environments, where it transparently falls back to a static dump. Implies
-# `mouse`, so `--features inspector` is enough to build the full inspector
-# and its NAPI surface.
+# session enables raw mode + mouse capture until closed (it renders inline —
+# never on an alternate screen — blocks on input, and leaves a compact
+# listing of the final view in the scrollback) and is meaningless in CI /
+# piped environments, where it transparently falls back to a static dump.
+# Implies `mouse`, so `--features inspector` is enough to build the full
+# inspector and its NAPI surface.
 inspector = ["mouse", "dep:crossterm"]
 
 [dependencies]

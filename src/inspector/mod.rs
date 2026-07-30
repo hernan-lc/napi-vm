@@ -6,13 +6,21 @@
 //! - `console.dir(obj, { inspect: true })` from guest code, and
 //! - `vm.inspect("expression")` from the host.
 //!
-//! Sessions render **inline**: the tree is printed at the current cursor
-//! position — never on an alternate screen — and is driven with the mouse
-//! (click a `▶`/`▼` row to expand/collapse, wheel to scroll, click outside
-//! the tree to close). The final frame stays in the scrollback, so repeated
-//! inspections accumulate as a list in the console. In pipes / CI it
-//! transparently falls back to a static, depth-limited tree dump and never
-//! blocks.
+//! Sessions render **inline** at the current cursor position — never on an
+//! alternate screen — and block the host until closed: the event loop pauses
+//! in `event::read()` (a blocking input wait, no sleeps or timers) while the
+//! inspector is open. The live frame is exactly `term_rows - 1` lines tall
+//! (header, padded tree viewport, footer hint), so the first draw settles it
+//! at the top of the terminal and every redraw rewinds precisely the lines
+//! it drew — the geometry can never drift onto neighboring output. On close
+//! the live frame is replaced in place by a compact listing (header + the
+//! tree window last shown) that **stays in the scrollback**, so repeated
+//! inspections accumulate as a list in the console and every `console.log`
+//! around them remains visible after the app exits. The tree starts
+//! collapsed; open what you need. Controls: click a `▶`/`▼` row to
+//! expand/collapse, wheel or arrow keys to scroll, `q`/Esc/ctrl-c or a click
+//! outside the tree to close. In pipes / CI the inspector transparently
+//! falls back to a static, depth-limited tree dump and never blocks.
 //!
 //! Unlike the TypeScript `examples/inspector.ts`, this walks the guest `Value`
 //! directly (no NAPI marshalling), so circular guest structures render as
@@ -23,13 +31,13 @@ mod tree;
 
 use std::io::{IsTerminal, Write};
 
+use crossterm::ExecutableCommand;
 use crossterm::cursor;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
     MouseEventKind,
 };
 use crossterm::terminal::{self, Clear, ClearType};
-use crossterm::ExecutableCommand;
 
 use crate::bindings::format::{Painter, colors_enabled};
 use crate::value::Value;
@@ -74,9 +82,19 @@ fn dump_static(value: &Value, label: &str, cfg: &Config, colors: bool) {
     }
 }
 
-/// The inline interactive session: render the tree at the current cursor
-/// position (no alternate screen), loop on mouse input until the user closes
-/// it, and leave the final frame in the scrollback.
+/// The inline interactive session: render a fixed-height frame at the
+/// current cursor position, block on input until the user closes it, and
+/// leave a compact listing of the final view in the scrollback.
+///
+/// The frame is always exactly `viewport + 2` lines tall (header + padded
+/// tree viewport + footer) and `viewport` is `term_rows - 3`, so the frame
+/// is `term_rows - 1` lines: drawing it from *any* cursor row settles it at
+/// terminal rows `0..term_rows-2` with the cursor on the last row, and it
+/// stays there. That gives the redraw loop an exact invariant — rewind
+/// `last_lines`, repaint `last_lines` lines — with no absolute anchors, no
+/// cursor-position queries, and no chance of overrunning neighboring
+/// output. The one blank row under the frame also means the frame's
+/// trailing newline never scrolls the terminal mid-session.
 fn run_inline_session(
     value: &Value,
     label: &str,
@@ -88,24 +106,6 @@ fn run_inline_session(
     let quit = cfg.key_quit;
 
     let mut stdout = std::io::stdout();
-    // Anchor the frame at column 0 so row arithmetic stays simple.
-    if cursor::position().map(|(c, _)| c).unwrap_or(0) != 0 {
-        stdout.write_all(b"\r\n")?;
-        stdout.flush()?;
-    }
-    // Make sure there is room below for a minimal frame; otherwise the
-    // terminal would scroll the anchor row out from under us.
-    loop {
-        let (_, term_rows) = terminal::size()?;
-        let (_, row) = cursor::position()?;
-        if term_rows.saturating_sub(row) >= 8 || term_rows < 10 {
-            break;
-        }
-        stdout.write_all(b"\n")?;
-        stdout.flush()?;
-    }
-    let (_, mut origin_row) = cursor::position().unwrap_or((0, 0));
-
     terminal::enable_raw_mode()?;
     stdout.execute(cursor::Hide)?;
     // Click to expand/collapse or close, wheel to scroll. Scoped to this
@@ -115,62 +115,82 @@ fn run_inline_session(
 
     let mut start: usize = 0; // first visible tree row (scroll offset)
     let mut last_lines: usize = 0; // height of the frame currently on screen
+    // The tree viewport of the frame currently on screen (for the final
+    // listing). Uninitialized: the loop always draws a frame before it can
+    // break, so it is assigned before any read.
+    let mut last_viewport: usize;
 
     let result = loop {
         let (term_cols, term_rows) = terminal::size()?;
         let rows = tree.visible_rows();
-        // header + hint + footer occupy 3 lines below the anchor.
-        let viewport = (term_rows as usize)
-            .saturating_sub(origin_row as usize + 3)
-            .max(3);
+        // Header + footer = 2 chrome lines, plus one blank row of margin
+        // under the frame so its trailing newline never scrolls.
+        let viewport = (term_rows as usize).saturating_sub(3).max(1);
         let max_start = rows.len().saturating_sub(viewport);
         if start > max_start {
             start = max_start;
         }
 
-        let (frame, lines) =
-            render_inline_frame(&tree, &p, label, quit, start, viewport, origin_row, term_cols, &rows);
-        stdout.write_all(frame.as_bytes())?;
-        // Erase leftovers when the new frame is shorter than the previous one.
-        if lines < last_lines {
-            write!(
-                stdout,
-                "{}{}",
-                cursor::MoveTo(0, origin_row + lines as u16),
-                Clear(ClearType::FromCursorDown)
-            )?;
+        // Rewind to the top of the previous frame, then repaint in place.
+        if last_lines > 0 {
+            write!(stdout, "{}", cursor::MoveUp(last_lines as u16))?;
         }
+        let frame = render_inline_frame(
+            &tree,
+            &p,
+            label,
+            quit,
+            FrameGeom { start, viewport, cols: term_cols },
+            &rows,
+        );
+        stdout.write_all(frame.as_bytes())?;
         stdout.flush()?;
-        last_lines = lines;
+        // The tree region is padded with blank lines, so the frame is
+        // exactly `viewport + 2` lines no matter how much is expanded —
+        // this is what makes the rewind above exact.
+        last_lines = viewport + 2;
+        last_viewport = viewport;
 
+        // Blocks until the next input event: this is what makes the session
+        // modal — the host's event loop is parked here, no sleep required.
         match event::read()? {
             Event::Key(k) => {
                 // Esc / ctrl-c always close; the quit letter is configurable.
                 if k.code == KeyCode::Esc
-                    || (k.modifiers.contains(KeyModifiers::CONTROL)
-                        && k.code == KeyCode::Char('c'))
-                    || k.code == KeyCode::Char(quit)
+                    || (k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c'))
                 {
                     break Ok(());
+                }
+                match k.code {
+                    KeyCode::Char(c) if c == quit => break Ok(()),
+                    KeyCode::Up => start = start.saturating_sub(1),
+                    KeyCode::Down => start = (start + 1).min(max_start),
+                    KeyCode::PageUp => start = start.saturating_sub(viewport),
+                    KeyCode::PageDown => start = (start + viewport).min(max_start),
+                    KeyCode::Home => start = 0,
+                    KeyCode::End => start = max_start,
+                    _ => {}
                 }
             }
             Event::Mouse(m) => match m.kind {
                 MouseEventKind::ScrollUp => start = start.saturating_sub(3),
                 MouseEventKind::ScrollDown => start = (start + 3).min(max_start),
                 MouseEventKind::Down(MouseButton::Left) => {
-                    // The tree starts two lines under the anchor (header +
-                    // hint) and ends one line above the frame bottom
-                    // (footer). A click on a tree row toggles it; a click
-                    // anywhere else — header, hint, footer, or outside the
-                    // frame — closes the session.
-                    let tree_top = origin_row + 2;
-                    let tree_rows = last_lines.saturating_sub(3);
-                    let r = m.row;
-                    if r >= tree_top && r < tree_top + tree_rows as u16 {
-                        let idx = rows[start + (r - tree_top) as usize];
-                        if tree.is_expandable(idx) {
-                            let want = !tree.is_expanded(idx);
-                            tree.toggle(idx, want);
+                    // The frame occupies rows 0..term_rows-2 (see the
+                    // function docs), so mouse rows map directly: row 0 is
+                    // the header, rows 1..=viewport the tree, row
+                    // viewport+1 the footer. A click on a tree row toggles
+                    // it; a click on the chrome — or anywhere else — closes.
+                    let r = m.row as usize;
+                    if r >= 1 && r <= viewport {
+                        let pos = start + (r - 1);
+                        let end = (start + viewport).min(rows.len());
+                        if pos < end {
+                            let idx = rows[pos];
+                            if tree.is_expandable(idx) {
+                                let want = !tree.is_expanded(idx);
+                                tree.toggle(idx, want);
+                            }
                         }
                     } else {
                         break Ok(());
@@ -178,99 +198,110 @@ fn run_inline_session(
                 }
                 _ => {}
             },
-            Event::Resize(_, new_rows) => {
-                // Discard the old frame and re-anchor so a shrunken terminal
-                // cannot leave the anchor row off-screen.
-                write!(
-                    stdout,
-                    "{}{}",
-                    cursor::MoveTo(0, origin_row),
-                    Clear(ClearType::FromCursorDown)
-                )?;
+            Event::Resize(..) => {
+                // Best effort: rewind into the old frame, clear it, and let
+                // the next iteration repaint (and re-settle) from there.
+                if last_lines > 0 {
+                    write!(stdout, "{}", cursor::MoveUp(last_lines as u16))?;
+                }
+                write!(stdout, "{}", Clear(ClearType::FromCursorDown))?;
                 stdout.flush()?;
                 last_lines = 0;
-                if origin_row + 8 > new_rows {
-                    // Only reachable when the terminal shrank drastically;
-                    // moving up may repaint a line of prior output, which is
-                    // preferable to an off-screen frame.
-                    origin_row = new_rows.saturating_sub(8);
-                }
             }
             _ => {}
         }
     };
 
-    // Park the cursor just below the final frame, then restore the terminal.
-    write!(stdout, "{}", cursor::MoveTo(0, origin_row + last_lines as u16))?;
+    // Restore the terminal first (raw mode off means `println!` newlines
+    // get their carriage returns back), then replace the live frame with
+    // the compact listing that stays in the scrollback: rewind to the
+    // frame's top, erase it, and print header + the tree window that was
+    // on screen at close. The cursor ends below the listing, so the
+    // host's next print continues the console flow right there.
+    if last_lines > 0 {
+        write!(stdout, "{}", cursor::MoveUp(last_lines as u16))?;
+    }
+    write!(stdout, "{}", Clear(ClearType::FromCursorDown))?;
     stdout.flush()?;
     terminal::disable_raw_mode()?;
     stdout.execute(DisableMouseCapture)?;
     stdout.execute(cursor::Show)?;
+
+    println!(
+        "{} {} {}",
+        p.dim("──".to_string()),
+        p.bold(label.to_string()),
+        p.dim("──".to_string())
+    );
+    let rows = tree.visible_rows();
+    let end = (start + last_viewport).min(rows.len());
+    for &row in &rows[start..end] {
+        println!("{}", tree.render_row(row, &p));
+    }
     // A blank line between sessions keeps the console list readable.
     println!();
     result
 }
 
-/// Render one inline frame using absolute cursor positioning: every line is
-/// `MoveTo` + clear + content, so re-renders overwrite the previous frame in
-/// place no matter how its height changed. Returns the frame bytes and the
-/// total line count (tree rows are `lines - 3`: header, hint, footer).
-#[allow(clippy::too_many_arguments)]
+/// The geometry of one frame: the scroll window over the tree (`start` ..
+/// `start + viewport`) and the terminal width it renders into.
+struct FrameGeom {
+    start: usize,
+    viewport: usize,
+    cols: u16,
+}
+
+/// Render one live frame as `viewport + 2` self-contained lines: header,
+/// the tree window padded with blank lines to a constant height, and the
+/// footer hint. Each line is clear + content + `\r\n`, so the frame can be
+/// repainted wherever the cursor sits (the caller rewinds to the previous
+/// frame's top first) and always leaves the cursor one line below it.
 fn render_inline_frame(
     tree: &Tree,
     p: &Painter,
     label: &str,
     quit: char,
-    start: usize,
-    viewport: usize,
-    origin_row: u16,
-    term_cols: u16,
+    g: FrameGeom,
     rows: &[usize],
-) -> (String, usize) {
-    let cols = (term_cols as usize).max(10);
-    let end = (start + viewport).min(rows.len());
-    let mut out = String::with_capacity(4096);
+) -> String {
+    let FrameGeom { start, viewport, cols } = g;
+    let cols = (cols as usize).max(10);
+    let mut out = String::with_capacity(8192);
 
-    let mut line = |i: usize, s: String| {
+    let mut line = |s: String| {
         out.push_str(&format!(
-            "{}{}{}",
-            cursor::MoveTo(0, origin_row + i as u16),
+            "{}{}\r\n",
             Clear(ClearType::CurrentLine),
             truncate_visible(&s, cols),
         ));
     };
 
-    line(
-        0,
-        format!(
-            "{} {} {}",
-            p.dim("── inspector:".to_string()),
-            p.bold(label.to_string()),
-            p.dim("──".to_string()),
-        ),
-    );
-    line(
-        1,
-        p.dim(format!(
-            "  click ▶/▼ expand/collapse · wheel scroll · click outside or '{}' close",
-            quit
-        )),
-    );
-    for (offset, &row) in rows[start..end].iter().enumerate() {
-        line(2 + offset, tree.render_row(row, p));
+    line(format!(
+        "{} {} {}",
+        p.dim("──".to_string()),
+        p.bold(label.to_string()),
+        p.dim("──".to_string())
+    ));
+    let end = (start + viewport).min(rows.len());
+    for &row in &rows[start..end] {
+        line(tree.render_row(row, p));
     }
-    let footer = 2 + (end - start);
-    line(
-        footer,
-        p.dim(format!("── {}–{}/{} ──", start + 1, end, rows.len())),
-    );
-    (out, footer + 1)
+    // Pad the tree region to a constant height (see `run_inline_session`'s
+    // rewind invariant).
+    for _ in (end - start)..viewport {
+        line(String::new());
+    }
+    line(p.dim(format!(
+        "click ▶/▼ to fold · wheel or ↑/↓ to scroll · {} or click here to close",
+        quit
+    )));
+    out
 }
 
 /// Truncate an ANSI-colored string to `cols` *visible* columns, skipping SGR
 /// escapes when counting. A cut line gets a style reset + ellipsis so colors
 /// never leak past the cut — and, more importantly, so long lines never
-/// soft-wrap, which would break the in-place re-render geometry.
+/// soft-wrap, which would break the frame geometry.
 fn truncate_visible(s: &str, cols: usize) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len().min(cols + 32));

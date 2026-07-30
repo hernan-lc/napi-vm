@@ -1,48 +1,5 @@
 /**
  * Native interactive object inspector — implemented entirely in Rust.
- *
- * This is the Rust successor to `examples/inspector.ts`. Where that file
- * rendered values *marshalled across the NAPI boundary* (so circular guest
- * structures were lost), this one walks the live guest `Value` inside the
- * crate, so cycles render as `[Circular *n]` and nothing is copied out.
- *
- * Requires the `inspector` Cargo feature, which implies `mouse` — so a single
- * flag builds the full mouse-driven inspector and its NAPI surface:
- *
- *   npx napi build --platform --release --features inspector
- *
- * Two entry points:
- *
- *   A. `vm.inspect("expression")` — evaluate an expression on the host and
- *      open the inspector on the result.
- *
- *   B. `console.dir(obj, { inspect: true })` — the same inspector, reachable
- *      from inside guest code. Without `{ inspect: true }`, `console.dir`
- *      keeps its static pretty-print.
- *
- *   C. `vm.inspectValue(hostObj)` — marshal a plain Node value (or the result
- *      of `JSON.parse(str)`) and inspect it. The value is copied across the
- *      boundary, so unlike (A) this path cannot show circular structures.
- *
- *   To inspect a JSON string as a guest value, wrap it in parens:
- *   `vm.inspect("(" + json + ")")` — `{"a":1}` alone is a JS block, not an
- *   object, so it must be parenthesized (or assigned to a variable first).
- *
- * Sessions render inline — they never take over the screen — and every
- * closed session stays in the console, so multiple inspections accumulate
- * as a list.
- *
- * Controls:
- *   click ▶/▼ row     expand / collapse
- *   scroll wheel      scroll the tree
- *   click outside     close (or q / esc / ctrl-c)
- *
- * Colors and the close key are configurable — env vars
- * (`INSPECTOR_KEY_QUIT=x`, `INSPECTOR_DEPTH=2`) or
- * `setInspectorConfig({ keyQuit: "x", colors: false, … })`.
- *
- * In a non-TTY environment (pipes, CI) both entry points fall back to a
- * static, depth-limited tree dump and never block, so this file is safe to
  * run anywhere:
  *
  *   bun examples/inspector-native.ts
@@ -72,11 +29,8 @@ vm.run(`
   };
 `);
 
-console.log("=== Native Inspector Demo ===");
-console.log("(in a TTY: click ▶/▼ to expand, click outside to close each session)\n");
-
 // Session 1: host-driven — evaluate an expression and inspect the result.
-vm.inspect("user");
+//vm.inspect("user");
 
 // Session 2: guest-driven — console.dir with { inspect: true }.
 vm.run('console.dir(user.address, { inspect: true });');
@@ -107,4 +61,7 @@ const json = '{"title":"sunt aut","status":200,"tags":["a","b"]}';
 vm.run(`var payload = ${json};`);
 vm.inspect("payload");
 
+// Each closed session leaves a compact tree listing in the scrollback, so
+// this line lands right after the last inspection and the full log — every
+// console.log and every inspection — stays visible after exit.
 console.log("\ndone.");

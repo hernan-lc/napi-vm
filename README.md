@@ -18,7 +18,7 @@ Execute JavaScript in an isolated environment with no access to the host system'
 - **Generators** — `function*`/`yield` with true suspension (infinite generators, `next(val)` sent values, `for...of`)
 - **Symbols & iterators** — `Symbol()`, well-known symbols, `Symbol.for`/`keyFor`, full iterator protocol (`[Symbol.iterator]`, `for...of` over custom iterables)
 - **Standard library** — `Math`, `JSON`, `Object`, `Array`/`String`/`Number` prototype methods, and global functions (`parseInt`, `isNaN`, …)
-- **Native inspector** *(opt-in)* — a DevTools-style foldable tree over live guest values, implemented in Rust behind the `inspector` feature (`vm.inspect` / `console.dir(obj, { inspect: true })`); shows circular structures, mouse-driven inline sessions
+- **Native inspector** *(opt-in)* — a DevTools-style foldable tree over live guest values, implemented in Rust behind the `inspector` feature (`vm.inspect` / `console.dir(obj, { inspect: true })`); shows circular structures, mouse-driven inline sessions that stay in the scrollback
 
 > **Status:** the core language, classes, a working standard library, async/`await`, generators with true mid-body suspension (`yield`/`next`/`next(val)`), module export wiring, and a full `Symbol` + iterator protocol are implemented and covered by 566 passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture).
 
@@ -172,9 +172,13 @@ mouse-driven inspector and its NAPI surface (the SGR mouse helpers come along
 too).
 
 It is **off by default** because an interactive session enables raw mode +
-mouse capture until it is closed. Sessions render **inline** — they never
-take over the screen — and each closed session stays in the scrollback, so
-multiple inspections accumulate as a list in the console. Two entry points:
+mouse capture and blocks the host until it is closed (the event loop pauses
+on input — no sleeps involved). Sessions render **inline** — never on an
+alternate screen — with the tree starting collapsed; each closed session
+leaves a compact listing of its final view in the scrollback, so multiple
+inspections accumulate as a list in the console alongside your
+`console.log` output, all of it visible after the app exits. Two entry
+points:
 
 ```javascript
 const { Vm, setInspectorConfig } = require('./index.js');
@@ -207,8 +211,9 @@ at the boundary. In a non-TTY environment (pipes, CI) both entry points fall
 back to a static, depth-limited tree dump (fold arrows + colors, expanded to
 `INSPECTOR_DEPTH`) and never block.
 
-Controls: click a `▶`/`▼` row to expand/collapse · scroll wheel to scroll ·
-click outside the tree (or `q`/`esc`/`ctrl-c`) to close. See
+Controls: click a `▶`/`▼` row to expand/collapse · wheel or
+`↑`/`↓`/`PgUp`/`PgDn`/`Home`/`End` to scroll · click outside the tree (or
+`q`/`esc`/`ctrl-c`) to close. See
 [`examples/inspector-native.ts`](examples/inspector-native.ts) for a full demo.
 
 Colors and the close key are configurable, highest precedence last:
