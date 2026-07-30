@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use smallvec::SmallVec;
+
 use crate::value::Value;
 
 pub type Env = Rc<RefCell<Environment>>;
@@ -12,9 +14,13 @@ pub type Env = Rc<RefCell<Environment>>;
 /// (dozens of names) promotes once and stays a map.
 const PROMOTE_AT: usize = 16;
 
+/// Inline capacity for small frames. Most function calls bind `this` + 1–4
+/// params, so 8 slots cover the overwhelming majority without heap-allocating.
+const INLINE_CAP: usize = 8;
+
 #[derive(Clone)]
 enum Vars {
-    Small(Vec<(String, Value)>),
+    Small(SmallVec<[(String, Value); INLINE_CAP]>),
     Large(HashMap<String, Value>),
 }
 
@@ -108,14 +114,14 @@ impl Default for Environment {
 impl Environment {
     pub fn new() -> Self {
         Self {
-            vars: Vars::Small(Vec::new()),
+            vars: Vars::Small(SmallVec::new()),
             parent: None,
         }
     }
 
     pub fn child(p: Env) -> Self {
         Self {
-            vars: Vars::Small(Vec::new()),
+            vars: Vars::Small(SmallVec::new()),
             parent: Some(p),
         }
     }
@@ -127,7 +133,7 @@ impl Environment {
         let vars = if vars.len() > PROMOTE_AT {
             Vars::Large(vars.into_iter().collect())
         } else {
-            Vars::Small(vars)
+            Vars::Small(SmallVec::from_vec(vars))
         };
         Self {
             vars,

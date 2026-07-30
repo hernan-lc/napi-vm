@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::{Environment, Interpreter};
-use crate::error::{VmErr, vm_err};
+use crate::error::{RuntimeErrorData, VmErr, vm_err};
 use crate::parser::{Pattern, Statement};
 use crate::span::Span;
 use crate::value::{GeneratorInner, PromiseState, Value};
@@ -97,8 +97,7 @@ impl Interpreter {
         if let Some((p, cb)) = catch {
             let ce = Rc::new(RefCell::new(Environment::child(self.global.clone())));
             ce.borrow_mut().set(p, err_val);
-            let s = self.global.clone();
-            self.global = ce;
+            let s = std::mem::replace(&mut self.global, ce);
             let r = self.run(cb);
             self.global = s;
             r
@@ -122,7 +121,7 @@ impl Interpreter {
                     .iter()
                     .find(|(xk, xv)| {
                         xk == k
-                            && matches!(xv, Value::Function { name: Some(n), .. } if n.starts_with("set "))
+                            && matches!(xv, Value::Function(f) if f.name.as_ref().is_some_and(|n| n.starts_with("set ")))
                     })
                     .map(|(_, xv)| xv.clone());
                 if let Some(setter_fn) = setter {
@@ -168,24 +167,14 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, VmErr> {
         match f {
-            Value::Function {
-                name,
-                params,
-                body,
-                closure,
-                is_arrow,
-                is_async,
-                is_generator,
-                uses_arguments,
-                ..
-            } => {
+            Value::Function(fd) => {
                 // Calling a generator function does not run its body; it returns
                 // a generator object whose `next()` method drives execution.
-                if *is_generator {
+                if fd.is_generator {
                     let inner = GeneratorInner {
-                        body: body.clone(),
-                        closure: closure.clone(),
-                        params: params.clone(),
+                        body: fd.body.clone(),
+                        closure: fd.closure.clone(),
+                        params: fd.params.clone(),
                         args,
                         to_gen: None,
                         from_gen: None,
@@ -205,8 +194,8 @@ impl Interpreter {
                         "RangeError: Maximum call stack size exceeded".to_string(),
                     ));
                 }
-                let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
-                let rest_idx = params.iter().position(|p| p.starts_with("..."));
+                let parent_env = fd.closure.clone().unwrap_or_else(|| self.global.clone());
+                let rest_idx = fd.params.iter().position(|p| p.starts_with("..."));
                 let fe = match rest_idx {
                     // Fast path (the overwhelming majority of calls): no rest
                     // parameter. Build the whole frame — `this`, params, and
@@ -214,20 +203,20 @@ impl Interpreter {
                     // and allocate the environment exactly once. No
                     // per-parameter `RefCell` borrows, no insertion scans.
                     None => {
-                        let mut vars: Vec<(String, Value)> = Vec::with_capacity(params.len() + 2);
+                        let mut vars: Vec<(String, Value)> = Vec::with_capacity(fd.params.len() + 2);
                         // Regular functions bind their own `this`; arrows
                         // inherit the enclosing lexical `this` through the
                         // closure chain.
-                        if !is_arrow {
+                        if !fd.is_arrow {
                             vars.push(("this".to_string(), this_val));
                         }
-                        for (i, p) in params.iter().enumerate() {
+                        for (i, p) in fd.params.iter().enumerate() {
                             let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
                             vars.push((p.clone(), arg));
                         }
                         // Create the (detached) arguments object only when
                         // the body actually reads it; most functions never do.
-                        if *uses_arguments {
+                        if fd.uses_arguments {
                             let args_obj = Value::object(
                                 args.iter()
                                     .enumerate()
@@ -244,17 +233,17 @@ impl Interpreter {
                     // are not worth special-casing into the batch builder.
                     Some(rest_idx) => {
                         let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
-                        if !is_arrow {
+                        if !fd.is_arrow {
                             fe.borrow_mut().set("this", this_val);
                         }
-                        let rest_name = params[rest_idx].trim_start_matches("...").to_string();
-                        for (i, p) in params.iter().enumerate() {
+                        let rest_name = fd.params[rest_idx].trim_start_matches("...").to_string();
+                        for (i, p) in fd.params.iter().enumerate() {
                             if i == rest_idx {
                                 let rest_args = args[i..].to_vec();
                                 fe.borrow_mut().set(&rest_name, Value::array(rest_args));
                             } else {
                                 let arg = if i < args.len() {
-                                    let is_rest_param = params
+                                    let is_rest_param = fd.params
                                         .get(i + 1)
                                         .map(|p| p.starts_with("..."))
                                         .unwrap_or(false);
@@ -269,7 +258,7 @@ impl Interpreter {
                                 fe.borrow_mut().set(p, arg);
                             }
                         }
-                        if *uses_arguments {
+                        if fd.uses_arguments {
                             let args_obj = Value::object(
                                 args.iter()
                                     .enumerate()
@@ -284,15 +273,14 @@ impl Interpreter {
                     }
                 };
 
-                let s = self.global.clone();
-                self.global = fe;
+                let s = std::mem::replace(&mut self.global, fe);
                 // `name` is an `Rc<str>`: cloning it for the stack frame is a
                 // refcount bump, so the hot path allocates nothing here.
-                let fname = name
+                let fname = fd.name
                     .clone()
                     .unwrap_or_else(|| Rc::<str>::from("<anonymous>"));
                 self.push_frame(fname, Span::unknown());
-                let r = self.run(body);
+                let r = self.run(&fd.body);
                 // Convert a bare message into a located runtime error *before*
                 // popping the frame, so the snapshot carries the full call
                 // chain. Only the error path pays for the snapshot — the
@@ -301,16 +289,16 @@ impl Interpreter {
                 // largest per-call cost: O(depth) String clones per call.)
                 let result = match r {
                     Err(VmErr::Ret(v)) => Ok(v),
-                    Err(VmErr::Msg(msg)) => Err(VmErr::RuntimeError {
+                    Err(VmErr::Msg(msg)) => Err(VmErr::RuntimeError(Box::new(RuntimeErrorData {
                         message: msg,
                         span: None,
                         stack: self.get_stack().to_vec(),
-                    }),
+                    }))),
                     other => other,
                 };
                 self.pop_frame();
                 self.global = s;
-                if *is_async {
+                if fd.is_async {
                     // An async function always resolves to a promise.
                     match result {
                         Ok(v) => Ok(Value::Promise {
@@ -361,12 +349,12 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, VmErr> {
         match f {
-            Value::Class { constructor, .. } => {
-                let ctor = constructor.as_ref().clone();
+            Value::Class(c) => {
+                let ctor = c.constructor.as_ref().clone();
                 self.call_this(&ctor, this_val.clone(), args)?;
                 Ok(this_val)
             }
-            Value::Function { .. } => {
+            Value::Function(_) => {
                 self.call_this(f, this_val.clone(), args)?;
                 Ok(this_val)
             }
@@ -388,84 +376,79 @@ impl Interpreter {
 
     pub(super) fn ctor(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmErr> {
         match f {
-            Value::Class {
-                constructor,
-                prototype,
-                ..
-            } => {
+            Value::Class(c) => {
                 // The instance's prototype is the class prototype (shared Rc, so
                 // `instanceof` can compare identity).
-                let inst = Value::object_with_proto(vec![], Some(prototype.clone()));
-                let ctor = constructor.as_ref().clone();
+                let inst = Value::object_with_proto(vec![], Some(c.prototype.clone()));
+                let ctor = c.constructor.as_ref().clone();
                 let r = self.call_this(&ctor, inst.clone(), args)?;
                 match r {
                     Value::Object { .. } => Ok(r),
                     _ => Ok(inst),
                 }
             }
-            Value::Function {
-                params,
-                body,
-                closure,
-                uses_arguments,
-                ..
-            } => {
+            Value::Function(fd) => {
                 let inst = Value::object(vec![]);
-                let parent_env = closure.clone().unwrap_or_else(|| self.global.clone());
-                let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
-                fe.borrow_mut().set("this", inst.clone());
+                let parent_env = fd.closure.clone().unwrap_or_else(|| self.global.clone());
 
-                let mut has_rest = false;
-                let mut rest_idx = 0;
-                let mut rest_name = String::new();
-                for (i, p) in params.iter().enumerate() {
-                    if p.starts_with("...") {
-                        has_rest = true;
-                        rest_idx = i;
-                        rest_name = p.trim_start_matches("...").to_string();
-                        break;
-                    }
-                }
-
-                if has_rest {
-                    for (i, p) in params.iter().enumerate() {
-                        if i == rest_idx {
-                            let rest_args = args[i..].to_vec();
-                            fe.borrow_mut().set(&rest_name, Value::array(rest_args));
-                        } else {
-                            let is_rest_param = params
-                                .get(i + 1)
-                                .map(|p| p.starts_with("..."))
-                                .unwrap_or(false);
-                            let arg = if !is_rest_param && i >= rest_idx {
-                                Value::Undefined
-                            } else {
-                                args.get(i).cloned().unwrap_or(Value::Undefined)
-                            };
-                            fe.borrow_mut().set(p, arg);
+                let rest_idx = fd.params.iter().position(|p| p.starts_with("..."));
+                let fe = match rest_idx {
+                    None => {
+                        let mut vars: Vec<(String, Value)> = Vec::with_capacity(fd.params.len() + 2);
+                        vars.push(("this".to_string(), inst.clone()));
+                        for (i, p) in fd.params.iter().enumerate() {
+                            let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
+                            vars.push((p.clone(), arg));
                         }
+                        if fd.uses_arguments {
+                            let args_obj = Value::object(
+                                args.iter()
+                                    .enumerate()
+                                    .map(|(i, v)| (i.to_string(), v.clone()))
+                                    .collect(),
+                            );
+                            args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
+                            vars.push(("arguments".to_string(), args_obj));
+                        }
+                        Rc::new(RefCell::new(Environment::with_bindings(parent_env, vars)))
                     }
-                } else {
-                    for (i, p) in params.iter().enumerate() {
-                        let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
-                        fe.borrow_mut().set(p, arg);
+                    Some(rest_idx) => {
+                        let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
+                        fe.borrow_mut().set("this", inst.clone());
+                        let rest_name = fd.params[rest_idx].trim_start_matches("...").to_string();
+                        for (i, p) in fd.params.iter().enumerate() {
+                            if i == rest_idx {
+                                let rest_args = args[i..].to_vec();
+                                fe.borrow_mut().set(&rest_name, Value::array(rest_args));
+                            } else {
+                                let is_rest_param = fd.params
+                                    .get(i + 1)
+                                    .map(|p| p.starts_with("..."))
+                                    .unwrap_or(false);
+                                let arg = if !is_rest_param && i >= rest_idx {
+                                    Value::Undefined
+                                } else {
+                                    args.get(i).cloned().unwrap_or(Value::Undefined)
+                                };
+                                fe.borrow_mut().set(p, arg);
+                            }
+                        }
+                        if fd.uses_arguments {
+                            let args_obj = Value::object(
+                                args.iter()
+                                    .enumerate()
+                                    .map(|(i, v)| (i.to_string(), v.clone()))
+                                    .collect(),
+                            );
+                            args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
+                            fe.borrow_mut().set("arguments", args_obj);
+                        }
+                        fe
                     }
-                }
+                };
 
-                if *uses_arguments {
-                    let args_obj = Value::object(
-                        args.iter()
-                            .enumerate()
-                            .map(|(i, v)| (i.to_string(), v.clone()))
-                            .collect(),
-                    );
-                    args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
-                    fe.borrow_mut().set("arguments", args_obj);
-                }
-
-                let s = self.global.clone();
-                self.global = fe;
-                let r = self.run(body);
+                let s = std::mem::replace(&mut self.global, fe);
+                let r = self.run(&fd.body);
                 self.global = s;
                 match r {
                     Err(VmErr::Ret(v)) => match v {
@@ -601,7 +584,7 @@ fn run_generator_thread(init: crate::value::SendGenInit) {
         Err(VmErr::Throw(v)) => {
             let msg = match &v {
                 Value::String(s) => s.clone(),
-                Value::Error { message, .. } => message.clone(),
+                Value::Error(e) => e.message.clone(),
                 other => interp.vs(other),
             };
             let _ = chan.to_main.send(GenYield::Threw(msg));
@@ -609,8 +592,8 @@ fn run_generator_thread(init: crate::value::SendGenInit) {
         Err(VmErr::Msg(m)) => {
             let _ = chan.to_main.send(GenYield::Threw(m));
         }
-        Err(VmErr::RuntimeError { message, .. }) => {
-            let _ = chan.to_main.send(GenYield::Threw(message));
+        Err(VmErr::RuntimeError(e)) => {
+            let _ = chan.to_main.send(GenYield::Threw(e.message.clone()));
         }
         // A break/continue that escapes the generator body is a runtime error.
         Err(e @ (VmErr::Break(_) | VmErr::Continue(_))) => {

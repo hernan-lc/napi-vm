@@ -9,12 +9,9 @@ impl Interpreter {
     /// Resolve a property value, invoking it if it is a getter.
     pub(super) fn get_prop_value(&mut self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         let v = self.prop(o, p)?;
-        if let Value::Function {
-            name: Some(n),
-            is_arrow: false,
-            ..
-        } = &v
-            && n.starts_with("get ")
+        if let Value::Function(f) = &v
+            && !f.is_arrow
+            && f.name.as_ref().is_some_and(|n| n.starts_with("get "))
         {
             return self.call_this(&v, o.clone(), vec![]);
         }
@@ -99,22 +96,14 @@ impl Interpreter {
                     .map(|c| Value::String(c.to_string()))
                     .unwrap_or(Value::Undefined))
             }
-            (
-                Value::Class {
-                    statics,
-                    prototype,
-                    name,
-                    ..
-                },
-                Value::String(k),
-            ) => {
+            (Value::Class(c), Value::String(k)) => {
                 if k == "prototype" {
-                    return Ok(prototype.as_ref().clone());
+                    return Ok(c.prototype.as_ref().clone());
                 }
                 if k == "name" {
-                    return Ok(Value::String(name.clone()));
+                    return Ok(Value::String(c.name.clone()));
                 }
-                if let Some(v) = statics.borrow().iter().find(|(xk, _)| xk == k) {
+                if let Some(v) = c.statics.borrow().iter().find(|(xk, _)| xk == k) {
                     return Ok(v.1.clone());
                 }
                 Ok(Value::Undefined)
@@ -207,9 +196,9 @@ impl Interpreter {
             }
             // Internal errors surface to guest `catch` blocks as error objects
             // with readable `name`/`message` properties.
-            (Value::Error { message, name }, Value::String(k)) => match k.as_str() {
-                "message" => Ok(Value::String(message.clone())),
-                "name" => Ok(Value::String(name.clone())),
+            (Value::Error(e), Value::String(k)) => match k.as_str() {
+                "message" => Ok(Value::String(e.message.clone())),
+                "name" => Ok(Value::String(e.name.clone())),
                 _ => Ok(Value::Undefined),
             },
             _ => Ok(Value::Undefined),

@@ -76,17 +76,17 @@ pub fn to_string(val: &Value) -> String {
                 visited.remove(&ptr);
                 s
             }
-            Value::Function { name, .. } => {
-                format!("[Function: {}]", name.as_deref().unwrap_or("anonymous"))
+            Value::Function(f) => {
+                format!("[Function: {}]", f.name.as_deref().unwrap_or("anonymous"))
             }
             Value::NativeFunction { name, .. } => format!("[Function: {} [native]]", name),
             Value::HostFunction { name, .. } => format!("[Function: {} [native]]", name),
             Value::GlobalObject => "[object global]".to_string(),
-            Value::Class { name, .. } => format!("[class {}]", name),
+            Value::Class(c) => format!("[class {}]", c.name),
             Value::Promise { .. } => "[object Promise]".to_string(),
             Value::Generator { .. } => "[object Generator]".to_string(),
             Value::Symbol(s) => format!("Symbol({})", s),
-            Value::Error { message, .. } => message.clone(),
+            Value::Error(e) => e.message.clone(),
         }
     }
     vs(val, &mut visited, 0)
@@ -211,10 +211,10 @@ fn to_napi_d(env: sys::napi_env, v: &Value, depth: usize) -> Result<sys::napi_va
                     chk(sys::napi_set_named_property(env, out, ck.as_ptr(), ev))?;
                 }
             }
-            Value::Error { message, name } => {
+            Value::Error(e) => {
                 chk(sys::napi_create_object(env, &mut out))?;
-                set_str_prop(env, out, "name", name)?;
-                set_str_prop(env, out, "message", message)?;
+                set_str_prop(env, out, "name", &e.name)?;
+                set_str_prop(env, out, "message", &e.message)?;
             }
             _ => chk(sys::napi_get_undefined(env, &mut out))?,
         }

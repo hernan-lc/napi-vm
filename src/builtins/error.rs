@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use crate::error::VmErr;
 use crate::interpreter::{Environment, Interpreter};
-use crate::value::Value;
+use crate::value::{ClassData, Value};
 
 const ERROR_TYPES: &[&str] = &[
     "Error",
@@ -34,7 +34,7 @@ fn make_error_class(name: &str) -> Value {
         ("message".to_string(), Value::String(String::new())),
     ]);
     prototype.set_prop("constructor".to_string(), constructor.clone());
-    Value::Class {
+    Value::Class(Box::new(ClassData {
         name: name.to_string(),
         constructor: Box::new(constructor),
         prototype: Rc::new(prototype),
@@ -43,7 +43,7 @@ fn make_error_class(name: &str) -> Value {
             Value::String(name.to_string()),
         )])),
         superclass: None,
-    }
+    }))
 }
 
 /// Shared constructor for every error type. The concrete type name is read from

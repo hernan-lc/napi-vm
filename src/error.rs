@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::span::Span;
-use crate::value::Value;
+use crate::value::{ErrorData, Value};
 
 /// A single frame in the call stack trace.
 #[derive(Debug, Clone)]
@@ -23,6 +23,17 @@ impl fmt::Display for StackFrame {
     }
 }
 
+/// Payload of `VmErr::RuntimeError`, boxed so the error enum — and therefore
+/// the `Result<Value, VmErr>` returned by every eval function — stays small
+/// on the success path. The payload is only ever constructed when an error
+/// actually occurred, so the extra allocation is cold-path.
+#[derive(Debug)]
+pub struct RuntimeErrorData {
+    pub message: String,
+    pub span: Option<Span>,
+    pub stack: Vec<StackFrame>,
+}
+
 #[derive(Debug)]
 pub enum VmErr {
     Ret(Value),
@@ -31,11 +42,7 @@ pub enum VmErr {
     Throw(Value),
     Msg(String),
     /// A runtime error with source location context.
-    RuntimeError {
-        message: String,
-        span: Option<Span>,
-        stack: Vec<StackFrame>,
-    },
+    RuntimeError(Box<RuntimeErrorData>),
     /// Control-flow signal for `break`, with an optional target label. Caught
     /// by the enclosing loop/switch; not an error and not catchable by `try`.
     Break(Option<String>),
@@ -43,15 +50,19 @@ pub enum VmErr {
     Continue(Option<String>),
 }
 
+// Guard the hot-path size: every eval function returns this `Result`. If it
+// grows, the whole interpreter slows down — box the offending payload.
+const _: () = assert!(std::mem::size_of::<Result<Value, VmErr>>() <= 48);
+
 impl VmErr {
     /// Attach source location and call stack to a `VmErr::Msg`.
     pub fn with_context(self, span: Option<Span>, stack: &[StackFrame]) -> Self {
         match self {
-            VmErr::Msg(message) => VmErr::RuntimeError {
+            VmErr::Msg(message) => VmErr::RuntimeError(Box::new(RuntimeErrorData {
                 message,
                 span,
                 stack: stack.to_vec(),
-            },
+            })),
             other => other,
         }
     }
@@ -61,11 +72,12 @@ impl fmt::Display for VmErr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             VmErr::Msg(s) => write!(f, "{}", s),
-            VmErr::RuntimeError {
-                message,
-                span,
-                stack,
-            } => {
+            VmErr::RuntimeError(inner) => {
+                let RuntimeErrorData {
+                    message,
+                    span,
+                    stack,
+                } = inner.as_ref();
                 write!(f, "{}", message)?;
                 if let Some(span) = span
                     && !span.is_unknown()
@@ -92,11 +104,11 @@ impl fmt::Display for VmErr {
 fn throw_display(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
-        Value::Error { message, name } => {
-            if name == "Error" {
-                message.clone()
+        Value::Error(inner) => {
+            if inner.name == "Error" {
+                inner.message.clone()
             } else {
-                format!("{}: {}", name, message)
+                format!("{}: {}", inner.name, inner.message)
             }
         }
         Value::Object { props, .. } => {
@@ -143,16 +155,16 @@ pub fn error_value_from_msg(message: &str) -> Value {
         if let Some(rest) = message.strip_prefix(n)
             && let Some(rest) = rest.strip_prefix(": ")
         {
-            return Value::Error {
+            return Value::Error(Box::new(ErrorData {
                 name: (*n).to_string(),
                 message: rest.to_string(),
-            };
+            }));
         }
     }
-    Value::Error {
+    Value::Error(Box::new(ErrorData {
         name: "Error".to_string(),
         message: message.to_string(),
-    }
+    }))
 }
 
 pub fn vm_ret(v: Value) -> Result<Value, VmErr> {

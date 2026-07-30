@@ -10,7 +10,7 @@ use crate::parser::{
     AssignOp, ClassMember, Expr, ExprOrBlock, ForInit, ObjectProp, Statement, UnOp,
     arrow_body_references, stmts_reference,
 };
-use crate::value::{PromiseState, Value};
+use crate::value::{ClassData, FunctionData, PromiseState, Value};
 
 /// Whether a labeled control-flow signal targets the loop with `label`.
 /// Unlabeled signals (`None`) target the innermost loop and are handled by
@@ -52,7 +52,7 @@ impl Interpreter {
             } => {
                 self.global.borrow_mut().set(
                     name,
-                    Value::Function {
+                    Value::Function(Box::new(FunctionData {
                         name: Some(name.as_str().into()),
                         params: Rc::new(params.clone()),
                         body: Rc::new(body.clone()),
@@ -61,7 +61,7 @@ impl Interpreter {
                         is_async: *is_async,
                         is_generator: *is_generator,
                         uses_arguments: stmts_reference(body, "arguments"),
-                    },
+                    })),
                 );
                 Ok(Value::Undefined)
             }
@@ -78,7 +78,7 @@ impl Interpreter {
                 // Inheritance: the instance prototype chains to the superclass's
                 // prototype so inherited methods resolve.
                 let super_proto = match &super_cls {
-                    Some(Value::Class { prototype, .. }) => Some(prototype.clone()),
+                    Some(Value::Class(c)) => Some(c.prototype.clone()),
                     _ => None,
                 };
 
@@ -98,7 +98,7 @@ impl Interpreter {
                             params: mp,
                             body: mb,
                         } => {
-                            let fn_val = Value::Function {
+                            let fn_val = Value::Function(Box::new(FunctionData {
                                 name: Some(mname.as_str().into()),
                                 params: Rc::new(mp.clone()),
                                 body: Rc::new(mb.clone()),
@@ -107,7 +107,7 @@ impl Interpreter {
                                 is_async: false,
                                 is_generator: false,
                                 uses_arguments: stmts_reference(mb, "arguments"),
-                            };
+                            }));
                             if *st {
                                 statics.push((mname.clone(), fn_val));
                             } else if mname == "constructor" {
@@ -137,7 +137,7 @@ impl Interpreter {
                             is_static: st,
                             body: gb,
                         } => {
-                            let getter_fn = Value::Function {
+                            let getter_fn = Value::Function(Box::new(FunctionData {
                                 name: Some(format!("get {}", gname).into()),
                                 params: Rc::new(vec![]),
                                 body: Rc::new(gb.clone()),
@@ -146,7 +146,7 @@ impl Interpreter {
                                 is_async: false,
                                 is_generator: false,
                                 uses_arguments: stmts_reference(gb, "arguments"),
-                            };
+                            }));
                             if *st {
                                 statics.push((gname.clone(), getter_fn));
                             } else {
@@ -159,7 +159,7 @@ impl Interpreter {
                             is_static: st,
                             body: sb,
                         } => {
-                            let setter_fn = Value::Function {
+                            let setter_fn = Value::Function(Box::new(FunctionData {
                                 name: Some(format!("set {}", sname).into()),
                                 params: Rc::new(vec![param.clone()]),
                                 body: Rc::new(sb.clone()),
@@ -168,7 +168,7 @@ impl Interpreter {
                                 is_async: false,
                                 is_generator: false,
                                 uses_arguments: stmts_reference(sb, "arguments"),
-                            };
+                            }));
                             if *st {
                                 statics.push((sname.clone(), setter_fn));
                             } else {
@@ -198,19 +198,16 @@ impl Interpreter {
                 // For a derived class, expose the superclass constructor to the
                 // constructor body as `__super_ctor` so `super(...)` can call it.
                 let ctor_closure = match &super_cls {
-                    Some(Value::Class {
-                        constructor: super_ctor,
-                        ..
-                    }) => {
+                    Some(Value::Class(sc)) => {
                         let env = Rc::new(RefCell::new(Environment::child(self.global.clone())));
                         env.borrow_mut()
-                            .set("__super_ctor", super_ctor.as_ref().clone());
+                            .set("__super_ctor", sc.constructor.as_ref().clone());
                         env
                     }
                     _ => self.global.clone(),
                 };
 
-                let constructor = Value::Function {
+                let constructor = Value::Function(Box::new(FunctionData {
                     name: Some(name.as_str().into()),
                     params: Rc::new(ctor_params),
                     uses_arguments: stmts_reference(&full_ctor_body, "arguments"),
@@ -219,18 +216,18 @@ impl Interpreter {
                     is_arrow: false,
                     is_async: false,
                     is_generator: false,
-                };
+                }));
 
                 let prototype = Value::object_with_proto(proto_props, super_proto);
                 prototype.set_prop("constructor".to_string(), constructor.clone());
 
-                let class_val = Value::Class {
+                let class_val = Value::Class(Box::new(ClassData {
                     name: name.clone(),
                     constructor: Box::new(constructor),
                     prototype: Rc::new(prototype),
                     statics: Rc::new(RefCell::new(statics)),
                     superclass: super_cls.map(Box::new),
-                };
+                }));
 
                 self.global.borrow_mut().set(name, class_val);
                 Ok(Value::Undefined)
@@ -450,8 +447,8 @@ impl Interpreter {
                     Err(VmErr::Msg(m)) => {
                         self.run_catch(catch, crate::error::error_value_from_msg(&m))
                     }
-                    Err(VmErr::RuntimeError { message, .. }) => {
-                        self.run_catch(catch, crate::error::error_value_from_msg(&message))
+                    Err(VmErr::RuntimeError(re)) => {
+                        self.run_catch(catch, crate::error::error_value_from_msg(&re.message))
                     }
                     other => other,
                 };
@@ -626,7 +623,7 @@ impl Interpreter {
                             o.push((key, self.eval_expr(v)?));
                         }
                         ObjectProp::Method { name, params, body } => {
-                            let fn_val = Value::Function {
+                            let fn_val = Value::Function(Box::new(FunctionData {
                                 name: Some(name.as_str().into()),
                                 params: Rc::new(params.clone()),
                                 body: Rc::new(body.clone()),
@@ -635,11 +632,11 @@ impl Interpreter {
                                 is_async: false,
                                 is_generator: false,
                                 uses_arguments: stmts_reference(body, "arguments"),
-                            };
+                            }));
                             o.push((name.clone(), fn_val));
                         }
                         ObjectProp::Getter { name, body } => {
-                            let fn_val = Value::Function {
+                            let fn_val = Value::Function(Box::new(FunctionData {
                                 name: Some(format!("get {}", name).into()),
                                 params: Rc::new(vec![]),
                                 body: Rc::new(body.clone()),
@@ -648,11 +645,11 @@ impl Interpreter {
                                 is_async: false,
                                 is_generator: false,
                                 uses_arguments: stmts_reference(body, "arguments"),
-                            };
+                            }));
                             o.push((name.clone(), fn_val));
                         }
                         ObjectProp::Setter { name, param, body } => {
-                            let fn_val = Value::Function {
+                            let fn_val = Value::Function(Box::new(FunctionData {
                                 name: Some(format!("set {}", name).into()),
                                 params: Rc::new(vec![param.clone()]),
                                 body: Rc::new(body.clone()),
@@ -661,7 +658,7 @@ impl Interpreter {
                                 is_async: false,
                                 is_generator: false,
                                 uses_arguments: stmts_reference(body, "arguments"),
-                            };
+                            }));
                             o.push((name.clone(), fn_val));
                         }
                         ObjectProp::Spread(expr) => {
@@ -874,7 +871,7 @@ impl Interpreter {
                     self.eval_expr(alternate)
                 }
             }
-            Expr::ArrowFn { params, body } => Ok(Value::Function {
+            Expr::ArrowFn { params, body } => Ok(Value::Function(Box::new(FunctionData {
                 name: None,
                 params: Rc::new(params.clone()),
                 closure: Some(self.global.clone()),
@@ -886,14 +883,14 @@ impl Interpreter {
                 is_arrow: true,
                 is_async: false,
                 is_generator: false,
-            }),
+            }))),
             Expr::FnExpr {
                 name,
                 params,
                 body,
                 is_async,
                 is_generator,
-            } => Ok(Value::Function {
+            } => Ok(Value::Function(Box::new(FunctionData {
                 name: name.as_deref().map(Rc::from),
                 params: Rc::new(params.clone()),
                 body: Rc::new(body.clone()),
@@ -902,7 +899,7 @@ impl Interpreter {
                 is_async: *is_async,
                 is_generator: *is_generator,
                 uses_arguments: stmts_reference(body, "arguments"),
-            }),
+            }))),
             Expr::New { callee, args } => {
                 let mut a = Vec::new();
                 for x in args {

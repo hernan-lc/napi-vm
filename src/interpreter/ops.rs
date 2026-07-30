@@ -131,7 +131,7 @@ impl Interpreter {
                 // `l instanceof r`: walk l's prototype chain looking for r's
                 // prototype object (compared by shared Rc identity).
                 let target_proto = match r {
-                    Value::Class { prototype, .. } => match prototype.as_ref() {
+                    Value::Class(c) => match c.prototype.as_ref() {
                         Value::Object { props, .. } => Some(props.clone()),
                         _ => None,
                     },
@@ -321,14 +321,14 @@ impl Interpreter {
                 visited.remove(&ptr);
                 s
             }
-            Value::Function { name, .. } => format!("function {}", name.as_deref().unwrap_or("")),
+            Value::Function(f) => format!("function {}", f.name.as_deref().unwrap_or("")),
             Value::NativeFunction { name, .. } => format!("function {} [native]", name),
             Value::HostFunction { name, .. } => format!("function {} [native]", name),
-            Value::Class { name, .. } => format!("class {}", name),
+            Value::Class(c) => format!("class {}", c.name),
             Value::Promise { .. } => "[object Promise]".to_string(),
             Value::Generator { .. } => "[object Generator]".to_string(),
             Value::Symbol(s) => format!("Symbol({})", s),
-            Value::Error { message, .. } => message.clone(),
+            Value::Error(e) => e.message.clone(),
         }
     }
 

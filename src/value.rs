@@ -9,9 +9,9 @@ use crate::parser::Statement;
 /// Hard cap on array length. Guest code that grows an array past this gets a
 /// catchable `RangeError` instead of exhausting host memory (which would
 /// abort the process — Rust's allocator does not return errors, it dies).
-/// `Value` is a fat enum (~120 bytes), and arrays of arrays multiply that:
-/// 262k slots of 8-element inner arrays is already ~290MB, so the cap is
-/// sized to keep worst-case guest allocations survivable for the host.
+/// `Value` is 32 bytes, and arrays of arrays multiply that: 262k slots of
+/// 8-element inner arrays is already ~290MB, so the cap is sized to keep
+/// worst-case guest allocations survivable for the host.
 pub const MAX_ARRAY_LEN: usize = 262_144;
 
 /// Hard cap (bytes) on any string the VM produces — concatenation, `repeat`,
@@ -23,6 +23,47 @@ pub fn limit_err(msg: &str) -> VmErr {
     VmErr::Msg(format!("RangeError: {}", msg))
 }
 
+/// Payload of `Value::Function`, boxed so the enum itself stays small.
+#[derive(Debug, Clone)]
+pub struct FunctionData {
+    pub name: Option<Rc<str>>,
+    // Shared (`Rc`) so closures created in hot loops reference the same AST
+    // instead of deep-cloning the parameter list and body on every creation.
+    pub params: Rc<Vec<String>>,
+    pub body: Rc<Vec<Statement>>,
+    pub closure: Option<Env>,
+    pub is_arrow: bool,
+    pub is_async: bool,
+    pub is_generator: bool,
+    /// Whether the body references `arguments`. Frames for functions that
+    /// never read it skip building the (detached) arguments object.
+    pub uses_arguments: bool,
+}
+
+/// Payload of `Value::Class`, boxed so the enum itself stays small.
+#[derive(Debug, Clone)]
+pub struct ClassData {
+    pub name: String,
+    pub constructor: Box<Value>,
+    // Shared so every instance references the same prototype object (cheap
+    // `Rc` clone, and identity-comparable for `instanceof`).
+    pub prototype: Rc<Value>,
+    pub statics: Rc<RefCell<Vec<(String, Value)>>>,
+    pub superclass: Option<Box<Value>>,
+}
+
+/// Payload of `Value::Error`, boxed so the enum itself stays small.
+#[derive(Debug, Clone)]
+pub struct ErrorData {
+    pub message: String,
+    pub name: String,
+}
+
+/// Every variant's inline payload is at most 24 bytes (a `String`), so the
+/// whole enum is 32 bytes. Keeping `Value` small matters: it is returned from
+/// every `eval_expr`/`eval_stmt`/`bin_op` call and cloned on every variable
+/// read. Function/class/error payloads live behind a `Box` — constructing one
+/// allocates, but those are rare next to number/string/identifier traffic.
 #[derive(Debug, Clone)]
 pub enum Value {
     Undefined,
@@ -35,20 +76,7 @@ pub enum Value {
         proto: Option<Rc<Value>>,
     },
     Array(Rc<RefCell<Vec<Value>>>),
-    Function {
-        name: Option<Rc<str>>,
-        // Shared (`Rc`) so closures created in hot loops reference the same AST
-        // instead of deep-cloning the parameter list and body on every creation.
-        params: Rc<Vec<String>>,
-        body: Rc<Vec<Statement>>,
-        closure: Option<Env>,
-        is_arrow: bool,
-        is_async: bool,
-        is_generator: bool,
-        /// Whether the body references `arguments`. Frames for functions that
-        /// never read it skip building the (detached) arguments object.
-        uses_arguments: bool,
-    },
+    Function(Box<FunctionData>),
     NativeFunction {
         name: Rc<str>,
         callable: fn(&mut Interpreter, Value, Vec<Value>) -> Result<Value, VmErr>,
@@ -64,15 +92,7 @@ pub enum Value {
     /// `window`; member access on it reads and writes real globals (handled in
     /// `Interpreter::prop` / `assign_member`, which have scope access).
     GlobalObject,
-    Class {
-        name: String,
-        constructor: Box<Value>,
-        // Shared so every instance references the same prototype object (cheap
-        // `Rc` clone, and identity-comparable for `instanceof`).
-        prototype: Rc<Value>,
-        statics: Rc<RefCell<Vec<(String, Value)>>>,
-        superclass: Option<Box<Value>>,
-    },
+    Class(Box<ClassData>),
     Promise {
         state: PromiseState,
         value: Option<Box<Value>>,
@@ -81,11 +101,13 @@ pub enum Value {
         inner: Rc<RefCell<GeneratorInner>>,
     },
     Symbol(String),
-    Error {
-        message: String,
-        name: String,
-    },
+    Error(Box<ErrorData>),
 }
+
+// Guard the hot-path size: every eval function returns `Value` (inside a
+// `Result`) and every variable read clones one. If a future variant bloats
+// the enum, this assert fails at compile time — box its payload instead.
+const _: () = assert!(std::mem::size_of::<Value>() <= 32);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PromiseState {
@@ -225,9 +247,9 @@ impl Value {
                 }
                 None
             }
-            Value::Error { message, name } => match key {
-                "message" => Some(Value::String(message.clone())),
-                "name" => Some(Value::String(name.clone())),
+            Value::Error(e) => match key {
+                "message" => Some(Value::String(e.message.clone())),
+                "name" => Some(Value::String(e.name.clone())),
                 _ => None,
             },
             _ => None,
@@ -263,7 +285,7 @@ impl Value {
                         .unwrap_or(false)
             }
             Value::String(_) => key == "length",
-            Value::Error { .. } => key == "message" || key == "name",
+            Value::Error(_) => key == "message" || key == "name",
             _ => false,
         }
     }
@@ -320,29 +342,23 @@ impl Value {
                     work.push(inner);
                 }
             }
-            Value::Function { closure, .. } => {
-                if let Some(env) = closure.take() {
+            Value::Function(fd) => {
+                if let Some(env) = fd.closure.take() {
                     crate::interpreter::Environment::drain_chain(env, work);
                 }
             }
-            Value::Class {
-                constructor,
-                prototype,
-                statics,
-                superclass,
-                ..
-            } => {
-                work.push(std::mem::replace(constructor.as_mut(), Value::Undefined));
-                if let Some(s) = superclass.take() {
+            Value::Class(cd) => {
+                work.push(std::mem::replace(cd.constructor.as_mut(), Value::Undefined));
+                if let Some(s) = cd.superclass.take() {
                     work.push(*s);
                 }
-                if Rc::strong_count(prototype) == 1
-                    && let Some(p) = Rc::get_mut(prototype)
+                if Rc::strong_count(&cd.prototype) == 1
+                    && let Some(p) = Rc::get_mut(&mut cd.prototype)
                 {
                     p.take_children(work);
                 }
-                if Rc::strong_count(statics) == 1
-                    && let Some(cell) = Rc::get_mut(statics)
+                if Rc::strong_count(&cd.statics) == 1
+                    && let Some(cell) = Rc::get_mut(&mut cd.statics)
                 {
                     work.extend(cell.get_mut().drain(..).map(|(_, v)| v));
                 }
