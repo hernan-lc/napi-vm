@@ -74,6 +74,38 @@ vm.run("function point(x, y) { return { x, y }; }");
 vm.callFunction("point", [5, 6]); // { x: 5, y: 6 }
 ```
 
+### Hot reload
+
+The VM exposes the primitives needed for clean hot-reload cycles without
+leaking stale state. The teardown order matters:
+
+```javascript
+// 1. Detach the event bus (removes the VM-side `emit` binding).
+bus.detach();
+
+// 2. Remove every registered module.
+for (const name of vm.listModules()) {
+  vm.removeModule(name);
+}
+
+// 3. Remove exposed host functions.
+vm.removeGlobal("hostLog");
+
+// 4. Rebuild: new Vm, re-register modules, bus.attach(newVm), re-expose.
+```
+
+Host-side listeners registered via the event bus survive across reloads
+because they live on the bus, not in the VM. The VM only ever sees a single
+`emit` global that is replaced atomically on each cycle, so there is never a
+duplicate-listener window. See [`examples/callback.ts`](examples/callback.ts)
+for a complete working demo (run with `bun examples/callback.ts`, or build
+with `npm run build:examples`).
+
+> **Event-loop note:** the interpreter is synchronous — `vm.run()` blocks the
+> Node event loop until the computation finishes. A `setTimeout(0)` scheduled
+> before a heavy VM call will not fire until `vm.run()` returns. The example
+> includes a demo that makes this visible.
+
 ## API
 
 | Function | Description |
@@ -100,6 +132,7 @@ vm.callFunction("point", [5, 6]); // { x: 5, y: 6 }
 |---------|-------------|
 | `npm run build` | Build optimized native binary |
 | `npm run build:debug` | Build debug binary |
+| `npm run build:examples` | Build TS examples to `examples/dist/` via `bun build` |
 | `bun test` | Run the test suite |
 | `npm run bench` | End-to-end JS benchmark through the NAPI binding |
 | `npm run bench:rust` | Criterion microbenchmarks of the interpreter pipeline |

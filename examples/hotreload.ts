@@ -1,10 +1,5 @@
 /**
  * Node-VM Callback System — hot-reload + event bus demo.
- *
- * Build (TS → JS):  bun build examples/callback.ts --outdir examples/dist
- * Run:              bun examples/dist/callback.js
- * Or run directly:  bun examples/callback.ts
- *
  * What this demonstrates:
  *   1. Hot-reload with clean teardown (removeModule / removeGlobal) — no
  *      stale modules or leaked host functions across reloads.

@@ -8,7 +8,6 @@
     "build": "npx napi build --platform --release",
     "build:debug": "npx napi build --platform",
     "test": "bun test",
-    "build:examples": "bun build examples/callback.ts --outdir examples/dist",
     "bench": "node bench/bench.js",
     "bench:rust": "cargo bench"
   },
