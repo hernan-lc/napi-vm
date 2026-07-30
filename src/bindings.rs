@@ -318,7 +318,8 @@ fn from_napi_d(env: sys::napi_env, raw: sys::napi_value, depth: usize) -> Result
                 if is_array {
                     let mut len: u32 = 0;
                     chk(sys::napi_get_array_length(env, raw, &mut len))?;
-                    let mut items = Vec::with_capacity(len.min(crate::value::MAX_ARRAY_LEN as u32) as usize);
+                    let mut items =
+                        Vec::with_capacity(len.min(crate::value::MAX_ARRAY_LEN as u32) as usize);
                     for i in 0..len {
                         if i as usize >= crate::value::MAX_ARRAY_LEN {
                             return Err(VmErr::Msg(

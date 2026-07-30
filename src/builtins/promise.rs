@@ -56,7 +56,12 @@ fn promise_all(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, Vm
                 });
             }
             Value::Promise { value, .. } => {
-                out.push(value.as_ref().map(|b| (**b).clone()).unwrap_or(Value::Undefined));
+                out.push(
+                    value
+                        .as_ref()
+                        .map(|b| (**b).clone())
+                        .unwrap_or(Value::Undefined),
+                );
             }
             _ => out.push(it),
         }

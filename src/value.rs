@@ -305,7 +305,7 @@ impl Value {
                 if Rc::strong_count(items) == 1
                     && let Some(cell) = Rc::get_mut(items)
                 {
-                    work.extend(cell.get_mut().drain(..));
+                    work.append(cell.get_mut());
                 }
             }
             Value::Object { props, proto } => {
@@ -357,7 +357,7 @@ impl Value {
                     && let Some(cell) = Rc::get_mut(inner)
                 {
                     let g = cell.get_mut();
-                    work.extend(g.args.drain(..));
+                    work.append(&mut g.args);
                     if let Some(v) = g.return_value.take() {
                         work.push(v);
                     }

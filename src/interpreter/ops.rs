@@ -52,9 +52,7 @@ impl Interpreter {
                 match (l, r) {
                     (Value::String(a), Value::String(b)) => {
                         if a.len().saturating_add(b.len()) > MAX_STRING_LEN {
-                            return Err(crate::value::limit_err(
-                                "Maximum string length exceeded",
-                            ));
+                            return Err(crate::value::limit_err("Maximum string length exceeded"));
                         }
                         let mut s = String::with_capacity(a.len() + b.len());
                         s.push_str(a);
@@ -64,9 +62,7 @@ impl Interpreter {
                     (Value::String(a), _) => {
                         let rb = self.vs(r);
                         if a.len().saturating_add(rb.len()) > MAX_STRING_LEN {
-                            return Err(crate::value::limit_err(
-                                "Maximum string length exceeded",
-                            ));
+                            return Err(crate::value::limit_err("Maximum string length exceeded"));
                         }
                         let mut s = String::with_capacity(a.len() + rb.len());
                         s.push_str(a);
@@ -76,9 +72,7 @@ impl Interpreter {
                     (_, Value::String(b)) => {
                         let lb = self.vs(l);
                         if lb.len().saturating_add(b.len()) > MAX_STRING_LEN {
-                            return Err(crate::value::limit_err(
-                                "Maximum string length exceeded",
-                            ));
+                            return Err(crate::value::limit_err("Maximum string length exceeded"));
                         }
                         let mut s = String::with_capacity(lb.len() + b.len());
                         s.push_str(&lb);
@@ -280,8 +274,7 @@ impl Interpreter {
         // depth guards only need to cover the array branch — but both are
         // load-bearing: a cyclic (`a.push(a)`) or million-deep array would
         // otherwise overflow the native stack during stringification.
-        let mut visited: std::collections::HashSet<*const ()> =
-            std::collections::HashSet::new();
+        let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
         self.vs_rec(v, &mut visited, 0)
     }
 
