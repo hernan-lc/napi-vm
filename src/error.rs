@@ -9,6 +9,11 @@ pub enum VmErr {
     /// so `catch (e)` can inspect thrown objects (e.g. `e.message`).
     Throw(Value),
     Msg(String),
+    /// Control-flow signal for `break`, with an optional target label. Caught
+    /// by the enclosing loop/switch; not an error and not catchable by `try`.
+    Break(Option<String>),
+    /// Control-flow signal for `continue`, with an optional target label.
+    Continue(Option<String>),
 }
 
 impl fmt::Display for VmErr {
@@ -17,6 +22,10 @@ impl fmt::Display for VmErr {
             VmErr::Msg(s) => write!(f, "{}", s),
             VmErr::Throw(v) => write!(f, "{}", throw_display(v)),
             VmErr::Ret(_) => write!(f, "return"),
+            VmErr::Break(Some(l)) => write!(f, "break outside loop (label {})", l),
+            VmErr::Break(None) => write!(f, "break outside loop"),
+            VmErr::Continue(Some(l)) => write!(f, "continue outside loop (label {})", l),
+            VmErr::Continue(None) => write!(f, "continue outside loop"),
         }
     }
 }

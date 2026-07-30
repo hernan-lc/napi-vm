@@ -519,6 +519,10 @@ fn run_generator_thread(init: crate::value::SendGenInit) {
         Err(VmErr::Msg(m)) => {
             let _ = chan.to_main.send(GenYield::Threw(m));
         }
+        // A break/continue that escapes the generator body is a runtime error.
+        Err(e @ (VmErr::Break(_) | VmErr::Continue(_))) => {
+            let _ = chan.to_main.send(GenYield::Threw(format!("{}", e)));
+        }
     }
 }
 

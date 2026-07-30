@@ -1,7 +1,7 @@
 //! The expression precedence ladder, from comma (lowest) down to postfix.
 //! Primary expressions live in `primary.rs`.
 
-use super::{Expr, Parser};
+use super::{AssignOp, BinOp, Expr, Parser, UnOp};
 use crate::lexer::Token;
 
 impl Parser {
@@ -18,7 +18,7 @@ impl Parser {
         while self.eat(&Token::Comma) {
             let r = self.assign()?;
             l = Expr::Binary {
-                op: ",".to_string(),
+                op: BinOp::Comma,
                 left: Box::new(l),
                 right: Box::new(r),
             };
@@ -53,7 +53,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "=".to_string(),
+                    op: AssignOp::Assign,
                     value: Box::new(v),
                 })
             }
@@ -62,7 +62,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "+=".to_string(),
+                    op: AssignOp::Add,
                     value: Box::new(v),
                 })
             }
@@ -71,7 +71,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "-=".to_string(),
+                    op: AssignOp::Sub,
                     value: Box::new(v),
                 })
             }
@@ -80,7 +80,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "*=".to_string(),
+                    op: AssignOp::Mul,
                     value: Box::new(v),
                 })
             }
@@ -89,7 +89,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "/=".to_string(),
+                    op: AssignOp::Div,
                     value: Box::new(v),
                 })
             }
@@ -98,7 +98,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "%=".to_string(),
+                    op: AssignOp::Mod,
                     value: Box::new(v),
                 })
             }
@@ -107,7 +107,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "**=".to_string(),
+                    op: AssignOp::Pow,
                     value: Box::new(v),
                 })
             }
@@ -116,7 +116,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "&=".to_string(),
+                    op: AssignOp::BitAnd,
                     value: Box::new(v),
                 })
             }
@@ -125,7 +125,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "|=".to_string(),
+                    op: AssignOp::BitOr,
                     value: Box::new(v),
                 })
             }
@@ -134,7 +134,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "^=".to_string(),
+                    op: AssignOp::BitXor,
                     value: Box::new(v),
                 })
             }
@@ -143,7 +143,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: "<<=".to_string(),
+                    op: AssignOp::Shl,
                     value: Box::new(v),
                 })
             }
@@ -152,7 +152,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: ">>=".to_string(),
+                    op: AssignOp::Shr,
                     value: Box::new(v),
                 })
             }
@@ -161,7 +161,7 @@ impl Parser {
                 let v = self.assign()?;
                 Some(Expr::Assignment {
                     target: Box::new(l),
-                    op: ">>>=".to_string(),
+                    op: AssignOp::UShr,
                     value: Box::new(v),
                 })
             }
@@ -190,7 +190,7 @@ impl Parser {
         while self.eat(&Token::QuestionQuestion) {
             let r = self.or()?;
             l = Expr::Binary {
-                op: "??".to_string(),
+                op: BinOp::Nullish,
                 left: Box::new(l),
                 right: Box::new(r),
             };
@@ -203,7 +203,7 @@ impl Parser {
         while self.eat(&Token::Or) {
             let r = self.and()?;
             l = Expr::Binary {
-                op: "||".to_string(),
+                op: BinOp::Or,
                 left: Box::new(l),
                 right: Box::new(r),
             };
@@ -216,7 +216,7 @@ impl Parser {
         while self.eat(&Token::And) {
             let r = self.bitor()?;
             l = Expr::Binary {
-                op: "&&".to_string(),
+                op: BinOp::And,
                 left: Box::new(l),
                 right: Box::new(r),
             };
@@ -229,7 +229,7 @@ impl Parser {
         while self.eat(&Token::BitOr) {
             let r = self.bitxor()?;
             l = Expr::Binary {
-                op: "|".to_string(),
+                op: BinOp::BitOr,
                 left: Box::new(l),
                 right: Box::new(r),
             };
@@ -242,7 +242,7 @@ impl Parser {
         while self.eat(&Token::BitXor) {
             let r = self.bitand()?;
             l = Expr::Binary {
-                op: "^".to_string(),
+                op: BinOp::BitXor,
                 left: Box::new(l),
                 right: Box::new(r),
             };
@@ -255,7 +255,7 @@ impl Parser {
         while self.eat(&Token::BitAnd) {
             let r = self.eq()?;
             l = Expr::Binary {
-                op: "&".to_string(),
+                op: BinOp::BitAnd,
                 left: Box::new(l),
                 right: Box::new(r),
             };
@@ -271,7 +271,7 @@ impl Parser {
                     self.adv();
                     let r = self.cmp()?;
                     l = Expr::Binary {
-                        op: "==".to_string(),
+                        op: BinOp::Eq,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -280,7 +280,7 @@ impl Parser {
                     self.adv();
                     let r = self.cmp()?;
                     l = Expr::Binary {
-                        op: "!=".to_string(),
+                        op: BinOp::Neq,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -289,7 +289,7 @@ impl Parser {
                     self.adv();
                     let r = self.cmp()?;
                     l = Expr::Binary {
-                        op: "===".to_string(),
+                        op: BinOp::Seq,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -298,7 +298,7 @@ impl Parser {
                     self.adv();
                     let r = self.cmp()?;
                     l = Expr::Binary {
-                        op: "!==".to_string(),
+                        op: BinOp::Sneq,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -317,7 +317,7 @@ impl Parser {
                     self.adv();
                     let r = self.shift()?;
                     l = Expr::Binary {
-                        op: "<".to_string(),
+                        op: BinOp::Lt,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -326,7 +326,7 @@ impl Parser {
                     self.adv();
                     let r = self.shift()?;
                     l = Expr::Binary {
-                        op: ">".to_string(),
+                        op: BinOp::Gt,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -335,7 +335,7 @@ impl Parser {
                     self.adv();
                     let r = self.shift()?;
                     l = Expr::Binary {
-                        op: "<=".to_string(),
+                        op: BinOp::Le,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -344,7 +344,7 @@ impl Parser {
                     self.adv();
                     let r = self.shift()?;
                     l = Expr::Binary {
-                        op: ">=".to_string(),
+                        op: BinOp::Ge,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -353,7 +353,7 @@ impl Parser {
                     self.adv();
                     let r = self.shift()?;
                     l = Expr::Binary {
-                        op: "instanceof".to_string(),
+                        op: BinOp::Instanceof,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -362,7 +362,7 @@ impl Parser {
                     self.adv();
                     let r = self.shift()?;
                     l = Expr::Binary {
-                        op: "in".to_string(),
+                        op: BinOp::In,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -377,15 +377,15 @@ impl Parser {
         let mut l = self.add()?;
         loop {
             let op = match self.cur() {
-                Token::Shl => "<<",
-                Token::Shr => ">>",
-                Token::UShr => ">>>",
+                Token::Shl => BinOp::Shl,
+                Token::Shr => BinOp::Shr,
+                Token::UShr => BinOp::UShr,
                 _ => break,
             };
             self.adv();
             let r = self.add()?;
             l = Expr::Binary {
-                op: op.to_string(),
+                op,
                 left: Box::new(l),
                 right: Box::new(r),
             };
@@ -401,7 +401,7 @@ impl Parser {
                     self.adv();
                     let r = self.mul()?;
                     l = Expr::Binary {
-                        op: "+".to_string(),
+                        op: BinOp::Add,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -410,7 +410,7 @@ impl Parser {
                     self.adv();
                     let r = self.mul()?;
                     l = Expr::Binary {
-                        op: "-".to_string(),
+                        op: BinOp::Sub,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -429,7 +429,7 @@ impl Parser {
                     self.adv();
                     let r = self.exponent()?;
                     l = Expr::Binary {
-                        op: "*".to_string(),
+                        op: BinOp::Mul,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -438,7 +438,7 @@ impl Parser {
                     self.adv();
                     let r = self.exponent()?;
                     l = Expr::Binary {
-                        op: "/".to_string(),
+                        op: BinOp::Div,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -447,7 +447,7 @@ impl Parser {
                     self.adv();
                     let r = self.exponent()?;
                     l = Expr::Binary {
-                        op: "%".to_string(),
+                        op: BinOp::Mod,
                         left: Box::new(l),
                         right: Box::new(r),
                     };
@@ -464,7 +464,7 @@ impl Parser {
             // Right-associative: 2 ** 3 ** 2 === 2 ** (3 ** 2)
             let exp = self.exponent()?;
             Some(Expr::Binary {
-                op: "**".to_string(),
+                op: BinOp::Pow,
                 left: Box::new(base),
                 right: Box::new(exp),
             })
@@ -479,7 +479,7 @@ impl Parser {
                 self.adv();
                 let o = self.unary()?;
                 Some(Expr::Unary {
-                    op: "!".to_string(),
+                    op: UnOp::Not,
                     operand: Box::new(o),
                     prefix: true,
                 })
@@ -488,7 +488,7 @@ impl Parser {
                 self.adv();
                 let o = self.unary()?;
                 Some(Expr::Unary {
-                    op: "~".to_string(),
+                    op: UnOp::BitNot,
                     operand: Box::new(o),
                     prefix: true,
                 })
@@ -497,7 +497,7 @@ impl Parser {
                 self.adv();
                 let o = self.unary()?;
                 Some(Expr::Unary {
-                    op: "-".to_string(),
+                    op: UnOp::Neg,
                     operand: Box::new(o),
                     prefix: true,
                 })
@@ -506,7 +506,7 @@ impl Parser {
                 self.adv();
                 let o = self.unary()?;
                 Some(Expr::Unary {
-                    op: "+".to_string(),
+                    op: UnOp::Pos,
                     operand: Box::new(o),
                     prefix: true,
                 })
@@ -515,7 +515,7 @@ impl Parser {
                 self.adv();
                 let o = self.unary()?;
                 Some(Expr::Unary {
-                    op: "typeof".to_string(),
+                    op: UnOp::Typeof,
                     operand: Box::new(o),
                     prefix: true,
                 })
@@ -524,7 +524,7 @@ impl Parser {
                 self.adv();
                 let o = self.unary()?;
                 Some(Expr::Unary {
-                    op: "void".to_string(),
+                    op: UnOp::Void,
                     operand: Box::new(o),
                     prefix: true,
                 })
@@ -533,7 +533,7 @@ impl Parser {
                 self.adv();
                 let o = self.unary()?;
                 Some(Expr::Unary {
-                    op: "delete".to_string(),
+                    op: UnOp::Delete,
                     operand: Box::new(o),
                     prefix: true,
                 })
@@ -542,7 +542,7 @@ impl Parser {
                 self.adv();
                 let o = self.unary()?;
                 Some(Expr::Unary {
-                    op: "++".to_string(),
+                    op: UnOp::Inc,
                     operand: Box::new(o),
                     prefix: true,
                 })
@@ -551,7 +551,7 @@ impl Parser {
                 self.adv();
                 let o = self.unary()?;
                 Some(Expr::Unary {
-                    op: "--".to_string(),
+                    op: UnOp::Dec,
                     operand: Box::new(o),
                     prefix: true,
                 })
@@ -620,7 +620,7 @@ impl Parser {
                 Token::PlusPlus => {
                     self.adv();
                     e = Expr::Unary {
-                        op: "++".to_string(),
+                        op: UnOp::Inc,
                         operand: Box::new(e),
                         prefix: false,
                     };
@@ -628,7 +628,7 @@ impl Parser {
                 Token::MinusMinus => {
                     self.adv();
                     e = Expr::Unary {
-                        op: "--".to_string(),
+                        op: UnOp::Dec,
                         operand: Box::new(e),
                         prefix: false,
                     };

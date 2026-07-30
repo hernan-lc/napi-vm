@@ -1,7 +1,7 @@
 //! Compound statement parsers: classes, `import` / `export`, and the shared
 //! block-body / default-guard helpers used across the parser.
 
-use super::{ClassMember, Expr, Parser, Statement, VarKind};
+use super::{AssignOp, BinOp, ClassMember, Expr, Parser, Statement, VarKind};
 use crate::lexer::Token;
 
 /// Collect the bound identifier names from a variable declaration statement
@@ -324,13 +324,13 @@ impl Parser {
     pub(crate) fn default_guard(name: &str, d: Expr) -> Statement {
         Statement::If {
             test: Box::new(Expr::Binary {
-                op: "===".to_string(),
+                op: BinOp::Seq,
                 left: Box::new(Expr::Identifier(name.to_string())),
                 right: Box::new(Expr::Undefined),
             }),
             then: vec![Statement::Expr(Expr::Assignment {
                 target: Box::new(Expr::Identifier(name.to_string())),
-                op: "=".to_string(),
+                op: AssignOp::Assign,
                 value: Box::new(d),
             })],
             else_: None,

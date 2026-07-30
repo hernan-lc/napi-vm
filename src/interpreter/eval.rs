@@ -7,17 +7,19 @@ use std::rc::Rc;
 use super::{Environment, Interpreter, Module};
 use crate::error::{VmErr, vm_err, vm_ret, vm_throw};
 use crate::parser::{
-    ClassMember, Expr, ExprOrBlock, ForInit, ObjectProp, Statement, arrow_body_references,
-    stmts_reference,
+    AssignOp, ClassMember, Expr, ExprOrBlock, ForInit, ObjectProp, Statement, UnOp,
+    arrow_body_references, stmts_reference,
 };
 use crate::value::{PromiseState, Value};
 
-fn is_label_break(label: &Option<String>, m: &str) -> bool {
-    matches!(label, Some(l) if m == format!("__BREAK__:{}", l))
-}
-
-fn is_label_continue(label: &Option<String>, m: &str) -> bool {
-    matches!(label, Some(l) if m == format!("__CONTINUE__:{}", l))
+/// Whether a labeled control-flow signal targets the loop with `label`.
+/// Unlabeled signals (`None`) target the innermost loop and are handled by
+/// the callers directly; this only decides labeled ones.
+fn label_matches(label: &Option<String>, signal: &Option<String>) -> bool {
+    match (label, signal) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
 }
 
 impl Interpreter {
@@ -187,7 +189,7 @@ impl Interpreter {
                             property: Box::new(Expr::String(fname.clone())),
                             computed: false,
                         }),
-                        op: "=".to_string(),
+                        op: AssignOp::Assign,
                         value: Box::new(value),
                     }));
                 }
@@ -259,14 +261,10 @@ impl Interpreter {
                         break;
                     }
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => {
-                            break;
-                        }
-                        Err(VmErr::Msg(m))
-                            if m == "__CONTINUE__" || is_label_continue(&label, &m) =>
-                        {
-                            continue;
-                        }
+                        Err(VmErr::Break(None)) => break,
+                        Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
+                        Err(VmErr::Continue(None)) => continue,
+                        Err(VmErr::Continue(l)) if label_matches(&label, &l) => continue,
                         other => r = other?,
                     }
                 }
@@ -277,11 +275,10 @@ impl Interpreter {
                 let mut r = Value::Undefined;
                 loop {
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => {
-                            break;
-                        }
-                        Err(VmErr::Msg(m))
-                            if m == "__CONTINUE__" || is_label_continue(&label, &m) => {}
+                        Err(VmErr::Break(None)) => break,
+                        Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
+                        Err(VmErr::Continue(None)) => {}
+                        Err(VmErr::Continue(l)) if label_matches(&label, &l) => {}
                         other => r = other?,
                     }
                     let t = self.eval_expr(test)?;
@@ -323,11 +320,10 @@ impl Interpreter {
                         }
                     }
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => {
-                            break;
-                        }
-                        Err(VmErr::Msg(m))
-                            if m == "__CONTINUE__" || is_label_continue(&label, &m) => {}
+                        Err(VmErr::Break(None)) => break,
+                        Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
+                        Err(VmErr::Continue(None)) => {}
+                        Err(VmErr::Continue(l)) if label_matches(&label, &l) => {}
                         other => r = other?,
                     }
                     if let Some(u) = update {
@@ -344,14 +340,10 @@ impl Interpreter {
                 for k in ks {
                     self.global.borrow_mut().set(name, Value::String(k));
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => {
-                            break;
-                        }
-                        Err(VmErr::Msg(m))
-                            if m == "__CONTINUE__" || is_label_continue(&label, &m) =>
-                        {
-                            continue;
-                        }
+                        Err(VmErr::Break(None)) => break,
+                        Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
+                        Err(VmErr::Continue(None)) => continue,
+                        Err(VmErr::Continue(l)) if label_matches(&label, &l) => continue,
                         other => r = other?,
                     }
                 }
@@ -396,14 +388,10 @@ impl Interpreter {
                 for i in items {
                     self.global.borrow_mut().set(name, i);
                     match self.run(body) {
-                        Err(VmErr::Msg(m)) if m == "__BREAK__" || is_label_break(&label, &m) => {
-                            break;
-                        }
-                        Err(VmErr::Msg(m))
-                            if m == "__CONTINUE__" || is_label_continue(&label, &m) =>
-                        {
-                            continue;
-                        }
+                        Err(VmErr::Break(None)) => break,
+                        Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
+                        Err(VmErr::Continue(None)) => continue,
+                        Err(VmErr::Continue(l)) if label_matches(&label, &l) => continue,
                         other => r = other?,
                     }
                 }
@@ -419,16 +407,14 @@ impl Interpreter {
                 self.active_label = prev;
                 match r {
                     // Consume a labeled break that escaped a non-loop body.
-                    Err(VmErr::Msg(m)) if m == format!("__BREAK__:{}", label) => {
-                        Ok(Value::Undefined)
-                    }
+                    Err(VmErr::Break(Some(l))) if l == *label => Ok(Value::Undefined),
                     other => other,
                 }
             }
-            Statement::Break => vm_err("__BREAK__"),
-            Statement::Continue => vm_err("__CONTINUE__"),
-            Statement::LabeledBreak(label) => vm_err(format!("__BREAK__:{}", label)),
-            Statement::LabeledContinue(label) => vm_err(format!("__CONTINUE__:{}", label)),
+            Statement::Break => Err(VmErr::Break(None)),
+            Statement::Continue => Err(VmErr::Continue(None)),
+            Statement::LabeledBreak(label) => Err(VmErr::Break(Some(label.clone()))),
+            Statement::LabeledContinue(label) => Err(VmErr::Continue(Some(label.clone()))),
             Statement::Throw(e) => {
                 let v = self.eval_expr(e)?;
                 vm_throw(v)
@@ -444,11 +430,7 @@ impl Interpreter {
                 let after_catch = match body_result {
                     Err(VmErr::Throw(val)) => self.run_catch(catch, val),
                     // Control-flow signals are not catchable.
-                    Err(VmErr::Msg(m))
-                        if m.starts_with("__BREAK__") || m.starts_with("__CONTINUE__") =>
-                    {
-                        Err(VmErr::Msg(m))
-                    }
+                    Err(e @ (VmErr::Break(_) | VmErr::Continue(_))) => Err(e),
                     // Runtime errors (e.g. undeclared identifier) are catchable.
                     Err(VmErr::Msg(m)) => self.run_catch(catch, Value::String(m)),
                     other => other,
@@ -476,17 +458,14 @@ impl Interpreter {
                     }
                     if m {
                         match self.run(&c.body) {
-                            Err(e) => {
-                                let s = format!("{}", e);
-                                if let Some(label) = s.strip_prefix("__BREAK__:") {
-                                    found_label = Some(label.to_string());
+                            Err(VmErr::Break(l)) => match l {
+                                None => break,
+                                Some(label) => {
+                                    found_label = Some(label);
                                     break;
-                                } else if s == "__BREAK__" {
-                                    break;
-                                } else {
-                                    return Err(e);
                                 }
-                            }
+                            },
+                            Err(e) => return Err(e),
                             Ok(v) => {
                                 r = v;
                             }
@@ -494,7 +473,7 @@ impl Interpreter {
                     }
                 }
                 if let Some(label) = found_label {
-                    return vm_err(format!("__BREAK__:{}", label));
+                    return Err(VmErr::Break(Some(label)));
                 }
                 Ok(r)
             }
@@ -675,14 +654,14 @@ impl Interpreter {
             Expr::Binary { op, left, right } => {
                 let l = self.eval_expr(left)?;
                 let r = self.eval_expr(right)?;
-                self.bin_op(op, &l, &r)
+                self.bin_op(*op, &l, &r)
             }
             Expr::Unary {
                 op,
                 operand,
                 prefix,
             } => {
-                if (op == "++" || op == "--")
+                if matches!(op, UnOp::Inc | UnOp::Dec)
                     && matches!(operand.as_ref(), Expr::Identifier(_) | Expr::Member { .. })
                 {
                     match operand.as_ref() {
@@ -692,7 +671,7 @@ impl Interpreter {
                                 let cur = env
                                     .get(n)
                                     .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))?;
-                                let nv = if op == "++" {
+                                let nv = if *op == UnOp::Inc {
                                     Value::Number(self.tn(&cur) + 1.0)
                                 } else {
                                     Value::Number(self.tn(&cur) - 1.0)
@@ -710,7 +689,7 @@ impl Interpreter {
                             let obj = self.eval_expr(object)?;
                             let prop = self.eval_expr(property)?;
                             let cur = self.prop(&obj, &prop)?;
-                            let new_val = if op == "++" {
+                            let new_val = if *op == UnOp::Inc {
                                 Value::Number(self.tn(&cur) + 1.0)
                             } else {
                                 Value::Number(self.tn(&cur) - 1.0)
@@ -720,10 +699,10 @@ impl Interpreter {
                         }
                         _ => {
                             let v = self.eval_expr(operand)?;
-                            self.un_op(op, &v)
+                            self.un_op(*op, &v)
                         }
                     }
-                } else if op == "typeof" {
+                } else if *op == UnOp::Typeof {
                     // `typeof` never throws, even on undeclared identifiers.
                     let v = if let Expr::Identifier(n) = operand.as_ref() {
                         if n == "undefined" {
@@ -734,10 +713,10 @@ impl Interpreter {
                     } else {
                         self.eval_expr(operand)?
                     };
-                    self.un_op(op, &v)
+                    self.un_op(*op, &v)
                 } else {
                     let v = self.eval_expr(operand)?;
-                    self.un_op(op, &v)
+                    self.un_op(*op, &v)
                 }
             }
             Expr::Call { callee, args } => {
@@ -825,14 +804,13 @@ impl Interpreter {
                 let v = self.eval_expr(value)?;
                 match target.as_ref() {
                     Expr::Identifier(n) => {
-                        let fv = if *op != "=" {
+                        let fv = if let Some(bin) = op.bin_op() {
                             let c = self
                                 .global
                                 .borrow()
                                 .get(n)
                                 .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))?;
-                            let bin_op = op.trim_end_matches('=');
-                            self.bin_op(bin_op, &c, &v)?
+                            self.bin_op(bin, &c, &v)?
                         } else {
                             v
                         };
@@ -851,10 +829,9 @@ impl Interpreter {
                     } => {
                         let obj = self.eval_expr(object)?;
                         let prop = self.eval_expr(property)?;
-                        let fv = if *op != "=" {
+                        let fv = if let Some(bin) = op.bin_op() {
                             let c = self.prop(&obj, &prop)?;
-                            let bin_op = op.trim_end_matches('=');
-                            self.bin_op(bin_op, &c, &v)?
+                            self.bin_op(bin, &c, &v)?
                         } else {
                             v
                         };

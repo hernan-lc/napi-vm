@@ -1,3 +1,90 @@
+/// Binary operators, resolved at parse time so evaluation matches an integer
+/// discriminant instead of a string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    UShr,
+    Eq,
+    Neq,
+    Seq,
+    Sneq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    And,
+    Or,
+    Nullish,
+    Comma,
+    Instanceof,
+    In,
+}
+
+/// Unary operators (including prefix/postfix increment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnOp {
+    Not,
+    Neg,
+    Pos,
+    BitNot,
+    Typeof,
+    Void,
+    Delete,
+    Inc,
+    Dec,
+}
+
+/// Assignment operators. `Assign` is plain `=`; the rest are compound and map
+/// to a binary operation via `bin_op`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignOp {
+    Assign,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    UShr,
+}
+
+impl AssignOp {
+    /// The binary operation behind a compound assignment (`+=` → `Add`).
+    /// `None` for plain `=`.
+    pub fn bin_op(self) -> Option<BinOp> {
+        Some(match self {
+            AssignOp::Assign => return None,
+            AssignOp::Add => BinOp::Add,
+            AssignOp::Sub => BinOp::Sub,
+            AssignOp::Mul => BinOp::Mul,
+            AssignOp::Div => BinOp::Div,
+            AssignOp::Mod => BinOp::Mod,
+            AssignOp::Pow => BinOp::Pow,
+            AssignOp::BitAnd => BinOp::BitAnd,
+            AssignOp::BitOr => BinOp::BitOr,
+            AssignOp::BitXor => BinOp::BitXor,
+            AssignOp::Shl => BinOp::Shl,
+            AssignOp::Shr => BinOp::Shr,
+            AssignOp::UShr => BinOp::UShr,
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Number(f64),
@@ -9,12 +96,12 @@ pub enum Expr {
     Array(Vec<Expr>),
     Object(Vec<ObjectProp>),
     Binary {
-        op: String,
+        op: BinOp,
         left: Box<Expr>,
         right: Box<Expr>,
     },
     Unary {
-        op: String,
+        op: UnOp,
         operand: Box<Expr>,
         prefix: bool,
     },
@@ -29,7 +116,7 @@ pub enum Expr {
     },
     Assignment {
         target: Box<Expr>,
-        op: String,
+        op: AssignOp,
         value: Box<Expr>,
     },
     Conditional {

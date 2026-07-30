@@ -178,8 +178,8 @@ mod tests {
         let stmts = parse("1 + 2 * 3;");
         assert_eq!(stmts.len(), 1);
         if let Statement::Expr(Expr::Binary { op, right, .. }) = &stmts[0] {
-            assert_eq!(op, "+");
-            assert!(matches!(right.as_ref(), Expr::Binary { op, .. } if op == "*"));
+            assert_eq!(*op, BinOp::Add);
+            assert!(matches!(right.as_ref(), Expr::Binary { op, .. } if *op == BinOp::Mul));
         } else {
             panic!("expected binary expr");
         }

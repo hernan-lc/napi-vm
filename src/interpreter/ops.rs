@@ -1,37 +1,38 @@
 use std::rc::Rc;
 
 use super::Interpreter;
-use crate::error::{VmErr, vm_err};
+use crate::error::VmErr;
+use crate::parser::{BinOp, UnOp};
 use crate::value::Value;
 
 impl Interpreter {
-    pub fn bin_op(&self, op: &str, l: &Value, r: &Value) -> Result<Value, VmErr> {
+    pub fn bin_op(&self, op: BinOp, l: &Value, r: &Value) -> Result<Value, VmErr> {
         // Fast path: when both operands are already numbers, the arithmetic and
         // comparison operators need no coercion and `+` cannot be string
         // concatenation. This skips the `to_number` dispatch and the string
         // check on the hottest interpreter path.
         if let (Value::Number(a), Value::Number(b)) = (l, r) {
             let fast = match op {
-                "+" => Some(Value::Number(a + b)),
-                "-" => Some(Value::Number(a - b)),
-                "*" => Some(Value::Number(a * b)),
-                "/" => Some(Value::Number(a / b)),
-                "%" => Some(Value::Number(a % b)),
-                "**" => Some(Value::Number(a.powf(*b))),
-                "&" => Some(Value::Number(((*a as i32) & (*b as i32)) as f64)),
-                "|" => Some(Value::Number(((*a as i32) | (*b as i32)) as f64)),
-                "^" => Some(Value::Number(((*a as i32) ^ (*b as i32)) as f64)),
-                "<<" => Some(Value::Number(((*a as i32) << ((*b as i32) & 31)) as f64)),
-                ">>" => Some(Value::Number(((*a as i32) >> ((*b as i32) & 31)) as f64)),
-                ">>>" => Some(Value::Number(
+                BinOp::Add => Some(Value::Number(a + b)),
+                BinOp::Sub => Some(Value::Number(a - b)),
+                BinOp::Mul => Some(Value::Number(a * b)),
+                BinOp::Div => Some(Value::Number(a / b)),
+                BinOp::Mod => Some(Value::Number(a % b)),
+                BinOp::Pow => Some(Value::Number(a.powf(*b))),
+                BinOp::BitAnd => Some(Value::Number(((*a as i32) & (*b as i32)) as f64)),
+                BinOp::BitOr => Some(Value::Number(((*a as i32) | (*b as i32)) as f64)),
+                BinOp::BitXor => Some(Value::Number(((*a as i32) ^ (*b as i32)) as f64)),
+                BinOp::Shl => Some(Value::Number(((*a as i32) << ((*b as i32) & 31)) as f64)),
+                BinOp::Shr => Some(Value::Number(((*a as i32) >> ((*b as i32) & 31)) as f64)),
+                BinOp::UShr => Some(Value::Number(
                     ((*a as i32 as u32) >> (*b as i32 as u32 & 31)) as f64,
                 )),
-                "<" => Some(Value::Bool(a < b)),
-                ">" => Some(Value::Bool(a > b)),
-                "<=" => Some(Value::Bool(a <= b)),
-                ">=" => Some(Value::Bool(a >= b)),
-                "==" | "===" => Some(Value::Bool(a == b)),
-                "!=" | "!==" => Some(Value::Bool(a != b)),
+                BinOp::Lt => Some(Value::Bool(a < b)),
+                BinOp::Gt => Some(Value::Bool(a > b)),
+                BinOp::Le => Some(Value::Bool(a <= b)),
+                BinOp::Ge => Some(Value::Bool(a >= b)),
+                BinOp::Eq | BinOp::Seq => Some(Value::Bool(a == b)),
+                BinOp::Neq | BinOp::Sneq => Some(Value::Bool(a != b)),
                 _ => None,
             };
             if let Some(v) = fast {
@@ -39,7 +40,7 @@ impl Interpreter {
             }
         }
         Ok(match op {
-            "+" => {
+            BinOp::Add => {
                 // String concatenation if either side is a string; otherwise
                 // numeric addition (booleans/null/etc. coerce via to_number).
                 if matches!(l, Value::String(_)) || matches!(r, Value::String(_)) {
@@ -48,52 +49,52 @@ impl Interpreter {
                     Value::Number(self.tn(l) + self.tn(r))
                 }
             }
-            "-" => Value::Number(self.tn(l) - self.tn(r)),
-            "*" => Value::Number(self.tn(l) * self.tn(r)),
-            "/" => Value::Number(self.tn(l) / self.tn(r)),
-            "%" => Value::Number(self.tn(l) % self.tn(r)),
-            "**" => Value::Number(self.tn(l).powf(self.tn(r))),
-            "&" => Value::Number(((self.tn(l) as i32) & (self.tn(r) as i32)) as f64),
-            "|" => Value::Number(((self.tn(l) as i32) | (self.tn(r) as i32)) as f64),
-            "^" => Value::Number(((self.tn(l) as i32) ^ (self.tn(r) as i32)) as f64),
-            "<<" => Value::Number(((self.tn(l) as i32) << ((self.tn(r) as i32) & 31)) as f64),
-            ">>" => Value::Number(((self.tn(l) as i32) >> ((self.tn(r) as i32) & 31)) as f64),
-            ">>>" => {
+            BinOp::Sub => Value::Number(self.tn(l) - self.tn(r)),
+            BinOp::Mul => Value::Number(self.tn(l) * self.tn(r)),
+            BinOp::Div => Value::Number(self.tn(l) / self.tn(r)),
+            BinOp::Mod => Value::Number(self.tn(l) % self.tn(r)),
+            BinOp::Pow => Value::Number(self.tn(l).powf(self.tn(r))),
+            BinOp::BitAnd => Value::Number(((self.tn(l) as i32) & (self.tn(r) as i32)) as f64),
+            BinOp::BitOr => Value::Number(((self.tn(l) as i32) | (self.tn(r) as i32)) as f64),
+            BinOp::BitXor => Value::Number(((self.tn(l) as i32) ^ (self.tn(r) as i32)) as f64),
+            BinOp::Shl => Value::Number(((self.tn(l) as i32) << ((self.tn(r) as i32) & 31)) as f64),
+            BinOp::Shr => Value::Number(((self.tn(l) as i32) >> ((self.tn(r) as i32) & 31)) as f64),
+            BinOp::UShr => {
                 let a = (self.tn(l) as i32) as u32;
                 let b = (self.tn(r) as i32) as u32 & 31;
                 Value::Number((a >> b) as f64)
             }
-            "==" => Value::Bool(self.leq(l, r)),
-            "!=" => Value::Bool(!self.leq(l, r)),
-            "===" => Value::Bool(self.seq(l, r)),
-            "!==" => Value::Bool(!self.seq(l, r)),
-            "<" => Value::Bool(self.tn(l) < self.tn(r)),
-            ">" => Value::Bool(self.tn(l) > self.tn(r)),
-            "<=" => Value::Bool(self.tn(l) <= self.tn(r)),
-            ">=" => Value::Bool(self.tn(l) >= self.tn(r)),
-            "&&" => {
+            BinOp::Eq => Value::Bool(self.leq(l, r)),
+            BinOp::Neq => Value::Bool(!self.leq(l, r)),
+            BinOp::Seq => Value::Bool(self.seq(l, r)),
+            BinOp::Sneq => Value::Bool(!self.seq(l, r)),
+            BinOp::Lt => Value::Bool(self.tn(l) < self.tn(r)),
+            BinOp::Gt => Value::Bool(self.tn(l) > self.tn(r)),
+            BinOp::Le => Value::Bool(self.tn(l) <= self.tn(r)),
+            BinOp::Ge => Value::Bool(self.tn(l) >= self.tn(r)),
+            BinOp::And => {
                 if self.truthy(l) {
                     r.clone()
                 } else {
                     l.clone()
                 }
             }
-            "||" => {
+            BinOp::Or => {
                 if self.truthy(l) {
                     l.clone()
                 } else {
                     r.clone()
                 }
             }
-            "??" => {
+            BinOp::Nullish => {
                 if matches!(l, Value::Null | Value::Undefined) {
                     r.clone()
                 } else {
                     l.clone()
                 }
             }
-            "," => r.clone(),
-            "instanceof" => {
+            BinOp::Comma => r.clone(),
+            BinOp::Instanceof => {
                 // `l instanceof r`: walk l's prototype chain looking for r's
                 // prototype object (compared by shared Rc identity).
                 let target_proto = match r {
@@ -123,24 +124,23 @@ impl Interpreter {
                 }
                 Value::Bool(result)
             }
-            "in" => {
+            BinOp::In => {
                 if let (Value::String(k), Value::Object { props, .. }) = (l, r) {
                     Value::Bool(props.borrow().iter().any(|(x, _)| x == k))
                 } else {
                     Value::Bool(false)
                 }
             }
-            _ => return vm_err(format!("Unknown op: {}", op)),
         })
     }
 
-    pub fn un_op(&self, op: &str, v: &Value) -> Result<Value, VmErr> {
+    pub fn un_op(&self, op: UnOp, v: &Value) -> Result<Value, VmErr> {
         Ok(match op {
-            "!" => Value::Bool(!self.truthy(v)),
-            "-" => Value::Number(-self.tn(v)),
-            "+" => Value::Number(self.tn(v)),
-            "~" => Value::Number(!(self.tn(v) as i32) as f64),
-            "typeof" => Value::String(
+            UnOp::Not => Value::Bool(!self.truthy(v)),
+            UnOp::Neg => Value::Number(-self.tn(v)),
+            UnOp::Pos => Value::Number(self.tn(v)),
+            UnOp::BitNot => Value::Number(!(self.tn(v) as i32) as f64),
+            UnOp::Typeof => Value::String(
                 match v {
                     Value::Undefined => "undefined",
                     Value::Null => "object",
@@ -159,11 +159,10 @@ impl Interpreter {
                 }
                 .to_string(),
             ),
-            "void" => Value::Undefined,
-            "delete" => Value::Bool(true),
-            "++" => Value::Number(self.tn(v) + 1.0),
-            "--" => Value::Number(self.tn(v) - 1.0),
-            _ => return vm_err(format!("Unknown unary: {}", op)),
+            UnOp::Void => Value::Undefined,
+            UnOp::Delete => Value::Bool(true),
+            UnOp::Inc => Value::Number(self.tn(v) + 1.0),
+            UnOp::Dec => Value::Number(self.tn(v) - 1.0),
         })
     }
 
