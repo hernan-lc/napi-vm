@@ -1,0 +1,13 @@
+# Cross-compilation linker configuration for napi-vm.
+#
+# Linux x86_64 builds natively (no config needed).
+# Windows x86_64 uses mingw-w64 (pacman -S mingw-w64-gcc).
+# Linux aarch64 uses the GNU cross-linker (pacman -S aarch64-linux-gnu-gcc)
+#   or falls back to the Docker-based build in scripts/build-all.sh.
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-gcc-ar"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
