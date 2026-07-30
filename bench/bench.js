@@ -137,7 +137,7 @@ function fmtNs(ns) {
 
 function main() {
   const engine = typeof Bun !== "undefined" ? "Bun" : "Node " + process.version;
-  console.log(`node-vm end-to-end benchmark (${engine}, ${process.platform}/${process.arch})`);
+  console.log(`napi-vm end-to-end benchmark (${engine}, ${process.platform}/${process.arch})`);
   console.log(`Measuring each workload for >= ${MIN_MS} ms after ${WARMUP_ITERS} warmup iters.\n`);
 
   const header =

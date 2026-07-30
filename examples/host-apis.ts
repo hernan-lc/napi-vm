@@ -72,7 +72,7 @@ vm.exposeFunction(
 // Thin wrappers around Node `fs` — intentionally limited to a single
 // directory so the sandbox can't wander off.
 
-const FS_ROOT = "/tmp/node-vm-fs-demo";
+const FS_ROOT = "/tmp/napi-vm-fs-demo";
 
 if (!existsSync(FS_ROOT)) {
   mkdirSync(FS_ROOT, { recursive: true });

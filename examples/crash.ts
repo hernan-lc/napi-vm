@@ -1,5 +1,5 @@
 /**
- * Node-VM crash-safety harness — every known way guest code can kill the host.
+ * napi-vm crash-safety harness — every known way guest code can kill the host.
  *
  * Run:   bun examples/crash.ts            (full matrix, one subprocess per case)
  *        bun examples/crash.ts --case deep-recursion   (single case, in-process)
@@ -345,7 +345,7 @@ const ICON: Record<Verdict, string> = {
 };
 
 async function main(): Promise<void> {
-  console.log("=== Node-VM Crash-Safety Matrix ===\n");
+  console.log("=== napi-vm Crash-Safety Matrix ===\n");
   console.log("Each case runs in a disposable subprocess; the verdict says how it died.\n");
 
   const rows: Row[] = [];

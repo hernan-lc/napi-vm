@@ -36,7 +36,7 @@ pub enum Value {
     },
     Array(Rc<RefCell<Vec<Value>>>),
     Function {
-        name: Option<String>,
+        name: Option<Rc<str>>,
         // Shared (`Rc`) so closures created in hot loops reference the same AST
         // instead of deep-cloning the parameter list and body on every creation.
         params: Rc<Vec<String>>,
@@ -50,14 +50,14 @@ pub enum Value {
         uses_arguments: bool,
     },
     NativeFunction {
-        name: String,
+        name: Rc<str>,
         callable: fn(&mut Interpreter, Value, Vec<Value>) -> Result<Value, VmErr>,
     },
     /// A function implemented on the host (Node.js) side, reachable from the VM.
     /// Calling it dispatches through the interpreter's `HostBridge` using `id`,
     /// which the bridge maps to a persisted JavaScript function reference.
     HostFunction {
-        name: String,
+        name: Rc<str>,
         id: usize,
     },
     /// A handle to the global scope itself. Bound to `globalThis`, `self` and

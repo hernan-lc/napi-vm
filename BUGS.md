@@ -1,4 +1,4 @@
-# Bug Report: node-vm Limitations & Fixes
+# Bug Report: napi-vm Limitations & Fixes
 
 Found by building the `examples/callback.ts` hot-reload callback system.
 

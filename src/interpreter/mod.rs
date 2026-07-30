@@ -151,12 +151,11 @@ impl Interpreter {
         self.source_lines.get(line - 1).map(|s| s.as_str())
     }
 
-    /// Push a frame onto the call stack.
-    pub(crate) fn push_frame(&mut self, name: &str, span: Span) {
-        self.call_stack.push(StackFrame {
-            name: name.to_string(),
-            span,
-        });
+    /// Push a frame onto the call stack. The name is shared (`Rc<str>`), so
+    /// pushing a frame for a function call is a refcount bump, not a string
+    /// allocation.
+    pub(crate) fn push_frame(&mut self, name: std::rc::Rc<str>, span: Span) {
+        self.call_stack.push(StackFrame { name, span });
     }
 
     /// Pop a frame from the call stack.

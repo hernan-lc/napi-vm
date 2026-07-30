@@ -1,5 +1,5 @@
 /**
- * Node-VM Callback System — hot-reload + event bus demo.
+ * napi-vm Callback System — hot-reload + event bus demo.
  * What this demonstrates:
  *   1. Hot-reload with clean teardown (removeModule / removeGlobal) — no
  *      stale modules or leaked host functions across reloads.
@@ -203,7 +203,7 @@ function demoListenerDedup(bus: VmEventBus): void {
 
 // ── Main ─────────────────────────────────────────────────────────────
 
-console.log("=== Node-VM Callback System ===\n");
+console.log("=== napi-vm Callback System ===\n");
 
 const reloader = new HotReloader({
   modulesDir: MODULES_DIR,

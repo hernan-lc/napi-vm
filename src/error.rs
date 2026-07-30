@@ -6,7 +6,10 @@ use crate::value::Value;
 /// A single frame in the call stack trace.
 #[derive(Debug, Clone)]
 pub struct StackFrame {
-    pub name: String,
+    /// Shared so per-call frame pushes/pop-and-snapshot never allocate for
+    /// the name: function values already own an `Rc<str>` and cloning one is
+    /// a refcount bump.
+    pub name: std::rc::Rc<str>,
     pub span: Span,
 }
 

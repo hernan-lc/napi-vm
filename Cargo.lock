@@ -415,7 +415,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "node-vm"
+name = "napi-vm"
 version = "0.1.0"
 dependencies = [
  "criterion",

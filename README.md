@@ -1,4 +1,4 @@
-# node-vm
+# napi-vm
 
 A sandboxed JavaScript virtual machine built from scratch in Rust with NAPI bindings for Node.js.
 
