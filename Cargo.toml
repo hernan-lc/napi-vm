@@ -8,6 +8,13 @@ edition = "2024"
 # integration tests link against the crate directly.
 crate-type = ["cdylib", "lib"]
 
+[features]
+default = []
+# SGR mouse-event parser + ANSI tracking sequences for the TUI inspector.
+# Off by default: mouse mode changes global terminal behavior and is
+# meaningless in CI / piped environments.
+mouse = []
+
 [dependencies]
 napi = { version = "3.12.0", features = ["napi8"] }
 napi-derive = "3.6.1"

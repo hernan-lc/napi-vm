@@ -704,4 +704,7 @@ module.exports.Vm = nativeBinding.Vm
 module.exports.VM = nativeBinding.VM
 module.exports.createVm = nativeBinding.createVm
 module.exports.debugParse = nativeBinding.debugParse
+module.exports.mouseDisableSeq = nativeBinding.mouseDisableSeq
+module.exports.mouseEnableSeq = nativeBinding.mouseEnableSeq
+module.exports.parseMouseEvent = nativeBinding.parseMouseEvent
 module.exports.runCode = nativeBinding.runCode

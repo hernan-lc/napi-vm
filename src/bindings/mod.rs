@@ -15,6 +15,8 @@
 mod bridge;
 mod format;
 mod marshal;
+#[cfg(feature = "mouse")]
+mod term;
 mod vm;
 
 pub use format::{colors_enabled, to_string, to_string_pretty, to_string_pretty_colored};
