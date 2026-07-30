@@ -16,9 +16,9 @@ use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::Value;
 
-use super::bridge::{run_async_done_cb, NapiHostBridge};
+use super::bridge::{NapiHostBridge, run_async_done_cb};
 use super::format::to_string;
-use super::marshal::{chk, from_napi, make_str, to_napi, SendPtr};
+use super::marshal::{SendPtr, chk, from_napi, make_str, to_napi};
 
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
     let mut interp = Interpreter::with_builtins();

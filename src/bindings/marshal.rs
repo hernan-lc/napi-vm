@@ -20,7 +20,6 @@ use napi::sys;
 use crate::error::VmErr;
 use crate::value::Value;
 
-
 #[inline]
 pub(super) fn chk(status: sys::napi_status) -> Result<(), VmErr> {
     if status == sys::Status::napi_ok {

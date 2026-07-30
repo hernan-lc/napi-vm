@@ -21,9 +21,7 @@
  *
  * Run:  bun examples/pretty-print.ts
  */
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const { Vm } = require("../index");
+import { Vm } from "../index";
 import { inspect } from "node:util";
 
 const vm = new Vm();

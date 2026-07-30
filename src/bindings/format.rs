@@ -99,12 +99,7 @@ pub fn to_string_pretty(val: &Value) -> String {
 /// Node's `util.inspect({ colors: true })` uses.
 pub fn to_string_pretty_colored(val: &Value, colors: bool) -> String {
     let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
-    pretty(
-        val,
-        &mut visited,
-        0,
-        &Painter { enabled: colors },
-    )
+    pretty(val, &mut visited, 0, &Painter { enabled: colors })
 }
 
 /// Whether ANSI colors should be emitted: stdout must be a TTY unless
@@ -294,12 +289,8 @@ fn pretty(
             "[Function: {}]",
             f.name.as_deref().unwrap_or("anonymous")
         )),
-        Value::NativeFunction { name, .. } => {
-            p.special(format!("[Function: {} [native]]", name))
-        }
-        Value::HostFunction { name, .. } => {
-            p.special(format!("[Function: {} [native]]", name))
-        }
+        Value::NativeFunction { name, .. } => p.special(format!("[Function: {} [native]]", name)),
+        Value::HostFunction { name, .. } => p.special(format!("[Function: {} [native]]", name)),
         Value::GlobalObject => p.special("[object global]".to_string()),
         Value::Class(c) => p.special(format!("[class {}]", c.name)),
         Value::Promise { .. } | Value::HostPending { .. } => {

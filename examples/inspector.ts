@@ -22,9 +22,7 @@
  * marshaller in bindings.rs is depth-bounded, not cycle-aware — so the
  * circular demo below builds the cycle on the host side.
  */
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const { Vm } = require("../index");
+import { Vm } from "../index";
 
 // ── ANSI helpers ─────────────────────────────────────────────────────
 const useColor =

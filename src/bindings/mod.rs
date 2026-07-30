@@ -18,4 +18,4 @@ mod marshal;
 mod vm;
 
 pub use format::{colors_enabled, to_string, to_string_pretty, to_string_pretty_colored};
-pub use vm::{create_vm, debug_parse, run_code, run_source, VM};
+pub use vm::{VM, create_vm, debug_parse, run_code, run_source};
