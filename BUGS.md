@@ -42,7 +42,7 @@ Added `Value::GlobalObject => self.global_keys()` to the `keys()` method in
 
 **Severity:** High  
 **File:** `src/builtins/string.rs`  
-**Status:** Not fixed
+**Status:** Fixed
 
 ### Description
 
@@ -106,7 +106,7 @@ And add to the dispatch:
 
 **Severity:** Low  
 **File:** `src/builtins/string.rs:15`  
-**Status:** Not fixed
+**Status:** Fixed
 
 ### Description
 

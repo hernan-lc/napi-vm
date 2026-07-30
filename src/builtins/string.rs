@@ -12,7 +12,7 @@ pub fn string_method(name: &str) -> Option<Value> {
         "toLowerCase" => string_to_lower,
         "trim" => string_trim,
         "slice" => string_slice,
-        "substring" => string_slice,
+        "substring" => string_substring,
         "split" => string_split,
         "includes" => string_includes,
         "indexOf" => string_index_of,
@@ -21,6 +21,8 @@ pub fn string_method(name: &str) -> Option<Value> {
         "endsWith" => string_ends_with,
         "repeat" => string_repeat,
         "replace" => string_replace,
+        "replaceAll" => string_replace_all,
+        "charCodeAt" => string_char_code_at,
         _ => return None,
     };
     Some(nf(name, f))
@@ -144,4 +146,47 @@ fn string_replace(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resul
         None => String::new(),
     };
     Ok(Value::String(s.replacen(&from, &to, 1)))
+}
+fn string_replace_all(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let s = str_this(interp, &this);
+    let from = match a.first() {
+        Some(Value::String(n)) => n.clone(),
+        Some(v) => interp.vs(v),
+        None => return Ok(Value::String(s)),
+    };
+    let to = match a.get(1) {
+        Some(Value::String(n)) => n.clone(),
+        Some(v) => interp.vs(v),
+        None => String::new(),
+    };
+    Ok(Value::String(s.replace(&from, &to)))
+}
+fn string_char_code_at(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let s = str_this(interp, &this);
+    let idx = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    match s.chars().nth(idx) {
+        Some(ch) => Ok(Value::Number(ch as u32 as f64)),
+        None => Ok(Value::Number(f64::NAN)),
+    }
+}
+fn string_substring(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let s = str_this(interp, &this);
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len() as i64;
+    let norm = |v: f64| -> i64 {
+        if v.is_nan() { return 0; }
+        let i = v as i64;
+        if i < 0 { 0 } else { i.min(len) }
+    };
+    let mut start = norm(a.first().map(|v| v.to_number()).unwrap_or(0.0));
+    let mut end = match a.get(1) {
+        Some(v) => norm(v.to_number()),
+        None => len,
+    };
+    if start > end {
+        std::mem::swap(&mut start, &mut end);
+    }
+    Ok(Value::String(
+        chars[start as usize..end as usize].iter().collect(),
+    ))
 }
