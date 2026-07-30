@@ -328,7 +328,13 @@ impl Interpreter {
                 let bridge = self.host.clone().ok_or_else(|| {
                     VmErr::Msg("cannot call host function: no bridge attached".to_string())
                 })?;
-                bridge.call_host(*id, args)
+                if bridge.is_async_fn(*id) {
+                    // Async host function: dispatch the call and return a
+                    // pending sentinel. The interpreter parks at `await`.
+                    bridge.call_host_async(*id, args)
+                } else {
+                    bridge.call_host(*id, args)
+                }
             }
             _ => {
                 let type_name = match f {

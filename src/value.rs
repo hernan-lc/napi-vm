@@ -102,6 +102,12 @@ pub enum Value {
     Generator {
         inner: Rc<RefCell<GeneratorInner>>,
     },
+    /// Sentinel returned when an async host function is called. The interpreter
+    /// recognizes this at `await` and parks the VM thread until the host
+    /// resolves the pending operation via the async channel.
+    HostPending {
+        id: usize,
+    },
     Symbol(String),
     Error(Box<ErrorData>),
 }

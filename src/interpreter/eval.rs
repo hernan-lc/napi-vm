@@ -968,6 +968,13 @@ impl Interpreter {
                 // is already settled, so unwrap a fulfilled value or re-throw a
                 // rejection reason. Awaiting a non-promise yields it unchanged.
                 let v = self.eval_expr(inner)?;
+                // Async host call: park the VM thread until the host resolves.
+                if let Value::HostPending { id } = v {
+                    let bridge = self.host.clone().ok_or_else(|| {
+                        VmErr::Msg("cannot await host promise: no bridge attached".to_string())
+                    })?;
+                    return bridge.await_host(id);
+                }
                 if let Value::Promise { state, value } = &v {
                     let inner_val = value
                         .as_ref()

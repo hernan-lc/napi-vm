@@ -185,7 +185,7 @@ impl Interpreter {
                     | Value::NativeFunction { .. }
                     | Value::HostFunction { .. }
                     | Value::Class(_) => "function",
-                    Value::Promise { .. } => "object",
+                    Value::Promise { .. } | Value::HostPending { .. } => "object",
                     Value::Generator { .. } => "object",
                     Value::Symbol(_) => "symbol",
                     Value::Error(_) => "object",
@@ -325,7 +325,7 @@ impl Interpreter {
             Value::NativeFunction { name, .. } => format!("function {} [native]", name),
             Value::HostFunction { name, .. } => format!("function {} [native]", name),
             Value::Class(c) => format!("class {}", c.name),
-            Value::Promise { .. } => "[object Promise]".to_string(),
+            Value::Promise { .. } | Value::HostPending { .. } => "[object Promise]".to_string(),
             Value::Generator { .. } => "[object Generator]".to_string(),
             Value::Symbol(s) => format!("Symbol({})", s),
             Value::Error(e) => e.message.clone(),

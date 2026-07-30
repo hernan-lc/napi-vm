@@ -6,10 +6,11 @@
  * controlled channels via `vm.exposeFunction()` so the sandboxed code
  * can call real Node APIs.
  *
- * Key insight: the NAPI bridge is *synchronous*.  Exposed functions
+ * LIMITATION: The NAPI bridge is *synchronous*.  Exposed functions
  * receive plain values and return plain values — no Promises cross
- * the boundary.  For inherently async operations like HTTP, the host
- * function must block until the result is ready (e.g. via execSync).
+ * the boundary.  Node's fetch() is async and returns a Promise, so it
+ * cannot be exposed directly.  For HTTP, we shell out to a sync
+ * subprocess (cross-platform via node child_process).
  *
  * Run:  bun examples/host-apis.ts
  */
@@ -26,42 +27,68 @@ import { execSync } from "node:child_process";
 
 const vm = new Vm();
 
-// ── 1. httpGet — synchronous HTTP via curl ──────────────────────────
-// Node's fetch() is async, but the bridge is sync.  We shell out to
-// curl for a truly synchronous HTTP GET.  This is fine for a demo;
-// in production you'd use a sync HTTP library or a worker-thread
-// bridge.
+// ── 1. hostFetch — synchronous HTTP via Node subprocess ─────────────
+// Node's fetch() is async, but the bridge is sync.  We run a tiny
+// Node script that does the fetch and prints the result as JSON,
+// then parse it back.  This is cross-platform (no curl dependency).
 
 vm.exposeFunction("hostFetch", (url: string) => {
   try {
-    const out = execSync(`curl -s -w "\\n%{http_code}" "${url}"`, {
+    const script = `
+      fetch("${url}")
+        .then(r => r.text().then(body => {
+          console.log(JSON.stringify({ status: r.status, body }));
+        }))
+        .catch(e => {
+          console.log(JSON.stringify({ error: e.message }));
+          process.exit(1);
+        });
+    `;
+    const out = execSync(`node -e "${script.replace(/"/g, '\\"')}"`, {
       encoding: "utf-8",
       timeout: 10_000,
     });
-    const lines = out.split("\n");
-    const statusCode = parseInt(lines.pop()!, 10);
-    const body = lines.join("\n");
-    return { status: statusCode, body };
+    const result = JSON.parse(out.trim());
+    if (result.error) throw new Error(result.error);
+    return result;
   } catch (err: any) {
     throw new Error(`hostFetch failed: ${err.message}`);
   }
 });
 
-// ── 2. httpPost — synchronous POST via curl ─────────────────────────
+// ── 2. hostPost — synchronous POST via Node subprocess ──────────────
 
 vm.exposeFunction(
   "hostPost",
   (url: string, data: string, contentType?: string) => {
     try {
       const ct = contentType ?? "application/json";
-      const out = execSync(
-        `curl -s -w "\\n%{http_code}" -X POST -H "Content-Type: ${ct}" -d '${data.replace(/'/g, "'\\''")}' "${url}"`,
-        { encoding: "utf-8", timeout: 10_000 }
-      );
-      const lines = out.split("\n");
-      const statusCode = parseInt(lines.pop()!, 10);
-      const body = lines.join("\n");
-      return { status: statusCode, body };
+      // Write data to a temp file to avoid escaping issues
+      const tmpFile = `/tmp/vm-post-${Date.now()}.json`;
+      writeFileSync(tmpFile, data, "utf-8");
+      const script = `
+        const fs = require("fs");
+        const body = fs.readFileSync("${tmpFile}", "utf-8");
+        fetch("${url}", {
+          method: "POST",
+          headers: { "Content-Type": "${ct}" },
+          body
+        })
+          .then(r => r.text().then(t => {
+            console.log(JSON.stringify({ status: r.status, body: t }));
+          }))
+          .catch(e => {
+            console.log(JSON.stringify({ error: e.message }));
+            process.exit(1);
+          });
+      `;
+      const out = execSync(`node -e "${script.replace(/"/g, '\\"')}"`, {
+        encoding: "utf-8",
+        timeout: 10_000,
+      });
+      const result = JSON.parse(out.trim());
+      if (result.error) throw new Error(result.error);
+      return result;
     } catch (err: any) {
       throw new Error(`hostPost failed: ${err.message}`);
     }

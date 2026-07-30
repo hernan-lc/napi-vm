@@ -4,6 +4,9 @@ use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ptr;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 use napi::bindgen_prelude::Unknown;
 use napi::{Env, JsValue, sys};
@@ -14,7 +17,7 @@ use crate::host::HostBridge;
 use crate::interpreter::Interpreter;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use crate::value::Value;
+use crate::value::{SendValue, Value};
 
 /// Maximum nesting `to_string` renders before abbreviating. Together with
 /// the visited set this makes stringifying any guest structure total:
@@ -83,7 +86,7 @@ pub fn to_string(val: &Value) -> String {
             Value::HostFunction { name, .. } => format!("[Function: {} [native]]", name),
             Value::GlobalObject => "[object global]".to_string(),
             Value::Class(c) => format!("[class {}]", c.name),
-            Value::Promise { .. } => "[object Promise]".to_string(),
+            Value::Promise { .. } | Value::HostPending { .. } => "[object Promise]".to_string(),
             Value::Generator { .. } => "[object Generator]".to_string(),
             Value::Symbol(s) => format!("Symbol({})", s),
             Value::Error(e) => e.message.clone(),
@@ -354,12 +357,64 @@ fn from_napi_d(env: sys::napi_env, raw: sys::napi_value, depth: usize) -> Result
     }
 }
 
+/// Wrapper asserting a raw pointer can be sent across threads. Used by
+/// `run_async` to move the interpreter pointer and TSFN handle to the VM
+/// thread. Safety: the channel/TSFN protocol guarantees mutual exclusion —
+/// only one thread accesses the pointed-to data at a time.
+///
+/// Stores the pointer as `usize` to sidestep the compiler's auto-trait
+/// analysis on raw pointers (which are `!Send` by default).
+#[derive(Clone, Copy)]
+struct SendPtr(usize);
+unsafe impl Send for SendPtr {}
+
+// ---------------------------------------------------------------------------
+// Async host bridge infrastructure
+//
+// Async host functions (registered via `exposeAsyncFunction`) are dispatched
+// to the Node.js main thread via a ThreadsafeFunction. The VM thread parks
+// on a channel until the main thread resolves the JS Promise and sends the
+// result back.
+// ---------------------------------------------------------------------------
+
+/// Message sent from the VM thread to the main thread via the TSFN.
+/// Boxed and passed as the `data` pointer in `napi_call_threadsafe_function`.
+struct AsyncCallMsg {
+    /// Persisted reference to the JS async function.
+    func_ref: sys::napi_ref,
+    /// Marshalled VM arguments (wrapped for Send safety).
+    args: Vec<SendValue>,
+    /// Channel to send the resolved value back to the VM thread.
+    reply_tx: mpsc::Sender<Result<SendValue, String>>,
+}
+
+/// Shared async state accessible from both the VM thread and the main thread.
+struct AsyncState {
+    /// ThreadsafeFunction handle for dispatching calls to the main thread.
+    tsfn: sys::napi_threadsafe_function,
+    /// Monotonic counter for pending async call ids.
+    next_pending: AtomicUsize,
+    /// Pending async calls: the VM thread stores a receiver here and blocks
+    /// on it in `await_host`; the main thread sends the result through the
+    /// corresponding sender (carried in `AsyncCallMsg`).
+    pending: Mutex<HashMap<usize, mpsc::Receiver<Result<SendValue, String>>>>,
+}
+
 /// Bridge that stores persisted references to Node.js functions and invokes
-/// them synchronously on behalf of the VM.
+/// them synchronously (or asynchronously) on behalf of the VM.
 struct NapiHostBridge {
     env: sys::napi_env,
     funcs: RefCell<HashMap<usize, sys::napi_ref>>,
+    /// Functions registered via `exposeAsyncFunction`.
+    async_funcs: RefCell<HashMap<usize, sys::napi_ref>>,
     next_id: Cell<usize>,
+    /// Shared async dispatch state. `None` until the first async function is
+    /// registered (at which point the TSFN is created).
+    async_state: Mutex<Option<Arc<AsyncState>>>,
+    /// Set to `true` while `runAsync` is executing on the VM thread. When
+    /// true, `call_host` routes through the TSFN instead of touching
+    /// `napi_env` directly (which is only valid on the main thread).
+    on_vm_thread: AtomicUsize,
 }
 
 impl NapiHostBridge {
@@ -367,7 +422,10 @@ impl NapiHostBridge {
         Self {
             env,
             funcs: RefCell::new(HashMap::new()),
+            async_funcs: RefCell::new(HashMap::new()),
             next_id: Cell::new(0),
+            async_state: Mutex::new(None),
+            on_vm_thread: AtomicUsize::new(0),
         }
     }
 
@@ -381,10 +439,111 @@ impl NapiHostBridge {
         self.funcs.borrow_mut().insert(id, r);
         Ok(id)
     }
+
+    /// Register an async JS function. Creates the TSFN on first use.
+    fn register_async(&self, func: sys::napi_value) -> Result<usize, VmErr> {
+        let mut r: sys::napi_ref = ptr::null_mut();
+        chk(unsafe { sys::napi_create_reference(self.env, func, 1, &mut r) })?;
+        let id = self.next_id.get();
+        self.next_id.set(id + 1);
+        self.async_funcs.borrow_mut().insert(id, r);
+
+        // Ensure the TSFN exists.
+        let mut guard = self.async_state.lock().unwrap();
+        if guard.is_none() {
+            let tsfn = self.create_tsfn()?;
+            *guard = Some(Arc::new(AsyncState {
+                tsfn,
+                next_pending: AtomicUsize::new(0),
+                pending: Mutex::new(HashMap::new()),
+            }));
+        }
+        Ok(id)
+    }
+
+    /// Create the ThreadsafeFunction used to dispatch async calls to the main
+    /// thread. The callback (`tsfn_callback`) runs on the main thread with a
+    /// valid `napi_env`.
+    fn create_tsfn(&self) -> Result<sys::napi_threadsafe_function, VmErr> {
+        let env = self.env;
+        let mut tsfn: sys::napi_threadsafe_function = ptr::null_mut();
+        let name = make_str(env, "vm-async-dispatch")?;
+        chk(unsafe {
+            sys::napi_create_threadsafe_function(
+                env,
+                ptr::null_mut(), // no JS callback function
+                ptr::null_mut(), // no async_resource
+                name,
+                0,     // max_queue_size (0 = unlimited)
+                1,     // initial_thread_count
+                ptr::null_mut(), // thread_finalize_data
+                None,  // thread_finalize_cb
+                ptr::null_mut(), // context
+                Some(tsfn_callback),
+                &mut tsfn,
+            )
+        })?;
+        Ok(tsfn)
+    }
+
+    /// Get a clone of the async state, if initialized.
+    fn get_async_state(&self) -> Option<Arc<AsyncState>> {
+        self.async_state.lock().unwrap().clone()
+    }
+
+    /// Dispatch a host function call through the TSFN and block until the
+    /// main thread resolves it. Used when running on the VM thread (inside
+    /// `runAsync`) where direct `napi_env` access is not possible.
+    fn call_via_tsfn(
+        &self,
+        state: Arc<AsyncState>,
+        id: usize,
+        args: Vec<Value>,
+        func_map: &RefCell<HashMap<usize, sys::napi_ref>>,
+    ) -> Result<Value, VmErr> {
+        let func_ref = *func_map
+            .borrow()
+            .get(&id)
+            .ok_or_else(|| VmErr::Msg(format!("host function #{} is not registered", id)))?;
+
+        let (reply_tx, reply_rx) = mpsc::channel::<Result<SendValue, String>>();
+        let msg = Box::new(AsyncCallMsg {
+            func_ref,
+            args: args.into_iter().map(SendValue).collect(),
+            reply_tx,
+        });
+        let status = unsafe {
+            sys::napi_call_threadsafe_function(
+                state.tsfn,
+                Box::into_raw(msg) as *mut std::ffi::c_void,
+                sys::ThreadsafeFunctionCallMode::nonblocking,
+            )
+        };
+        if status != sys::Status::napi_ok {
+            return Err(VmErr::Msg(format!(
+                "failed to dispatch host call (status {})",
+                status
+            )));
+        }
+        match reply_rx.recv() {
+            Ok(Ok(SendValue(v))) => Ok(v),
+            Ok(Err(msg)) => Err(VmErr::Msg(format!("Error: {}", msg))),
+            Err(_) => Err(VmErr::Msg("host call channel closed".to_string())),
+        }
+    }
 }
 
 impl HostBridge for NapiHostBridge {
     fn call_host(&self, id: usize, args: Vec<Value>) -> Result<Value, VmErr> {
+        // When running on the VM thread (inside `runAsync`), we cannot touch
+        // `napi_env` directly — it's bound to the main thread. Route through
+        // the TSFN + channel instead.
+        if self.on_vm_thread.load(Ordering::Acquire) != 0 {
+            if let Some(state) = self.get_async_state() {
+                return self.call_via_tsfn(state, id, args, &self.funcs);
+            }
+        }
+
         let env = self.env;
         let func_ref = *self
             .funcs
@@ -406,8 +565,6 @@ impl HostBridge for NapiHostBridge {
             sys::napi_call_function(env, recv, func, argv.len(), argv.as_ptr(), &mut result)
         };
         if status != sys::Status::napi_ok {
-            // The JS function threw: surface the exception as a VM throw so
-            // `try/catch` inside the VM can handle it.
             let mut exc = ptr::null_mut();
             unsafe { sys::napi_get_and_clear_last_exception(env, &mut exc) };
             if !exc.is_null() {
@@ -419,6 +576,306 @@ impl HostBridge for NapiHostBridge {
             )));
         }
         from_napi(env, result)
+    }
+
+    fn is_async_fn(&self, id: usize) -> bool {
+        self.async_funcs.borrow().contains_key(&id)
+    }
+
+    fn call_host_async(&self, id: usize, args: Vec<Value>) -> Result<Value, VmErr> {
+        let state = self.get_async_state().ok_or_else(|| {
+            VmErr::Msg("async bridge not initialized".to_string())
+        })?;
+        let func_ref = *self
+            .async_funcs
+            .borrow()
+            .get(&id)
+            .ok_or_else(|| VmErr::Msg(format!("async host function #{} not registered", id)))?;
+
+        // Create a channel for the result.
+        let (reply_tx, reply_rx) = mpsc::channel::<Result<SendValue, String>>();
+
+        // Assign a pending id and store the receiver.
+        let pending_id = state.next_pending.fetch_add(1, Ordering::SeqCst);
+        state.pending.lock().unwrap().insert(pending_id, reply_rx);
+
+        // Package the call and dispatch to the main thread via TSFN.
+        let msg = Box::new(AsyncCallMsg {
+            func_ref,
+            args: args.into_iter().map(SendValue).collect(),
+            reply_tx,
+        });
+        let status = unsafe {
+            sys::napi_call_threadsafe_function(
+                state.tsfn,
+                Box::into_raw(msg) as *mut std::ffi::c_void,
+                sys::ThreadsafeFunctionCallMode::nonblocking,
+            )
+        };
+        if status != sys::Status::napi_ok {
+            state.pending.lock().unwrap().remove(&pending_id);
+            return Err(VmErr::Msg(format!(
+                "failed to dispatch async call (status {})",
+                status
+            )));
+        }
+
+        Ok(Value::HostPending { id: pending_id })
+    }
+
+    fn await_host(&self, pending_id: usize) -> Result<Value, VmErr> {
+        let state = self.get_async_state().ok_or_else(|| {
+            VmErr::Msg("async bridge not initialized".to_string())
+        })?;
+        // Take the receiver out of the pending map and block on it.
+        let rx = state.pending.lock().unwrap().remove(&pending_id).ok_or_else(|| {
+            VmErr::Msg(format!("no pending async call #{}", pending_id))
+        })?;
+        match rx.recv() {
+            Ok(Ok(SendValue(v))) => Ok(v),
+            Ok(Err(msg)) => Err(VmErr::Msg(format!("Error: {}", msg))),
+            Err(_) => Err(VmErr::Msg("async host call channel closed".to_string())),
+        }
+    }
+}
+
+/// TSFN callback — runs on the **main thread** with a valid `env`.
+/// Receives an `AsyncCallMsg`, calls the JS async function, and wires the
+/// resulting Promise's settlement back through the reply channel.
+extern "C" fn tsfn_callback(
+    env: sys::napi_env,
+    _js_callback: sys::napi_value,
+    _context: *mut std::ffi::c_void,
+    data: *mut std::ffi::c_void,
+) {
+    if data.is_null() {
+        return;
+    }
+    let msg = unsafe { Box::from_raw(data as *mut AsyncCallMsg) };
+
+    // Resolve the function reference.
+    let mut func = ptr::null_mut();
+    let status = unsafe { sys::napi_get_reference_value(env, msg.func_ref, &mut func) };
+    if status != sys::Status::napi_ok || func.is_null() {
+        let _ = msg.reply_tx.send(Err("failed to resolve async function ref".into()));
+        return;
+    }
+
+    // Marshal VM args → napi values.
+    let mut argv = Vec::with_capacity(msg.args.len());
+    for sv in &msg.args {
+        match to_napi(env, &sv.0) {
+            Ok(v) => argv.push(v),
+            Err(e) => {
+                let _ = msg.reply_tx.send(Err(format!("marshal error: {}", e)));
+                return;
+            }
+        }
+    }
+
+    // Call the async function.
+    let mut recv = ptr::null_mut();
+    unsafe { sys::napi_get_global(env, &mut recv) };
+    let mut result = ptr::null_mut();
+    let status = unsafe {
+        sys::napi_call_function(env, recv, func, argv.len(), argv.as_ptr(), &mut result)
+    };
+    if status != sys::Status::napi_ok {
+        let mut exc = ptr::null_mut();
+        unsafe { sys::napi_get_and_clear_last_exception(env, &mut exc) };
+        let err_msg = if !exc.is_null() {
+            match from_napi(env, exc) {
+                Ok(Value::String(ref s)) => s.clone(),
+                Ok(ref v) => to_string(v),
+                Err(_) => "unknown error".into(),
+            }
+        } else {
+            format!("async function call failed (status {})", status)
+        };
+        let _ = msg.reply_tx.send(Err(err_msg));
+        return;
+    }
+
+    // The result should be a Promise (thenable). Attach .then/.catch to
+    // capture settlement.
+    let reply_tx = msg.reply_tx;
+
+    // Check if result is a Promise (has a .then method).
+    let mut then_val = ptr::null_mut();
+    let then_key = unsafe {
+        let mut k = ptr::null_mut();
+        sys::napi_create_string_utf8(env, b"then\0".as_ptr() as *const c_char, 4, &mut k);
+        k
+    };
+    unsafe { sys::napi_get_property(env, result, then_key, &mut then_val) };
+
+    let mut then_type: sys::napi_valuetype = 0;
+    unsafe { sys::napi_typeof(env, then_val, &mut then_type) };
+
+    if then_type != sys::ValueType::napi_function {
+        // Not a thenable — resolve immediately with the value.
+        match from_napi(env, result) {
+            Ok(v) => { let _ = reply_tx.send(Ok(SendValue(v))); }
+            Err(e) => { let _ = reply_tx.send(Err(e.to_string())); }
+        }
+        return;
+    }
+
+    // Create resolve/reject callbacks. Each gets a clone of the sender so
+    // exactly one settlement path delivers the result. Resolve sends
+    // `Ok(value)`, reject sends `Err(message)` so the VM can re-throw.
+    let resolve_tx = Box::into_raw(Box::new(reply_tx.clone()));
+    let reject_tx = Box::into_raw(Box::new(reply_tx));
+
+    let mut resolve_fn = ptr::null_mut();
+    unsafe {
+        sys::napi_create_function(
+            env,
+            b"resolve\0".as_ptr() as *const c_char,
+            7,
+            Some(promise_resolve_cb),
+            resolve_tx as *mut std::ffi::c_void,
+            &mut resolve_fn,
+        );
+    }
+
+    let mut reject_fn = ptr::null_mut();
+    unsafe {
+        sys::napi_create_function(
+            env,
+            b"reject\0".as_ptr() as *const c_char,
+            6,
+            Some(promise_reject_cb),
+            reject_tx as *mut std::ffi::c_void,
+            &mut reject_fn,
+        );
+    }
+
+    // Call promise.then(resolve, reject).
+    let mut then_argv = [resolve_fn, reject_fn];
+    let mut _then_result = ptr::null_mut();
+    unsafe {
+        sys::napi_call_function(
+            env,
+            result, // this = the promise
+            then_val,
+            2,
+            then_argv.as_mut_ptr(),
+            &mut _then_result,
+        );
+    }
+}
+
+/// Promise resolve callback. Marshals the fulfilled value and sends
+/// `Ok(value)` to the VM thread.
+extern "C" fn promise_resolve_cb(
+    env: sys::napi_env,
+    info: sys::napi_callback_info,
+) -> sys::napi_value {
+    let mut argc: usize = 1;
+    let mut argv = [ptr::null_mut(); 1];
+    let mut data = ptr::null_mut();
+    unsafe {
+        sys::napi_get_cb_info(env, info, &mut argc, argv.as_mut_ptr(), ptr::null_mut(), &mut data);
+    }
+    if data.is_null() {
+        return ptr::null_mut();
+    }
+    let reply_tx = unsafe { Box::from_raw(data as *mut mpsc::Sender<Result<SendValue, String>>) };
+
+    let value = if argc > 0 && !argv[0].is_null() {
+        match from_napi(env, argv[0]) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = reply_tx.send(Err(format!("marshal error in resolve: {}", e)));
+                return ptr::null_mut();
+            }
+        }
+    } else {
+        Value::Undefined
+    };
+
+    let _ = reply_tx.send(Ok(SendValue(value)));
+    ptr::null_mut()
+}
+
+/// Promise reject callback. Extracts the error message from the rejection
+/// reason and sends `Err(message)` to the VM thread, which re-throws it.
+extern "C" fn promise_reject_cb(
+    env: sys::napi_env,
+    info: sys::napi_callback_info,
+) -> sys::napi_value {
+    let mut argc: usize = 1;
+    let mut argv = [ptr::null_mut(); 1];
+    let mut data = ptr::null_mut();
+    unsafe {
+        sys::napi_get_cb_info(env, info, &mut argc, argv.as_mut_ptr(), ptr::null_mut(), &mut data);
+    }
+    if data.is_null() {
+        return ptr::null_mut();
+    }
+    let reply_tx = unsafe { Box::from_raw(data as *mut mpsc::Sender<Result<SendValue, String>>) };
+
+    // Extract a useful error message from the rejection reason.
+    let msg = if argc > 0 && !argv[0].is_null() {
+        // Try to get .message property (Error objects).
+        let message = get_named_str(env, argv[0], "message").unwrap_or_default();
+        if !message.is_empty() {
+            message
+        } else {
+            match from_napi(env, argv[0]) {
+                Ok(ref v) => to_string(v),
+                Err(_) => "unknown rejection".into(),
+            }
+        }
+    } else {
+        "unknown rejection".into()
+    };
+
+    let _ = reply_tx.send(Err(msg));
+    ptr::null_mut()
+}
+
+/// Completion callback for `run_async`. Runs on the main thread when the VM
+/// thread finishes. Resolves or rejects the deferred (Promise) returned to
+/// the caller. The `context` pointer is a raw `napi_deferred`.
+extern "C" fn run_async_done_cb(
+    env: sys::napi_env,
+    _js_callback: sys::napi_value,
+    context: *mut std::ffi::c_void,
+    data: *mut std::ffi::c_void,
+) {
+    if data.is_null() || context.is_null() {
+        return;
+    }
+    let result = unsafe { *Box::from_raw(data as *mut Result<String, String>) };
+    let deferred = context as sys::napi_deferred;
+
+    unsafe {
+        match result {
+            Ok(val) => {
+                let mut js_str = ptr::null_mut();
+                sys::napi_create_string_utf8(
+                    env,
+                    val.as_ptr() as *const c_char,
+                    val.len() as isize,
+                    &mut js_str,
+                );
+                sys::napi_resolve_deferred(env, deferred, js_str);
+            }
+            Err(msg) => {
+                let mut js_err = ptr::null_mut();
+                let mut js_msg = ptr::null_mut();
+                sys::napi_create_string_utf8(
+                    env,
+                    msg.as_ptr() as *const c_char,
+                    msg.len() as isize,
+                    &mut js_msg,
+                );
+                sys::napi_create_error(env, ptr::null_mut(), js_msg, &mut js_err);
+                sys::napi_reject_deferred(env, deferred, js_err);
+            }
+        }
     }
 }
 
@@ -566,6 +1023,157 @@ impl VM {
         };
         self.interp.global.borrow_mut().set(&name, host_fn);
         Ok(())
+    }
+
+    /// Expose an async Node function to the VM. Unlike `exposeFunction`, the
+    /// function may return a Promise. VM code must `await` the call (use
+    /// `runAsync` to execute code that awaits). The VM thread parks until the
+    /// Promise settles on the Node event loop.
+    #[napi]
+    pub fn expose_async_function(
+        &mut self,
+        env: Env,
+        name: String,
+        func: Unknown,
+    ) -> napi::Result<()> {
+        let raw = func.raw();
+        let mut t: sys::napi_valuetype = 0;
+        unsafe { sys::napi_typeof(env.raw(), raw, &mut t) };
+        if t != sys::ValueType::napi_function {
+            return Err(napi::Error::from_reason(format!(
+                "exposeAsyncFunction: '{}' must be a function",
+                name
+            )));
+        }
+        let bridge = self.ensure_bridge(env);
+        let id = bridge
+            .register_async(raw)
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let host_fn = Value::HostFunction {
+            name: name.as_str().into(),
+            id,
+        };
+        self.interp.global.borrow_mut().set(&name, host_fn);
+        Ok(())
+    }
+
+    /// Execute code that may `await` async host functions. Returns a Promise
+    /// that resolves with the stringified result once the VM finishes.
+    ///
+    /// Internally, the VM runs on a dedicated thread so that `await` can park
+    /// without blocking the Node event loop. Async host calls are dispatched
+    /// back to the main thread via a ThreadsafeFunction.
+    #[napi]
+    pub fn run_async(&mut self, env: Env, source: String) -> napi::Result<Unknown<'_>> {
+        let raw_env = env.raw();
+
+        // Create a raw deferred (Promise) to return to the caller.
+        let mut deferred: sys::napi_deferred = ptr::null_mut();
+        let mut promise = ptr::null_mut();
+        chk(unsafe { sys::napi_create_promise(raw_env, &mut deferred, &mut promise) })
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+        // Create a completion TSFN: the VM thread calls this when done, and
+        // the callback (on the main thread) resolves/rejects the deferred.
+        // The deferred handle is passed as the TSFN context pointer.
+        let mut done_tsfn: sys::napi_threadsafe_function = ptr::null_mut();
+        let tsfn_name = make_str(raw_env, "vm-run-async-done")
+            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let status = unsafe {
+            sys::napi_create_threadsafe_function(
+                raw_env,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                tsfn_name,
+                0,
+                1,
+                ptr::null_mut(),
+                None,
+                deferred as *mut std::ffi::c_void,
+                Some(run_async_done_cb),
+                &mut done_tsfn,
+            )
+        };
+        if status != sys::Status::napi_ok {
+            return Err(napi::Error::from_reason("failed to create completion TSFN"));
+        }
+
+        // Safety: the VM thread has exclusive access to the interpreter for
+        // the duration of execution. The main thread only services async
+        // bridge callbacks (which touch the TSFN + channels, not the
+        // interpreter). The caller must not call run/runAsync concurrently.
+        let interp_ptr = SendPtr(&mut self.interp as *mut Interpreter as usize);
+        let tsfn_ptr = SendPtr(done_tsfn as usize);
+
+        // Signal the bridge that host calls must go through the TSFN.
+        // We share the atomic flag via a raw pointer (same SendPtr trick)
+        // since Rc<NapiHostBridge> is not Send.
+        let flag_ptr = if let Some(b) = self.bridge.as_ref() {
+            b.on_vm_thread.store(1, Ordering::Release);
+            SendPtr(&b.on_vm_thread as *const AtomicUsize as usize)
+        } else {
+            SendPtr(0usize)
+        };
+
+        let source_clone = source.clone();
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || {
+                let interp = unsafe { &mut *(interp_ptr.0 as *mut Interpreter) };
+                interp.set_source(&source_clone);
+                interp.begin_execution();
+                let mut lex = Lexer::new(&source_clone);
+                let toks = lex.tokenize_with_spans();
+                let mut parser = Parser::new_with_spans(toks);
+                let stmts = parser.parse();
+
+                let result: Result<String, String> = if parser.depth_exceeded {
+                    Err("RangeError: Maximum parse depth exceeded".to_string())
+                } else {
+                    match interp.run(&stmts) {
+                        Ok(v) => {
+                            // Unwrap settled promises: `runAsync` callers
+                            // expect the resolved value, not `[object Promise]`.
+                            match &v {
+                                Value::Promise { state: crate::value::PromiseState::Fulfilled, value } => {
+                                    let inner = value.as_ref().map(|b| (**b).clone()).unwrap_or(Value::Undefined);
+                                    Ok(to_string(&inner))
+                                }
+                                Value::Promise { state: crate::value::PromiseState::Rejected, value } => {
+                                    let reason = value.as_ref().map(|b| (**b).clone()).unwrap_or(Value::Undefined);
+                                    Err(to_string(&reason))
+                                }
+                                _ => Ok(to_string(&v)),
+                            }
+                        }
+                        Err(e) => Err(interp.enrich_error(e, None).to_string()),
+                    }
+                };
+
+                // Clear the VM-thread flag so subsequent sync `run()` calls
+                // use direct napi_env access again.
+                if flag_ptr.0 != 0 {
+                    unsafe { &*(flag_ptr.0 as *const AtomicUsize) }.store(0, Ordering::Release);
+                }
+
+                // Notify the main thread to resolve the deferred.
+                let tsfn = tsfn_ptr.0 as sys::napi_threadsafe_function;
+                let msg = Box::new(result);
+                unsafe {
+                    sys::napi_call_threadsafe_function(
+                        tsfn,
+                        Box::into_raw(msg) as *mut std::ffi::c_void,
+                        sys::ThreadsafeFunctionCallMode::nonblocking,
+                    );
+                    sys::napi_release_threadsafe_function(
+                        tsfn,
+                        sys::ThreadsafeFunctionReleaseMode::release,
+                    );
+                }
+            })
+            .map_err(|e| napi::Error::from_reason(format!("failed to spawn VM thread: {}", e)))?;
+
+        Ok(unsafe { Unknown::from_raw_unchecked(raw_env, promise) })
     }
 
     /// Remove a previously registered module so its exports are no longer

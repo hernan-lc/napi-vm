@@ -49,30 +49,55 @@ console.log(debugParse("const x = 1;"));
 
 ### Host bridge
 
-A VM is fully isolated by default. The bridge methods open a controlled,
-synchronous channel between Node and the VM, marshalling real structured
-values (numbers, strings, booleans, arrays, plain objects) in both directions.
-Exposed values land on the global scope, reachable as bare identifiers and via
-`window` / `globalThis` / `self` (all three alias the one global object).
+A VM is fully isolated by default. Use `exposeFunction` to selectively open
+controlled channels to the host. Exposed values land on the global scope,
+reachable as bare identifiers and via `window` / `globalThis` / `self`.
+
+#### Sync functions
+
+`exposeFunction` exposes a synchronous Node function. Arguments and the
+return value are marshalled across the boundary; thrown errors propagate
+into the VM as catchable exceptions.
 
 ```javascript
+const { Vm } = require('./index.js');
 const vm = new Vm();
 
-// Node -> VM: expose a structured value and a function.
-vm.setGlobal("config", { retries: 3 });
 vm.exposeFunction("add", (a, b) => a + b);
-vm.run("add(config.retries, 4);"); // "7"
-vm.run("window.add(1, 2);");       // "3"  (same function, via the global alias)
-
-// A Node function that throws is catchable inside the VM.
-vm.exposeFunction("boom", () => { throw new Error("nope"); });
-vm.run("try { boom(); } catch (e) { e.message; }"); // "nope"
-
-// VM -> Node: call a function defined inside the VM. Arguments are passed as
-// a single array; the return value comes back as a live JS value.
-vm.run("function point(x, y) { return { x, y }; }");
-vm.callFunction("point", [5, 6]); // { x: 5, y: 6 }
+console.log(vm.run("add(1, 2);")); // "3"
 ```
+
+#### Async functions
+
+`exposeAsyncFunction` + `runAsync` bridge Node's async world into the VM.
+The VM thread parks at `await` while the Node event loop resolves the real
+Promise — no subprocess spawning, no serialization overhead.
+
+```javascript
+const { Vm } = require('./index.js');
+const vm = new Vm();
+
+// Expose native fetch — no subprocess needed.
+vm.exposeAsyncFunction("fetch", async (url) => {
+  const res = await fetch(url);
+  return { status: res.status, body: await res.text() };
+});
+
+// runAsync returns a Promise; the VM can await host functions.
+const result = await vm.runAsync(`
+  async function main() {
+    var res = await fetch("https://jsonplaceholder.typicode.com/posts/1");
+    var data = JSON.parse(res.body);
+    return JSON.stringify({ title: data.title, status: res.status });
+  }
+  main();
+`);
+console.log(result); // { title: "sunt aut...", status: 200 }
+```
+
+Sync and async exposed functions coexist: a `runAsync` call can invoke both
+`exposeFunction` and `exposeAsyncFunction` bindings. See
+[`examples/async-bridge.ts`](examples/async-bridge.ts) for a full demo.
 
 ### Hot reload
 
@@ -100,10 +125,11 @@ because they live on the bus, not in the VM. The VM only ever sees a single
 duplicate-listener window. See [`examples/hotreload.ts`](examples/hotreload.ts)
 for a complete working demo (run with `bun examples/hotreload.ts`).
 
-> **Event-loop note:** the interpreter is synchronous — `vm.run()` blocks the
-> Node event loop until the computation finishes. A `setTimeout(0)` scheduled
-> before a heavy VM call will not fire until `vm.run()` returns. The example
-> includes a demo that makes this visible.
+> **Event-loop note:** `vm.run()` is synchronous — it blocks the Node event
+> loop until the computation finishes. A `setTimeout(0)` scheduled before a
+> heavy VM call will not fire until `vm.run()` returns. Use `vm.runAsync()`
+> for non-blocking execution: the VM runs on a dedicated thread and async
+> host calls are dispatched back to the event loop via a ThreadsafeFunction.
 
 ## API
 
@@ -113,7 +139,9 @@ for a complete working demo (run with `bun examples/hotreload.ts`).
 | `new Vm()` | Create a new isolated VM instance |
 | `vm.run(code)` | Execute code within a VM instance (state persists across calls) |
 | `vm.setGlobal(name, value)` | Define a global from a structured Node value (reachable as `name` and `window.name`) |
-| `vm.exposeFunction(name, fn)` | Expose a Node function to the VM as a callable global; throws propagate into the VM |
+| `vm.exposeFunction(name, fn)` | Expose a sync Node function to the VM as a callable global; throws propagate into the VM |
+| `vm.exposeAsyncFunction(name, fn)` | Expose an async Node function; VM must `await` the call (use with `runAsync`) |
+| `vm.runAsync(code)` | Execute code on a VM thread; returns a `Promise<string>` that resolves when done. Supports `await` on async host functions |
 | `vm.callFunction(name, args)` | Call a VM-defined global function; `args` is an array, returns a live JS value |
 | `vm.setLoopLimit(n)` | Cap loop iterations per execution (default 100M); exceeding it throws a catchable `RangeError` |
 | `vm.getGlobal(name)` | Read a global, stringified |
@@ -340,7 +368,7 @@ Implemented as native functions (`fn(&mut Interpreter, Value /*this*/, Vec<Value
 - ✅ Module exports reaching importers — `export const`/`function`/`class`/`default` wire through `import { }`, `import * as`, and default imports
 - ✅ Generators — `function*`/`yield` with true mid-body suspension (thread-based): infinite generators work, `next(val)` sends values into `yield`, yields inside loops/conditionals/try-finally all behave correctly, `for...of` drives generators, and generators are their own iterators (`[Symbol.iterator]() === this`)
 - ✅ Symbols & iterator protocol — `Symbol(desc)`, well-known symbols (`Symbol.iterator`, `Symbol.toStringTag`, `Symbol.hasInstance`, `Symbol.asyncIterator`, …), `Symbol.for`/`Symbol.keyFor` registry, computed `[Symbol.iterator]()` methods in object literals, and `for...of` over any object implementing the iterator protocol (arrays, strings, generators, and custom iterables)
-- ✅ Host bridge (Node ↔ VM) — `setGlobal`/`exposeFunction`/`callFunction` marshal structured values across the NAPI boundary over a stable raw `napi_sys` ABI (the VM stays single-threaded; exposed Node functions are persisted `napi_ref`s invoked synchronously, and thrown errors cross back as catchable exceptions). Exposed globals live on the one global scope, which `window`/`globalThis`/`self` all alias (`Value::GlobalObject`), so `window.add(1, 2)` and bare `add(1, 2)` are the same call. Not yet covered: passing a Node function *into* the VM as a first-class value, async/`postMessage`-style messaging, and a full `EventTarget`.
+- ✅ Host bridge (Node ↔ VM) — `setGlobal`/`exposeFunction`/`exposeAsyncFunction`/`callFunction`/`runAsync` marshal structured values across the NAPI boundary over a stable raw `napi_sys` ABI. Sync exposed functions are persisted `napi_ref`s invoked directly; async exposed functions dispatch via a ThreadsafeFunction — the VM thread parks at `await` while the Node event loop resolves the real Promise, then resumes the VM with the fulfilled value (or re-throws a rejection). Exposed globals live on the one global scope, which `window`/`globalThis`/`self` all alias (`Value::GlobalObject`), so `window.add(1, 2)` and bare `add(1, 2)` are the same call. Not yet covered: passing a Node function *into* the VM as a first-class value, streaming responses, and a full `EventTarget`.
 
 ## License
 

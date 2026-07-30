@@ -26,6 +26,22 @@ export declare class Vm {
    */
   exposeFunction(name: string, func: unknown): void
   /**
+   * Expose an async Node function to the VM. Unlike `exposeFunction`, the
+   * function may return a Promise. VM code must `await` the call (use
+   * `runAsync` to execute code that awaits). The VM thread parks until the
+   * Promise settles on the Node event loop.
+   */
+  exposeAsyncFunction(name: string, func: unknown): void
+  /**
+   * Execute code that may `await` async host functions. Returns a Promise
+   * that resolves with the stringified result once the VM finishes.
+   *
+   * Internally, the VM runs on a dedicated thread so that `await` can park
+   * without blocking the Node event loop. Async host calls are dispatched
+   * back to the main thread via a ThreadsafeFunction.
+   */
+  runAsync(source: string): unknown
+  /**
    * Remove a previously registered module so its exports are no longer
    * importable. Essential for hot-reload: call this before re-registering
    * a changed module to avoid stale export state.
