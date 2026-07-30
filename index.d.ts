@@ -82,45 +82,4 @@ export declare function createVm(): Vm
 
 export declare function debugParse(source: string): string
 
-/** ANSI sequence to disable mouse tracking (reverse of `mouse_enable_seq`). */
-export declare function mouseDisableSeq(): string
-
-/**
- * ANSI sequence to enable button-event mouse tracking in SGR mode.
- *
- * `1000` = report button press events; `1006` = SGR extended encoding
- * (gives pixel-accurate coordinates and distinguishes press from release).
- */
-export declare function mouseEnableSeq(): string
-
-/** A parsed SGR mouse event, returned to JS as a plain object. */
-export interface MouseEvent {
-  /** `"press"`, `"release"`, `"move"`, `"scroll-up"`, or `"scroll-down"`. */
-  kind: string
-  /** 0-based column. */
-  x: number
-  /** 0-based row. */
-  y: number
-  /**
-   * Button index: 0 = left, 1 = middle, 2 = right.
-   * Always 0 for scroll events.
-   */
-  button: number
-  shift: boolean
-  alt: boolean
-  ctrl: boolean
-}
-
-/**
- * Parse an SGR-encoded mouse event from raw stdin bytes.
- *
- * SGR format (mode 1006):
- *   press / move:  `\x1b[<Cb;Cx;CyM`
- *   release:       `\x1b[<Cb;Cx;Cym`
- *
- * Returns `None` when the buffer is not a valid SGR mouse sequence, so
- * callers can fall through to keyboard handling.
- */
-export declare function parseMouseEvent(buf: Buffer): MouseEvent | null
-
 export declare function runCode(source: string): string

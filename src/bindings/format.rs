@@ -118,12 +118,21 @@ pub fn colors_enabled() -> bool {
 /// Applies ANSI SGR styles around rendered tokens. Every method is a no-op
 /// when `enabled` is false, so the same rendering path serves both TTY and
 /// piped/redirected output without branching at each call site.
-struct Painter {
+///
+/// `pub(crate)` so the native inspector (`crate::inspector`) renders tokens
+/// with the exact same palette as `console.dir`.
+pub(crate) struct Painter {
     enabled: bool,
 }
 
 impl Painter {
     const PLAIN: Painter = Painter { enabled: false };
+
+    /// A painter that emits ANSI colors when `enabled`, plain text otherwise.
+    #[cfg(feature = "inspector")]
+    pub(crate) fn new(enabled: bool) -> Self {
+        Painter { enabled }
+    }
 
     fn wrap(&self, code: &str, s: String) -> String {
         if self.enabled {
@@ -133,32 +142,45 @@ impl Painter {
         }
     }
 
-    fn key(&self, s: String) -> String {
+    pub(crate) fn key(&self, s: String) -> String {
         self.wrap("36", s) // cyan
     }
-    fn string(&self, s: String) -> String {
+    pub(crate) fn string(&self, s: String) -> String {
         self.wrap("32", s) // green
     }
-    fn number(&self, s: String) -> String {
+    pub(crate) fn number(&self, s: String) -> String {
         self.wrap("34", s) // blue
     }
-    fn boolean(&self, s: String) -> String {
+    pub(crate) fn boolean(&self, s: String) -> String {
         self.wrap("33", s) // yellow
     }
-    fn symbol(&self, s: String) -> String {
+    pub(crate) fn symbol(&self, s: String) -> String {
         self.wrap("32", s) // green
     }
     /// `undefined`, functions, promises, depth/cycle markers.
-    fn special(&self, s: String) -> String {
+    pub(crate) fn special(&self, s: String) -> String {
         self.wrap("2;37", s) // dim gray
     }
-    fn null(&self, s: String) -> String {
+    pub(crate) fn null(&self, s: String) -> String {
         self.wrap("1;90", s) // bold gray
+    }
+    // ── UI chrome (used by the native inspector) ────────────────────
+    #[cfg(feature = "inspector")]
+    pub(crate) fn dim(&self, s: String) -> String {
+        self.wrap("2;37", s)
+    }
+    #[cfg(feature = "inspector")]
+    pub(crate) fn bold(&self, s: String) -> String {
+        self.wrap("1", s)
+    }
+    #[cfg(feature = "inspector")]
+    pub(crate) fn inverse(&self, s: String) -> String {
+        self.wrap("7", s)
     }
 }
 
 /// Quote and escape a string as a single-quoted JS literal.
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for ch in s.chars() {
@@ -176,7 +198,7 @@ fn quote(s: &str) -> String {
 }
 
 /// Render an object key bare when it is a valid JS identifier, quoted otherwise.
-fn key_str(k: &str) -> String {
+pub(crate) fn key_str(k: &str) -> String {
     let mut chars = k.chars();
     let valid = match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {

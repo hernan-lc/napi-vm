@@ -507,19 +507,31 @@ fn console_err(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
 /// `NO_COLOR`/`FORCE_COLOR`. Like Node, an options object overrides the
 /// auto-detection: `console.dir(obj, { colors: true })` forces ANSI codes
 /// even into a pipe, `{ colors: false }` suppresses them.
+///
+/// With the `inspector` feature, `{ inspect: true }` opens the native
+/// interactive foldable-tree inspector instead of the static dump (falling
+/// back to the static dump automatically when not in a TTY).
 fn console_dir(_interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let colors = match a.get(1) {
-        Some(Value::Object { props, .. }) => props
-            .borrow()
-            .iter()
-            .find(|(k, _)| k == "colors")
-            .and_then(|(_, v)| match v {
-                Value::Bool(b) => Some(*b),
-                _ => None,
-            }),
-        _ => None,
-    }
-    .unwrap_or_else(crate::bindings::colors_enabled);
+    // Read the boolean options out of a trailing options object, if present.
+    let (colors_opt, inspect_opt) = match a.get(1) {
+        Some(Value::Object { props, .. }) => {
+            let b = props.borrow();
+            let find = |name: &str| {
+                b.iter()
+                    .find(|(k, _)| k == name)
+                    .and_then(|(_, v)| match v {
+                        Value::Bool(x) => Some(*x),
+                        _ => None,
+                    })
+            };
+            (find("colors"), find("inspect"))
+        }
+        _ => (None, None),
+    };
+    let colors = colors_opt.unwrap_or_else(crate::bindings::colors_enabled);
+    // Consumed below only when the `inspector` feature is on; keep it live in
+    // both configurations so the non-feature build does not warn.
+    let _ = inspect_opt;
 
     // Only the values are printed; a trailing options object is not a value
     // to inspect (matches Node's `console.dir(obj, options)` signature).
@@ -528,6 +540,17 @@ fn console_dir(_interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Val
     } else {
         &a[..]
     };
+
+    #[cfg(feature = "inspector")]
+    if inspect_opt.unwrap_or(false) {
+        let mut cfg = crate::inspector::config::current();
+        cfg.colors = Some(colors);
+        for v in values {
+            crate::inspector::inspect(v, "console.dir", &cfg);
+        }
+        return Ok(Value::Undefined);
+    }
+
     let s = values
         .iter()
         .map(|v| crate::bindings::to_string_pretty_colored(v, colors))

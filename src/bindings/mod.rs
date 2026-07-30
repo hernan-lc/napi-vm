@@ -13,7 +13,7 @@
 //! `crate::bindings::{VM, create_vm, to_string, ..}` resolve exactly as
 //! they did before the split.
 mod bridge;
-mod format;
+pub(crate) mod format;
 mod marshal;
 #[cfg(feature = "mouse")]
 mod term;
