@@ -43,10 +43,30 @@ impl Interpreter {
             BinOp::Add => {
                 // String concatenation if either side is a string; otherwise
                 // numeric addition (booleans/null/etc. coerce via to_number).
-                if matches!(l, Value::String(_)) || matches!(r, Value::String(_)) {
-                    Value::String(format!("{}{}", self.vs(l), self.vs(r)))
-                } else {
-                    Value::Number(self.tn(l) + self.tn(r))
+                // The string side is pushed directly instead of round-tripping
+                // through `vs` (which would clone it).
+                match (l, r) {
+                    (Value::String(a), Value::String(b)) => {
+                        let mut s = String::with_capacity(a.len() + b.len());
+                        s.push_str(a);
+                        s.push_str(b);
+                        Value::String(s)
+                    }
+                    (Value::String(a), _) => {
+                        let rb = self.vs(r);
+                        let mut s = String::with_capacity(a.len() + rb.len());
+                        s.push_str(a);
+                        s.push_str(&rb);
+                        Value::String(s)
+                    }
+                    (_, Value::String(b)) => {
+                        let lb = self.vs(l);
+                        let mut s = String::with_capacity(lb.len() + b.len());
+                        s.push_str(&lb);
+                        s.push_str(b);
+                        Value::String(s)
+                    }
+                    _ => Value::Number(self.tn(l) + self.tn(r)),
                 }
             }
             BinOp::Sub => Value::Number(self.tn(l) - self.tn(r)),
