@@ -5,6 +5,7 @@ pub mod host;
 pub mod interpreter;
 pub mod lexer;
 pub mod parser;
+pub mod span;
 pub mod value;
 
 pub use bindings::{VM, create_vm, debug_parse, run_code};

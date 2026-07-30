@@ -1,6 +1,24 @@
 use std::fmt;
 
+use crate::span::Span;
 use crate::value::Value;
+
+/// A single frame in the call stack trace.
+#[derive(Debug, Clone)]
+pub struct StackFrame {
+    pub name: String,
+    pub span: Span,
+}
+
+impl fmt::Display for StackFrame {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.span.is_unknown() {
+            write!(f, "    at {}", self.name)
+        } else {
+            write!(f, "    at {} ({})", self.name, self.span)
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum VmErr {
@@ -9,6 +27,12 @@ pub enum VmErr {
     /// so `catch (e)` can inspect thrown objects (e.g. `e.message`).
     Throw(Value),
     Msg(String),
+    /// A runtime error with source location context.
+    RuntimeError {
+        message: String,
+        span: Option<Span>,
+        stack: Vec<StackFrame>,
+    },
     /// Control-flow signal for `break`, with an optional target label. Caught
     /// by the enclosing loop/switch; not an error and not catchable by `try`.
     Break(Option<String>),
@@ -16,10 +40,40 @@ pub enum VmErr {
     Continue(Option<String>),
 }
 
+impl VmErr {
+    /// Attach source location and call stack to a `VmErr::Msg`.
+    pub fn with_context(self, span: Option<Span>, stack: &[StackFrame]) -> Self {
+        match self {
+            VmErr::Msg(message) => VmErr::RuntimeError {
+                message,
+                span,
+                stack: stack.to_vec(),
+            },
+            other => other,
+        }
+    }
+}
+
 impl fmt::Display for VmErr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             VmErr::Msg(s) => write!(f, "{}", s),
+            VmErr::RuntimeError {
+                message,
+                span,
+                stack,
+            } => {
+                write!(f, "{}", message)?;
+                if let Some(span) = span {
+                    if !span.is_unknown() {
+                        write!(f, "\n  at {}", span)?;
+                    }
+                }
+                for frame in stack.iter().rev() {
+                    write!(f, "\n{}", frame)?;
+                }
+                Ok(())
+            }
             VmErr::Throw(v) => write!(f, "{}", throw_display(v)),
             VmErr::Ret(_) => write!(f, "return"),
             VmErr::Break(Some(l)) => write!(f, "break outside loop (label {})", l),

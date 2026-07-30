@@ -10,9 +10,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::error::VmErr;
+use crate::error::{StackFrame, VmErr};
 use crate::host::HostBridge;
 use crate::parser::Statement;
+use crate::span::Span;
 use crate::value::Value;
 
 pub struct Interpreter {
@@ -31,6 +32,11 @@ pub struct Interpreter {
     /// endpoints used to communicate yield/resume with the main thread.
     /// `None` when not inside a generator body.
     pub(crate) gen_channel: Option<GenChannel>,
+    /// Call stack for error reporting. Pushed on function entry, popped on exit.
+    call_stack: Vec<StackFrame>,
+    /// The source code for the current module/script, used to extract
+    /// source lines for error context. Stored as lines for efficient lookup.
+    source_lines: Vec<String>,
 }
 
 /// Channel endpoints available to a generator body during execution.
@@ -57,6 +63,8 @@ impl Interpreter {
             is_main: false,
             active_label: None,
             gen_channel: None,
+            call_stack: Vec::new(),
+            source_lines: Vec::new(),
         }
     }
 
@@ -80,6 +88,40 @@ impl Interpreter {
         Ok(r)
     }
 
+    /// Set the source code for the current script/module. Used to extract
+    /// source lines for error context.
+    pub fn set_source(&mut self, source: &str) {
+        self.source_lines = source.lines().map(String::from).collect();
+    }
+
+    /// Get a source line by 1-based line number, if available.
+    pub fn get_source_line(&self, line: usize) -> Option<&str> {
+        self.source_lines.get(line - 1).map(|s| s.as_str())
+    }
+
+    /// Push a frame onto the call stack.
+    pub(crate) fn push_frame(&mut self, name: &str, span: Span) {
+        self.call_stack.push(StackFrame {
+            name: name.to_string(),
+            span,
+        });
+    }
+
+    /// Pop a frame from the call stack.
+    pub(crate) fn pop_frame(&mut self) {
+        self.call_stack.pop();
+    }
+
+    /// Get a snapshot of the current call stack.
+    pub(crate) fn get_stack(&self) -> &[StackFrame] {
+        &self.call_stack
+    }
+
+    /// Attach the current call stack and last span to an error.
+    pub(crate) fn enrich_error(&self, err: VmErr, span: Option<Span>) -> VmErr {
+        err.with_context(span, &self.call_stack)
+    }
+
     /// Return all global variable names (user-defined + builtins). Used by
     /// `Object.getOwnPropertyNames(window)`.
     pub fn global_keys(&self) -> Vec<String> {
@@ -96,8 +138,8 @@ mod tests {
     fn eval(src: &str) -> Result<Value, VmErr> {
         let mut interp = Interpreter::with_builtins();
         let mut lex = Lexer::new(src);
-        let toks = lex.tokenize();
-        let mut parser = Parser::new(toks);
+        let toks = lex.tokenize_with_spans();
+        let mut parser = Parser::new_with_spans(toks);
         let stmts = parser.parse();
         interp.run(&stmts)
     }

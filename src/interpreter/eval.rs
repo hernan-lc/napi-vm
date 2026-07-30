@@ -552,7 +552,7 @@ impl Interpreter {
                 self.global
                     .borrow()
                     .get(n)
-                    .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))
+                    .ok_or_else(|| VmErr::Msg(format!("ReferenceError: {} is not defined", n)))
             }
             Expr::Array(i) => {
                 let mut v = Vec::new();
@@ -670,7 +670,7 @@ impl Interpreter {
                                 let env = self.global.borrow();
                                 let cur = env
                                     .get(n)
-                                    .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))?;
+                                    .ok_or_else(|| VmErr::Msg(format!("ReferenceError: {} is not defined", n)))?;
                                 let nv = if *op == UnOp::Inc {
                                     Value::Number(self.tn(&cur) + 1.0)
                                 } else {
@@ -809,7 +809,7 @@ impl Interpreter {
                                 .global
                                 .borrow()
                                 .get(n)
-                                .ok_or_else(|| VmErr::Msg(format!("Undefined: {}", n)))?;
+                                .ok_or_else(|| VmErr::Msg(format!("ReferenceError: {} is not defined", n)))?;
                             self.bin_op(bin, &c, &v)?
                         } else {
                             v

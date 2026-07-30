@@ -111,9 +111,13 @@ pub enum Token {
 pub struct Lexer {
     src: Vec<char>,
     pos: usize,
+    line: usize,
+    col: usize,
     /// Tokens produced ahead of time (e.g. by template scanning), drained in
     /// FIFO order before lexing more source.
     pending: Vec<Token>,
+    /// Spans corresponding to tokens in `pending`.
+    pending_spans: Vec<crate::span::Span>,
 }
 
 impl Lexer {
@@ -121,47 +125,84 @@ impl Lexer {
         Self {
             src: s.chars().collect(),
             pos: 0,
+            line: 1,
+            col: 1,
             pending: Vec::new(),
+            pending_spans: Vec::new(),
         }
     }
 
     pub fn tokenize(&mut self) -> Vec<Token> {
+        self.tokenize_with_spans()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect()
+    }
+
+    pub fn tokenize_with_spans(&mut self) -> Vec<crate::span::SpannedToken> {
         let mut toks = Vec::new();
         loop {
             if let Some(t) = self.pending.pop() {
-                toks.push(t);
+                let span = self
+                    .pending_spans
+                    .pop()
+                    .unwrap_or(crate::span::Span::unknown());
+                toks.push((t, span));
                 continue;
             }
             self.skip_ws();
             if self.pos >= self.src.len() {
                 break;
             }
-            if let Some(t) = self.next() {
-                toks.push(t);
+            if let Some((t, span)) = self.next_with_span() {
+                toks.push((t, span));
             }
         }
-        toks.push(Token::EOF);
+        let eof_span = crate::span::Span::new(self.line, self.col);
+        toks.push((Token::EOF, eof_span));
         toks
     }
 
     fn skip_ws(&mut self) {
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
-            if c.is_whitespace() {
+            if c == '\n' {
                 self.pos += 1;
+                self.line += 1;
+                self.col = 1;
+            } else if c == '\r' {
+                self.pos += 1;
+                self.line += 1;
+                self.col = 1;
+                if self.pos < self.src.len() && self.src[self.pos] == '\n' {
+                    self.pos += 1;
+                }
+            } else if c == '\t' || c == ' ' {
+                self.pos += 1;
+                self.col += 1;
             } else if c == '/' && self.pos + 1 < self.src.len() {
                 let n = self.src[self.pos + 1];
                 if n == '/' {
                     self.pos += 2;
+                    self.col += 2;
                     while self.pos < self.src.len() && self.src[self.pos] != '\n' {
                         self.pos += 1;
+                        self.col += 1;
                     }
                 } else if n == '*' {
                     self.pos += 2;
+                    self.col += 2;
                     while self.pos + 1 < self.src.len() {
                         if self.src[self.pos] == '*' && self.src[self.pos + 1] == '/' {
                             self.pos += 2;
+                            self.col += 2;
                             break;
+                        }
+                        if self.src[self.pos] == '\n' {
+                            self.line += 1;
+                            self.col = 1;
+                        } else {
+                            self.col += 1;
                         }
                         self.pos += 1;
                     }
@@ -177,25 +218,31 @@ impl Lexer {
     /// Scan a template literal starting at the opening backtick, preserving the
     /// raw text of each quasi (including whitespace). Emits:
     /// `Backtick Quasi (DollarLBrace <expr tokens> RBrace Quasi)* Backtick`.
-    fn read_template(&mut self) -> Vec<Token> {
+    fn read_template(&mut self) -> Vec<crate::span::SpannedToken> {
         self.pos += 1; // consume opening backtick
-        let mut toks = vec![Token::Backtick];
+        self.col += 1;
+        let mut toks = vec![(Token::Backtick, crate::span::Span::new(self.line, self.col - 1))];
         let mut quasi = String::new();
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
             if c == '`' {
                 self.pos += 1;
-                toks.push(Token::TemplateQuasi(quasi));
-                toks.push(Token::Backtick);
+                self.col += 1;
+                let span = crate::span::Span::new(self.line, self.col - 1);
+                toks.push((Token::TemplateQuasi(quasi), span));
+                toks.push((Token::Backtick, span));
                 return toks;
             } else if c == '$' && self.pos + 1 < self.src.len() && self.src[self.pos + 1] == '{' {
                 self.pos += 2;
-                toks.push(Token::TemplateQuasi(quasi));
+                self.col += 2;
+                let span = crate::span::Span::new(self.line, self.col - 2);
+                toks.push((Token::TemplateQuasi(quasi), span));
                 quasi = String::new();
-                toks.push(Token::DollarLBrace);
+                toks.push((Token::DollarLBrace, span));
                 self.lex_interp(&mut toks);
             } else if c == '\\' && self.pos + 1 < self.src.len() {
                 self.pos += 1;
+                self.col += 1;
                 let e = self.src[self.pos];
                 quasi.push(match e {
                     'n' => '\n',
@@ -205,21 +252,29 @@ impl Lexer {
                     other => other,
                 });
                 self.pos += 1;
+                self.col += 1;
             } else {
                 quasi.push(c);
                 self.pos += 1;
+                if c == '\n' {
+                    self.line += 1;
+                    self.col = 1;
+                } else {
+                    self.col += 1;
+                }
             }
         }
         // Unterminated template: flush what we have.
-        toks.push(Token::TemplateQuasi(quasi));
-        toks.push(Token::Backtick);
+        let span = crate::span::Span::new(self.line, self.col);
+        toks.push((Token::TemplateQuasi(quasi), span));
+        toks.push((Token::Backtick, span));
         toks
     }
 
     /// Lex the expression inside a `${ ... }` interpolation, tracking brace depth
     /// so nested object literals and templates terminate correctly. Consumes the
     /// matching closing brace and appends `RBrace`.
-    fn lex_interp(&mut self, toks: &mut Vec<Token>) {
+    fn lex_interp(&mut self, toks: &mut Vec<crate::span::SpannedToken>) {
         let mut depth = 1i32;
         while self.pos < self.src.len() && depth > 0 {
             self.skip_ws();
@@ -230,13 +285,17 @@ impl Lexer {
             match c {
                 '{' => {
                     depth += 1;
-                    toks.push(Token::LBrace);
+                    let span = crate::span::Span::new(self.line, self.col);
+                    toks.push((Token::LBrace, span));
                     self.pos += 1;
+                    self.col += 1;
                 }
                 '}' => {
                     depth -= 1;
                     self.pos += 1;
-                    toks.push(Token::RBrace);
+                    self.col += 1;
+                    let span = crate::span::Span::new(self.line, self.col - 1);
+                    toks.push((Token::RBrace, span));
                     if depth == 0 {
                         return;
                     }
@@ -246,12 +305,18 @@ impl Lexer {
                     toks.extend(nested);
                 }
                 _ => {
-                    if let Some(t) = self.next() {
-                        toks.push(t);
+                    if let Some((t, span)) = self.next_with_span() {
+                        toks.push((t, span));
                     }
                 }
             }
         }
+    }
+
+    fn next_with_span(&mut self) -> Option<crate::span::SpannedToken> {
+        let span = crate::span::Span::new(self.line, self.col);
+        let t = self.next()?;
+        Some((t, span))
     }
 
     fn next(&mut self) -> Option<Token> {
@@ -259,65 +324,81 @@ impl Lexer {
         Some(match c {
             '(' => {
                 self.pos += 1;
+                self.col += 1;
                 Token::LParen
             }
             ')' => {
                 self.pos += 1;
+                self.col += 1;
                 Token::RParen
             }
             '{' => {
                 self.pos += 1;
+                self.col += 1;
                 Token::LBrace
             }
             '}' => {
                 self.pos += 1;
+                self.col += 1;
                 Token::RBrace
             }
             '[' => {
                 self.pos += 1;
+                self.col += 1;
                 Token::LBracket
             }
             ']' => {
                 self.pos += 1;
+                self.col += 1;
                 Token::RBracket
             }
             ';' => {
                 self.pos += 1;
+                self.col += 1;
                 Token::Semicolon
             }
             ',' => {
                 self.pos += 1;
+                self.col += 1;
                 Token::Comma
             }
             ':' => {
                 self.pos += 1;
+                self.col += 1;
                 Token::Colon
             }
             '?' => match self.src.get(self.pos + 1) {
                 Some('?') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::QuestionQuestion
                 }
                 Some('.') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::QuestionDot
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::Question
                 }
             },
             '`' => {
                 let toks = self.read_template();
                 let mut it = toks.into_iter();
-                let first = it.next().unwrap_or(Token::Backtick);
+                let first = it.next().unwrap_or((Token::Backtick, crate::span::Span::unknown()));
                 // Buffer the rest (reversed, since `pending` is popped from the back).
-                self.pending.extend(it.rev());
-                first
+                for (t, s) in it.rev() {
+                    self.pending.push(t);
+                    self.pending_spans.push(s);
+                }
+                return Some(first.0);
             }
             '$' => {
                 if self.pos + 1 < self.src.len() && self.src[self.pos + 1] == '{' {
                     self.pos += 2;
+                    self.col += 2;
                     Token::DollarLBrace
                 } else {
                     self.read_ident()
@@ -329,125 +410,152 @@ impl Lexer {
                     && self.src[self.pos + 2] == '.'
                 {
                     self.pos += 3;
+                    self.col += 3;
                     Token::DotDotDot
                 } else {
                     self.pos += 1;
+                    self.col += 1;
                     Token::Dot
                 }
             }
             '+' => match self.src.get(self.pos + 1) {
                 Some('+') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::PlusPlus
                 }
                 Some('=') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::PlusEqual
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::Plus
                 }
             },
             '-' => match self.src.get(self.pos + 1) {
                 Some('-') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::MinusMinus
                 }
                 Some('=') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::MinusEqual
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::Minus
                 }
             },
             '*' => match (self.src.get(self.pos + 1), self.src.get(self.pos + 2)) {
                 (Some('*'), Some('=')) => {
                     self.pos += 3;
+                    self.col += 3;
                     Token::StarStarEqual
                 }
                 (Some('*'), _) => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::StarStar
                 }
                 (Some('='), _) => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::StarEqual
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::Star
                 }
             },
             '/' => match self.src.get(self.pos + 1) {
                 Some('=') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::SlashEqual
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::Slash
                 }
             },
             '%' => match self.src.get(self.pos + 1) {
                 Some('=') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::PercentEqual
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::Percent
                 }
             },
             '=' => match (self.src.get(self.pos + 1), self.src.get(self.pos + 2)) {
                 (Some('='), Some('=')) => {
                     self.pos += 3;
+                    self.col += 3;
                     Token::EqualEqualEqual
                 }
                 (Some('='), _) => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::EqualEqual
                 }
                 (Some('>'), _) => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::Arrow
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::Equal
                 }
             },
             '!' => match (self.src.get(self.pos + 1), self.src.get(self.pos + 2)) {
                 (Some('='), Some('=')) => {
                     self.pos += 3;
+                    self.col += 3;
                     Token::NotEqualEqual
                 }
                 (Some('='), _) => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::NotEqual
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::Not
                 }
             },
             '<' => match (self.src.get(self.pos + 1), self.src.get(self.pos + 2)) {
                 (Some('<'), Some('=')) => {
                     self.pos += 3;
+                    self.col += 3;
                     Token::ShlEqual
                 }
                 (Some('<'), _) => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::Shl
                 }
                 (Some('='), _) => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::LessEqual
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::Less
                 }
             },
@@ -458,26 +566,32 @@ impl Lexer {
                 match (a, b, c) {
                     (Some('>'), Some('>'), Some('=')) => {
                         self.pos += 4;
+                        self.col += 4;
                         Token::UShrEqual
                     }
                     (Some('>'), Some('>'), _) => {
                         self.pos += 3;
+                        self.col += 3;
                         Token::UShr
                     }
                     (Some('>'), Some('='), _) => {
                         self.pos += 3;
+                        self.col += 3;
                         Token::ShrEqual
                     }
                     (Some('>'), _, _) => {
                         self.pos += 2;
+                        self.col += 2;
                         Token::Shr
                     }
                     (Some('='), _, _) => {
                         self.pos += 2;
+                        self.col += 2;
                         Token::GreaterEqual
                     }
                     _ => {
                         self.pos += 1;
+                        self.col += 1;
                         Token::Greater
                     }
                 }
@@ -485,43 +599,52 @@ impl Lexer {
             '&' => match self.src.get(self.pos + 1) {
                 Some('&') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::And
                 }
                 Some('=') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::AmpEqual
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::BitAnd
                 }
             },
             '|' => match self.src.get(self.pos + 1) {
                 Some('|') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::Or
                 }
                 Some('=') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::PipeEqual
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::BitOr
                 }
             },
             '^' => match self.src.get(self.pos + 1) {
                 Some('=') => {
                     self.pos += 2;
+                    self.col += 2;
                     Token::CaretEqual
                 }
                 _ => {
                     self.pos += 1;
+                    self.col += 1;
                     Token::BitXor
                 }
             },
             '~' => {
                 self.pos += 1;
+                self.col += 1;
                 Token::Tilde
             }
             '"' | '\'' => self.read_str(c),
@@ -529,6 +652,7 @@ impl Lexer {
             c if c.is_ascii_alphabetic() || c == '_' || c == '$' => self.read_ident(),
             _ => {
                 self.pos += 1;
+                self.col += 1;
                 return None;
             }
         })
@@ -536,15 +660,18 @@ impl Lexer {
 
     fn read_str(&mut self, q: char) -> Token {
         self.pos += 1;
+        self.col += 1;
         let mut s = String::new();
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
             if c == q {
                 self.pos += 1;
+                self.col += 1;
                 break;
             }
             if c == '\\' && self.pos + 1 < self.src.len() {
                 self.pos += 1;
+                self.col += 1;
                 match self.src[self.pos] {
                     'n' => s.push('\n'),
                     't' => s.push('\t'),
@@ -559,6 +686,12 @@ impl Lexer {
                 s.push(c);
             }
             self.pos += 1;
+            if c == '\n' {
+                self.line += 1;
+                self.col = 1;
+            } else {
+                self.col += 1;
+            }
         }
         Token::String(s)
     }
@@ -569,13 +702,16 @@ impl Lexer {
             && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_')
         {
             self.pos += 1;
+            self.col += 1;
         }
         if self.pos < self.src.len() && self.src[self.pos] == '.' {
             self.pos += 1;
+            self.col += 1;
             while self.pos < self.src.len()
                 && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_')
             {
                 self.pos += 1;
+                self.col += 1;
             }
         }
         // Exponent part: e/E, optional sign, then digits (e.g. 1e3, 1.5e-2).
@@ -588,6 +724,7 @@ impl Lexer {
                 self.pos = la;
                 while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
                     self.pos += 1;
+                    self.col += 1;
                 }
             }
         }
@@ -606,6 +743,7 @@ impl Lexer {
                 break;
             }
             self.pos += 1;
+            self.col += 1;
         }
         let i: String = self.src[s..self.pos].iter().collect();
         match i.as_str() {

@@ -7,6 +7,7 @@ use std::rc::Rc;
 use super::{Environment, Interpreter};
 use crate::error::{VmErr, vm_err};
 use crate::parser::{Pattern, Statement};
+use crate::span::Span;
 use crate::value::{GeneratorInner, PromiseState, Value};
 
 impl Interpreter {
@@ -168,6 +169,7 @@ impl Interpreter {
     ) -> Result<Value, VmErr> {
         match f {
             Value::Function {
+                name,
                 params,
                 body,
                 closure,
@@ -259,12 +261,15 @@ impl Interpreter {
 
                 let s = self.global.clone();
                 self.global = fe;
+                let fname = name.clone().unwrap_or_else(|| "<anonymous>".to_string());
+                self.push_frame(&fname, Span::unknown());
                 let r = self.run(body);
-                self.global = s;
                 let result = match r {
                     Err(VmErr::Ret(v)) => Ok(v),
                     other => other,
                 };
+                self.pop_frame();
+                self.global = s;
                 if *is_async {
                     // An async function always resolves to a promise.
                     match result {
@@ -291,7 +296,19 @@ impl Interpreter {
                 })?;
                 bridge.call_host(*id, args)
             }
-            _ => vm_err("Not a function"),
+            _ => {
+                let type_name = match f {
+                    Value::String(_) => "string",
+                    Value::Number(_) => "number",
+                    Value::Bool(_) => "boolean",
+                    Value::Null => "null",
+                    Value::Undefined => "undefined",
+                    Value::Array(_) => "array",
+                    Value::Object { .. } => "object",
+                    _ => "unknown",
+                };
+                vm_err(format!("TypeError: {} is not a function", type_name))
+            }
         }
     }
 
@@ -313,7 +330,19 @@ impl Interpreter {
                 self.call_this(f, this_val.clone(), args)?;
                 Ok(this_val)
             }
-            _ => vm_err("Not a constructor"),
+            _ => {
+                let type_name = match f {
+                    Value::String(_) => "string",
+                    Value::Number(_) => "number",
+                    Value::Bool(_) => "boolean",
+                    Value::Null => "null",
+                    Value::Undefined => "undefined",
+                    Value::Array(_) => "array",
+                    Value::Object { .. } => "object",
+                    _ => "unknown",
+                };
+                vm_err(format!("TypeError: {} is not a constructor", type_name))
+            }
         }
     }
 
@@ -406,7 +435,19 @@ impl Interpreter {
                     _ => Ok(inst),
                 }
             }
-            _ => vm_err("Not a constructor"),
+            _ => {
+                let type_name = match f {
+                    Value::String(_) => "string",
+                    Value::Number(_) => "number",
+                    Value::Bool(_) => "boolean",
+                    Value::Null => "null",
+                    Value::Undefined => "undefined",
+                    Value::Array(_) => "array",
+                    Value::Object { .. } => "object",
+                    _ => "unknown",
+                };
+                vm_err(format!("TypeError: {} is not a constructor", type_name))
+            }
         }
     }
 }
@@ -518,6 +559,9 @@ fn run_generator_thread(init: crate::value::SendGenInit) {
         }
         Err(VmErr::Msg(m)) => {
             let _ = chan.to_main.send(GenYield::Threw(m));
+        }
+        Err(VmErr::RuntimeError { message, .. }) => {
+            let _ = chan.to_main.send(GenYield::Threw(message));
         }
         // A break/continue that escapes the generator body is a runtime error.
         Err(e @ (VmErr::Break(_) | VmErr::Continue(_))) => {

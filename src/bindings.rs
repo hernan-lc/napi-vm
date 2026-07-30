@@ -64,9 +64,10 @@ pub fn to_string(val: &Value) -> String {
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
     let mut interp = Interpreter::with_builtins();
     interp.is_main = is_main;
+    interp.set_source(source);
     let mut lex = Lexer::new(source);
-    let toks = lex.tokenize();
-    let mut parser = Parser::new(toks);
+    let toks = lex.tokenize_with_spans();
+    let mut parser = Parser::new_with_spans(toks);
     let stmts = parser.parse();
     let val = interp.run(&stmts)?;
     Ok(to_string(&val))
@@ -400,16 +401,19 @@ impl VM {
 
     #[napi]
     pub fn run(&mut self, source: String) -> napi::Result<String> {
+        self.interp.set_source(&source);
         let mut lex = Lexer::new(&source);
-        let toks = lex.tokenize();
-        let mut parser = Parser::new(toks);
+        let toks = lex.tokenize_with_spans();
+        let mut parser = Parser::new_with_spans(toks);
         let stmts = parser.parse();
-        Ok(to_string(
-            &self
-                .interp
-                .run(&stmts)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?,
-        ))
+        let result = self.interp.run(&stmts);
+        match result {
+            Ok(v) => Ok(to_string(&v)),
+            Err(e) => {
+                let enriched = self.interp.enrich_error(e, None);
+                Err(napi::Error::from_reason(enriched.to_string()))
+            }
+        }
     }
 
     #[napi]
@@ -420,8 +424,8 @@ impl VM {
         // throwaway interpreter, as before, discarded every export.)
         self.interp.cur_mod = Some(name.clone());
         let mut lex = Lexer::new(&source);
-        let toks = lex.tokenize();
-        let mut parser = Parser::new(toks);
+        let toks = lex.tokenize_with_spans();
+        let mut parser = Parser::new_with_spans(toks);
         let stmts = parser.parse();
         let result = self.interp.run(&stmts);
         self.interp.cur_mod = None;
@@ -523,8 +527,8 @@ pub fn run_code(source: String) -> napi::Result<String> {
 #[napi]
 pub fn debug_parse(source: String) -> napi::Result<String> {
     let mut lex = Lexer::new(&source);
-    let toks = lex.tokenize();
-    let mut parser = Parser::new(toks);
+    let toks = lex.tokenize_with_spans();
+    let mut parser = Parser::new_with_spans(toks);
     let stmts = parser.parse();
     Ok(format!("{:?}", stmts))
 }

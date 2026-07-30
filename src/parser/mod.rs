@@ -7,15 +7,30 @@ mod stmt;
 pub use ast::*;
 
 use crate::lexer::Token;
+use crate::span::Span;
 
 pub struct Parser {
-    toks: Vec<Token>,
+    toks: Vec<(Token, Span)>,
     pos: usize,
+    /// Sentinel EOF token used as a fallback when pos is out of bounds.
+    eof_tok: (Token, Span),
 }
 
 impl Parser {
     pub fn new(t: Vec<Token>) -> Self {
-        Self { toks: t, pos: 0 }
+        Self {
+            toks: t.into_iter().map(|t| (t, Span::unknown())).collect(),
+            pos: 0,
+            eof_tok: (Token::EOF, Span::unknown()),
+        }
+    }
+
+    pub fn new_with_spans(t: Vec<(Token, Span)>) -> Self {
+        Self {
+            toks: t,
+            pos: 0,
+            eof_tok: (Token::EOF, Span::unknown()),
+        }
     }
 
     pub fn parse(&mut self) -> Vec<Statement> {
@@ -31,18 +46,25 @@ impl Parser {
     }
 
     pub(crate) fn cur(&self) -> &Token {
-        self.toks.get(self.pos).unwrap_or(&Token::EOF)
+        &self.toks.get(self.pos).unwrap_or(&self.eof_tok).0
+    }
+
+    pub(crate) fn cur_span(&self) -> Span {
+        self.toks
+            .get(self.pos)
+            .map(|(_, s)| *s)
+            .unwrap_or(self.eof_tok.1)
     }
 
     pub(crate) fn peek(&self) -> &Token {
-        self.toks.get(self.pos + 1).unwrap_or(&Token::EOF)
+        &self.toks.get(self.pos + 1).unwrap_or(&self.eof_tok).0
     }
 
     pub(crate) fn adv(&mut self) -> &Token {
         if self.pos < self.toks.len() {
             self.pos += 1;
         }
-        self.toks.get(self.pos - 1).unwrap_or(&Token::EOF)
+        &self.toks.get(self.pos - 1).unwrap_or(&self.eof_tok).0
     }
 
     pub(crate) fn eat(&mut self, t: &Token) -> bool {
@@ -72,8 +94,8 @@ mod tests {
 
     fn parse(src: &str) -> Vec<Statement> {
         let mut lex = Lexer::new(src);
-        let toks = lex.tokenize();
-        let mut parser = Parser::new(toks);
+        let toks = lex.tokenize_with_spans();
+        let mut parser = Parser::new_with_spans(toks);
         parser.parse()
     }
 
