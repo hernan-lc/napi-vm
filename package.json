@@ -4,6 +4,11 @@
   "description": "A sandboxed JS VM runtime built from scratch in Rust with NAPI bindings",
   "main": "index.js",
   "type": "commonjs",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
   "scripts": {
     "build": "npx napi build --platform --release",
     "build:debug": "npx napi build --platform",
