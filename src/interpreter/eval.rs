@@ -697,20 +697,28 @@ impl Interpreter {
                 {
                     match operand.as_ref() {
                         Expr::Identifier(n) => {
-                            let (cur, new_val) = {
-                                let env = self.global.borrow();
-                                let cur = env.get(n).ok_or_else(|| {
-                                    VmErr::Msg(format!("ReferenceError: {} is not defined", n))
-                                })?;
-                                let nv = if *op == UnOp::Inc {
-                                    Value::Number(self.tn(&cur) + 1.0)
-                                } else {
-                                    Value::Number(self.tn(&cur) - 1.0)
-                                };
-                                (cur, nv)
-                            };
-                            self.global.borrow_mut().assign(n, new_val.clone());
-                            if *prefix { Ok(new_val) } else { Ok(cur) }
+                            let inc = *op == UnOp::Inc;
+                            // Fused read-modify-write: one `borrow_mut` + one
+                            // scan instead of a read borrow followed by a
+                            // separate write borrow. `old` captures the value
+                            // before the update so postfix can return it.
+                            let mut old = None;
+                            let new_val = {
+                                let mut env = self.global.borrow_mut();
+                                env.modify(n, |cur| {
+                                    let cur_num = self.tn(&cur);
+                                    old = Some(cur);
+                                    Value::Number(if inc { cur_num + 1.0 } else { cur_num - 1.0 })
+                                })
+                            }
+                            .ok_or_else(|| {
+                                VmErr::Msg(format!("ReferenceError: {} is not defined", n))
+                            })?;
+                            if *prefix {
+                                Ok(new_val)
+                            } else {
+                                Ok(old.unwrap_or(Value::Undefined))
+                            }
                         }
                         Expr::Member {
                             object,
@@ -836,19 +844,34 @@ impl Interpreter {
                 match target.as_ref() {
                     Expr::Identifier(n) => {
                         let fv = if let Some(bin) = op.bin_op() {
-                            let c = self.global.borrow().get(n).ok_or_else(|| {
+                            // Fused read-modify-write: one `borrow_mut` + one
+                            // scan instead of a read borrow then a write borrow.
+                            // `bin_op` can still fail (e.g. string-length cap);
+                            // capture the error and leave the slot unchanged.
+                            let mut err = None;
+                            let res = {
+                                let mut env = self.global.borrow_mut();
+                                env.modify(n, |cur| match self.bin_op(bin, &cur, &v) {
+                                    Ok(new) => new,
+                                    Err(e) => {
+                                        err = Some(e);
+                                        cur
+                                    }
+                                })
+                            };
+                            if let Some(e) = err {
+                                return Err(e);
+                            }
+                            res.ok_or_else(|| {
                                 VmErr::Msg(format!("ReferenceError: {} is not defined", n))
-                            })?;
-                            self.bin_op(bin, &c, &v)?
+                            })?
                         } else {
+                            let mut env = self.global.borrow_mut();
+                            if !env.assign(n, v.clone()) {
+                                env.set(n, v.clone());
+                            }
                             v
                         };
-                        {
-                            let mut env = self.global.borrow_mut();
-                            if !env.assign(n, fv.clone()) {
-                                env.set(n, fv.clone());
-                            }
-                        }
                         Ok(fv)
                     }
                     Expr::Member {

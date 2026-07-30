@@ -177,6 +177,48 @@ impl Environment {
         }
     }
 
+    /// Read-modify-write a bound variable in a single borrow and a single
+    /// scan. Locates `n` in the scope chain, applies `f` to its current
+    /// value, stores the result back into the *same* slot, and returns the
+    /// new value. Returns `None` if `n` is not bound anywhere.
+    ///
+    /// This fuses what would otherwise be a read (`borrow` + scan + clone)
+    /// followed by a write (`borrow_mut` + scan + set) — the pattern behind
+    /// `x++` and compound assignment (`x += …`) — into one `borrow_mut` and
+    /// one scan, which is the hot path in tight arithmetic loops.
+    pub fn modify<F>(&mut self, n: &str, mut f: F) -> Option<Value>
+    where
+        F: FnMut(Value) -> Value,
+    {
+        let updated = match &mut self.vars {
+            Vars::Small(vars) => {
+                if let Some(slot) = vars.iter_mut().find(|(k, _)| &**k == n) {
+                    let nv = f(slot.1.clone());
+                    slot.1 = nv;
+                    Some(slot.1.clone())
+                } else {
+                    None
+                }
+            }
+            Vars::Large(map) => {
+                if let Some(slot) = map.get_mut(n) {
+                    let nv = f(slot.clone());
+                    *slot = nv;
+                    Some(slot.clone())
+                } else {
+                    None
+                }
+            }
+        };
+        if updated.is_some() {
+            return updated;
+        }
+        match self.parent {
+            Some(ref p) => p.borrow_mut().modify(n, f),
+            None => None,
+        }
+    }
+
     /// Remove a binding from this frame only (does not walk the parent chain).
     /// Returns `true` if the binding existed and was removed.
     pub fn remove(&mut self, n: &str) -> bool {
