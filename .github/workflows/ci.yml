@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [master, main]
+    tags: ["v*"]
   pull_request:
     branches: [master, main]
 
@@ -97,5 +98,3 @@ jobs:
         with:
           name: napi-vm-win-x64
           path: "*.node"
-
-
