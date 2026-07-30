@@ -354,31 +354,47 @@ fn stmt_references(s: &Statement, name: &str) -> bool {
     match s {
         Statement::Expr(e) => expr_references(e, name),
         Statement::VarDecl {
-            init, destructuring, ..
+            init,
+            destructuring,
+            ..
         } => {
-            init.as_ref().map(|e| expr_references(e, name)).unwrap_or(false)
+            init.as_ref()
+                .map(|e| expr_references(e, name))
+                .unwrap_or(false)
                 || destructuring
                     .as_ref()
                     .map(|p| pattern_references(p, name))
                     .unwrap_or(false)
         }
         Statement::FnDecl { body, .. } => stmts_reference(body, name),
-        Statement::ClassDecl { superclass, body, .. } => {
-            superclass.as_ref().map(|e| expr_references(e, name)).unwrap_or(false)
+        Statement::ClassDecl {
+            superclass, body, ..
+        } => {
+            superclass
+                .as_ref()
+                .map(|e| expr_references(e, name))
+                .unwrap_or(false)
                 || body.iter().any(|m| match m {
                     ClassMember::Method { body, .. } => stmts_reference(body, name),
-                    ClassMember::Field { init, .. } => {
-                        init.as_ref().map(|e| expr_references(e, name)).unwrap_or(false)
-                    }
+                    ClassMember::Field { init, .. } => init
+                        .as_ref()
+                        .map(|e| expr_references(e, name))
+                        .unwrap_or(false),
                     ClassMember::Getter { body, .. } => stmts_reference(body, name),
                     ClassMember::Setter { body, .. } => stmts_reference(body, name),
                 })
         }
-        Statement::Return(e) => e.as_ref().map(|e| expr_references(e, name)).unwrap_or(false),
+        Statement::Return(e) => e
+            .as_ref()
+            .map(|e| expr_references(e, name))
+            .unwrap_or(false),
         Statement::If { test, then, else_ } => {
             expr_references(test, name)
                 || stmts_reference(then, name)
-                || else_.as_ref().map(|b| stmts_reference(b, name)).unwrap_or(false)
+                || else_
+                    .as_ref()
+                    .map(|b| stmts_reference(b, name))
+                    .unwrap_or(false)
         }
         Statement::While { test, body } | Statement::DoWhile { test, body } => {
             expr_references(test, name) || stmts_reference(body, name)
@@ -392,13 +408,21 @@ fn stmt_references(s: &Statement, name: &str) -> bool {
             init.as_ref()
                 .map(|i| match i.as_ref() {
                     ForInit::Var { decls, .. } => decls.iter().any(|(_, e)| {
-                        e.as_ref().map(|e| expr_references(e, name)).unwrap_or(false)
+                        e.as_ref()
+                            .map(|e| expr_references(e, name))
+                            .unwrap_or(false)
                     }),
                     ForInit::Expr(e) => expr_references(e, name),
                 })
                 .unwrap_or(false)
-                || test.as_ref().map(|e| expr_references(e, name)).unwrap_or(false)
-                || update.as_ref().map(|e| expr_references(e, name)).unwrap_or(false)
+                || test
+                    .as_ref()
+                    .map(|e| expr_references(e, name))
+                    .unwrap_or(false)
+                || update
+                    .as_ref()
+                    .map(|e| expr_references(e, name))
+                    .unwrap_or(false)
                 || stmts_reference(body, name)
         }
         Statement::ForIn { obj, body, .. } => {
@@ -416,13 +440,22 @@ fn stmt_references(s: &Statement, name: &str) -> bool {
             finally,
         } => {
             stmts_reference(body, name)
-                || catch.as_ref().map(|(_, b)| stmts_reference(b, name)).unwrap_or(false)
-                || finally.as_ref().map(|b| stmts_reference(b, name)).unwrap_or(false)
+                || catch
+                    .as_ref()
+                    .map(|(_, b)| stmts_reference(b, name))
+                    .unwrap_or(false)
+                || finally
+                    .as_ref()
+                    .map(|b| stmts_reference(b, name))
+                    .unwrap_or(false)
         }
         Statement::Switch { disc, cases } => {
             expr_references(disc, name)
                 || cases.iter().any(|c| {
-                    c.test.as_ref().map(|e| expr_references(e, name)).unwrap_or(false)
+                    c.test
+                        .as_ref()
+                        .map(|e| expr_references(e, name))
+                        .unwrap_or(false)
                         || stmts_reference(&c.body, name)
                 })
         }
@@ -486,7 +519,10 @@ fn expr_references(e: &Expr, name: &str) -> bool {
         Expr::Spread(x) => expr_references(x, name),
         Expr::Template { exprs, .. } => exprs.iter().any(|x| expr_references(x, name)),
         Expr::Await(x) => expr_references(x, name),
-        Expr::Yield(x) => x.as_ref().map(|x| expr_references(x, name)).unwrap_or(false),
+        Expr::Yield(x) => x
+            .as_ref()
+            .map(|x| expr_references(x, name))
+            .unwrap_or(false),
         Expr::Number(_)
         | Expr::String(_)
         | Expr::Bool(_)
@@ -502,9 +538,11 @@ fn pattern_references(p: &Pattern, name: &str) -> bool {
     match p {
         Pattern::Ident(_) | Pattern::Rest(_) => false,
         Pattern::Array(elems) => elems.iter().any(|e| pattern_references(e, name)),
-        Pattern::Object(props) => props
-            .iter()
-            .any(|(_, p)| p.as_ref().map(|p| pattern_references(p, name)).unwrap_or(false)),
+        Pattern::Object(props) => props.iter().any(|(_, p)| {
+            p.as_ref()
+                .map(|p| pattern_references(p, name))
+                .unwrap_or(false)
+        }),
         Pattern::Default(inner, default) => {
             pattern_references(inner, name) || expr_references(default, name)
         }
