@@ -1,8 +1,9 @@
 {
   "name": "napi-vm",
   "version": "0.1.0",
-  "description": "A sandboxed JS VM runtime built from scratch in Rust with NAPI bindings",
+  "description": "A sandboxed JavaScript virtual machine built from scratch in Rust with NAPI bindings for Node.js",
   "main": "index.js",
+  "types": "index.d.ts",
   "type": "commonjs",
   "files": [
     "index.js",
@@ -15,6 +16,31 @@
     "test": "bun test",
     "bench": "node bench/bench.js",
     "bench:rust": "cargo bench"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nglmercer/napi-vm.git"
+  },
+  "homepage": "https://github.com/nglmercer/napi-vm#readme",
+  "bugs": {
+    "url": "https://github.com/nglmercer/napi-vm/issues"
+  },
+  "keywords": [
+    "vm",
+    "sandbox",
+    "javascript",
+    "interpreter",
+    "rust",
+    "napi",
+    "native",
+    "ecmascript",
+    "execution",
+    "isolated"
+  ],
+  "author": "nglmercer",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
   },
   "napi": {
     "binaryName": "napi-vm",
