@@ -48,3 +48,45 @@ so subsequent `cargo bench` runs report % change automatically.
   every `runCode` iteration.
 - Operators are stored as `String`s in the AST and string-matched on every
   evaluation; control-flow signals (`break`/`continue`) allocate `String`s.
+
+## Results after optimization (commit `7f69614`)
+
+Same machine and methodology, after four optimization phases (each a
+revertable commit: `760c65e` release profile + lazy `arguments`, `6d66c3a`
+typed control flow + operator enums, `6eddcdf` dedicated JSON parser +
+cheaper string concat, `7f69614` hybrid small-vec/hash-map env frames).
+Test suite: **535 pass / 0 fail**.
+
+### End-to-end through NAPI (`npm run bench`)
+
+| workload        | before   | after      | delta | ratio before | ratio after |
+|-----------------|----------|------------|-------|--------------|-------------|
+| arithmetic_loop | 3.69 ms  | 2.86 ms    | −22%  | 736x         | 474x        |
+| recursion_fib   | 20.06 ms | 8.81 ms    | −56%  | 196x         | 69x         |
+| array_chain     | 2.11 ms  | 1.04 ms    | −51%  | 130x         | 49x         |
+| string_ops      | 1.13 ms  | 1.06 ms    | −6%   | 16x          | 13x         |
+| class_methods   | 2.48 ms  | 1.63 ms    | −34%  | 62x          | 31x         |
+| closures        | 5.65 ms  | 3.09 ms    | −45%  | 173x         | 83x         |
+| json_roundtrip  | 1.58 ms  | 671.14 µs  | −58%  | 10x          | 3x          |
+
+### Criterion microbenchmarks (`npm run bench:rust`)
+
+| benchmark                 | before                | after                 | delta |
+|---------------------------|-----------------------|-----------------------|-------|
+| run/arithmetic_loop       | 3.78 ms               | 3.95 ms               | +4% (noise; lex canary +1%) |
+| run/recursion_fib         | 18.38 ms              | 8.56 ms               | −53%  |
+| run/array_chain           | 2.02 ms               | 1.08 ms               | −47%  |
+| run/string_ops            | 1.11 ms               | 1.04 ms               | −6%   |
+| run/class_methods         | 2.55 ms               | 1.53 ms               | −40%  |
+| run/closures              | 5.77 ms               | 3.72 ms               | −36%  |
+| run/json_roundtrip        | 1.67 ms               | 592.74 µs             | −65%  |
+| frontend/lex_big_source   | 2.66 ms               | 2.69 ms               | +1%   |
+| frontend/parse_big_source | 5.33 ms               | 5.19 ms               | −3%   |
+
+Run-to-run drift on this machine is ±6–8% on the JS bench (Criterion is
+tighter); `frontend/lex_big_source` exercises untouched code and serves as a
+noise canary. Levers evaluated and deferred as not worth their invasiveness
+for this workload profile: O(1) property maps for objects (benchmark objects
+have ≤6 props; the linear scan is cache-friendly and a per-object HashMap
+would tax creation-heavy code), string-literal interning (`Value::String`
+to `Rc<str>`), and RefCell-traffic reduction.

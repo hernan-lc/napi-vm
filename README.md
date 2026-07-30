@@ -108,6 +108,11 @@ Two complementary layers measure the VM from different vantage points:
 
 The JS workloads in both files are kept in sync so the two layers stay comparable.
 
+As of commit `7f69614`, after a measurement-first optimization pass (recorded
+in `bench/BASELINE.md`), the interpreter runs the recursion workload at ~69x
+native (down from ~196x), closures at ~83x (from ~173x), and JSON roundtrips
+at ~3x (from ~10x), with call-heavy workloads roughly halved overall.
+
 ## Project Structure
 
 ```
