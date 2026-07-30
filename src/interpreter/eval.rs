@@ -433,6 +433,9 @@ impl Interpreter {
                     Err(e @ (VmErr::Break(_) | VmErr::Continue(_))) => Err(e),
                     // Runtime errors (e.g. undeclared identifier) are catchable.
                     Err(VmErr::Msg(m)) => self.run_catch(catch, Value::String(m)),
+                    Err(VmErr::RuntimeError { message, .. }) => {
+                        self.run_catch(catch, Value::String(message))
+                    }
                     other => other,
                 };
 

@@ -264,12 +264,20 @@ impl Interpreter {
                 let fname = name.clone().unwrap_or_else(|| "<anonymous>".to_string());
                 self.push_frame(&fname, Span::unknown());
                 let r = self.run(body);
-                let result = match r {
-                    Err(VmErr::Ret(v)) => Ok(v),
-                    other => other,
-                };
+                // Capture the stack trace before popping the frame, so errors
+                // carry the full call chain when they propagate.
+                let stack_snapshot = self.get_stack().to_vec();
                 self.pop_frame();
                 self.global = s;
+                let result = match r {
+                    Err(VmErr::Ret(v)) => Ok(v),
+                    Err(VmErr::Msg(msg)) => Err(VmErr::RuntimeError {
+                        message: msg,
+                        span: None,
+                        stack: stack_snapshot,
+                    }),
+                    other => other,
+                };
                 if *is_async {
                     // An async function always resolves to a promise.
                     match result {
