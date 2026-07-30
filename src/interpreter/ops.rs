@@ -190,6 +190,7 @@ impl Interpreter {
         match o {
             Value::Object { props, .. } => props.borrow().iter().map(|(k, _)| k.clone()).collect(),
             Value::Array(i) => (0..i.borrow().len()).map(|x| x.to_string()).collect(),
+            Value::GlobalObject => self.global_keys(),
             _ => vec![],
         }
     }
