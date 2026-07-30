@@ -11,6 +11,10 @@ pub(super) fn install(e: &mut Environment) {
         o.set_prop("values".to_string(), nf("values", object_values));
         o.set_prop("entries".to_string(), nf("entries", object_entries));
         o.set_prop("assign".to_string(), nf("assign", object_assign));
+        o.set_prop(
+            "getOwnPropertyNames".to_string(),
+            nf("getOwnPropertyNames", object_get_own_property_names),
+        );
     }
 }
 
@@ -51,4 +55,22 @@ fn object_assign(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, 
         }
     }
     Ok(target)
+}
+fn object_get_own_property_names(
+    interp: &mut Interpreter,
+    _: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    match v {
+        Value::GlobalObject => {
+            let names = interp.global_keys();
+            Ok(Value::array(
+                names.into_iter().map(Value::String).collect(),
+            ))
+        }
+        _ => Ok(Value::array(
+            interp.keys(&v).into_iter().map(Value::String).collect(),
+        )),
+    }
 }

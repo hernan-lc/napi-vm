@@ -79,6 +79,12 @@ impl Interpreter {
         }
         Ok(r)
     }
+
+    /// Return all global variable names (user-defined + builtins). Used by
+    /// `Object.getOwnPropertyNames(window)`.
+    pub fn global_keys(&self) -> Vec<String> {
+        self.global.borrow().all_keys()
+    }
 }
 
 #[cfg(test)]

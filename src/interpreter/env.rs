@@ -143,6 +143,32 @@ impl Environment {
     pub fn parent_env(&self) -> Option<Env> {
         self.parent.clone()
     }
+
+    /// Return all variable names bound in this frame (not walking the parent
+    /// chain). Used by `Object.getOwnPropertyNames(window)` to enumerate
+    /// globals.
+    pub fn own_keys(&self) -> Vec<String> {
+        match &self.vars {
+            Vars::Small(v) => v.iter().map(|(k, _)| k.clone()).collect(),
+            Vars::Large(m) => m.keys().cloned().collect(),
+        }
+    }
+
+    /// Return all variable names reachable from this scope, walking the parent
+    /// chain. Duplicates across frames are preserved (last write wins at
+    /// lookup time, but the name list is a union).
+    pub fn all_keys(&self) -> Vec<String> {
+        let mut names = self.own_keys();
+        if let Some(ref p) = self.parent {
+            let parent_keys = p.borrow().all_keys();
+            for k in parent_keys {
+                if !names.contains(&k) {
+                    names.push(k);
+                }
+            }
+        }
+        names
+    }
 }
 
 #[derive(Clone)]
