@@ -496,14 +496,41 @@ fn console_err(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
     Ok(Value::Undefined)
 }
 
-/// `console.dir`: print each value with the deep, browser-style expander
-/// (`bindings::to_string`) — nested objects/arrays render inline instead of
-/// the opaque `[object Object]` that `console.log` uses. Cycle- and
-/// depth-safe by construction of that formatter.
+/// `console.dir`: print each value with the pretty, multi-line, indented
+/// expander (`bindings::to_string_pretty`) — the sandbox-native analogue of
+/// Node's `util.inspect`. Nested objects/arrays render as an indented tree
+/// instead of the opaque `[object Object]` that `console.log` uses.
+/// Cycle- and depth-safe by construction of that formatter.
+///
+/// Values are type-colored (keys cyan, strings green, numbers blue, booleans
+/// yellow, null/undefined dimmed) whenever stdout is a TTY, honoring
+/// `NO_COLOR`/`FORCE_COLOR`. Like Node, an options object overrides the
+/// auto-detection: `console.dir(obj, { colors: true })` forces ANSI codes
+/// even into a pipe, `{ colors: false }` suppresses them.
 fn console_dir(_interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = a
+    let colors = match a.get(1) {
+        Some(Value::Object { props, .. }) => props
+            .borrow()
+            .iter()
+            .find(|(k, _)| k == "colors")
+            .and_then(|(_, v)| match v {
+                Value::Bool(b) => Some(*b),
+                _ => None,
+            }),
+        _ => None,
+    }
+    .unwrap_or_else(crate::bindings::colors_enabled);
+
+    // Only the values are printed; a trailing options object is not a value
+    // to inspect (matches Node's `console.dir(obj, options)` signature).
+    let values = if matches!(a.get(1), Some(Value::Object { .. })) && a.len() == 2 {
+        &a[..1]
+    } else {
+        &a[..]
+    };
+    let s = values
         .iter()
-        .map(|v| crate::bindings::to_string(v))
+        .map(|v| crate::bindings::to_string_pretty_colored(v, colors))
         .collect::<Vec<_>>()
         .join(" ");
     println!("{}", s);

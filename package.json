@@ -4,7 +4,7 @@
   "description": "A sandboxed JavaScript virtual machine built from scratch in Rust with NAPI bindings for Node.js",
   "main": "index.js",
   "types": "index.d.ts",
-  "type": "commonjs",
+  "type": "module",
   "files": [
     "index.js",
     "index.d.ts",

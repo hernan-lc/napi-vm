@@ -4,9 +4,15 @@
  * By default `console.log(obj)` in the VM prints the opaque `[object Object]`.
  * This demo shows two ways to get a clean, expanded, browser-like tree:
  *
- *   A. `console.dir(...)`  — a native builtin. Reuses the VM's own deep
- *      formatter (`bindings::to_string`), so it runs fully inside the
- *      sandbox, needs no host, and is cycle- and depth-safe.
+ *   A. `console.dir(...)`  — a native builtin. Reuses the VM's own pretty
+ *      formatter (`bindings::to_string_pretty`), so it runs fully inside the
+ *      sandbox, needs no host, and is cycle- and depth-safe. Prints an
+ *      indented, multi-line tree (scalar-only arrays stay on one line).
+ *      Output is type-colored in a TTY (keys cyan, strings green, numbers
+ *      blue, booleans yellow, null/undefined dimmed); pass an options object
+ *      to override: `console.dir(obj, { colors: true })` forces ANSI codes
+ *      even into a pipe, `{ colors: false }` suppresses them. `NO_COLOR` and
+ *      `FORCE_COLOR` environment variables are honored too.
  *
  *   B. `pretty(...)`       — a host function exposed via `exposeFunction`
  *      that marshals the value to Node and prints it with `util.inspect`
@@ -15,8 +21,9 @@
  *
  * Run:  bun examples/pretty-print.ts
  */
-
-import { Vm } from "../index";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { Vm } = require("../index");
 import { inspect } from "node:util";
 
 const vm = new Vm();
@@ -61,6 +68,10 @@ vm.run(`
   o.self = o;
   console.dir(o);
 `);
+
+// ── Option A with forced ANSI colors (visible even when piped) ──────
+console.log("\n--- console.dir (colors forced) ---");
+vm.run(sample + "console.dir(user, { colors: true });");
 
 // ── Option B: host-side util.inspect ────────────────────────────────
 console.log("\n--- pretty() via util.inspect (host) ---");
