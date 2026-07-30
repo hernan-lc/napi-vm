@@ -485,6 +485,40 @@ impl VM {
         Ok(())
     }
 
+    /// Remove a previously registered module so its exports are no longer
+    /// importable. Essential for hot-reload: call this before re-registering
+    /// a changed module to avoid stale export state.
+    #[napi]
+    pub fn remove_module(&mut self, name: String) -> bool {
+        self.interp.modules.remove(&name).is_some()
+    }
+
+    /// Check whether a module with the given name is registered.
+    #[napi]
+    pub fn has_module(&self, name: String) -> bool {
+        self.interp.modules.contains_key(&name)
+    }
+
+    /// Return the names of all registered modules.
+    #[napi]
+    pub fn list_modules(&self) -> Vec<String> {
+        self.interp.modules.keys().cloned().collect()
+    }
+
+    /// Remove a global binding (including exposed host functions). Returns
+    /// `true` if the binding existed. Use before re-exposing a function on
+    /// hot-reload to avoid leaking stale references.
+    #[napi]
+    pub fn remove_global(&mut self, name: String) -> bool {
+        self.interp.global.borrow_mut().remove(&name)
+    }
+
+    /// Check whether a global binding exists.
+    #[napi]
+    pub fn has_global(&self, name: String) -> bool {
+        self.interp.global.borrow().has(&name)
+    }
+
     /// Call a function defined in the VM (e.g. via a prior `run`) from Node,
     /// marshalling arguments in and the return value out.
     #[napi]

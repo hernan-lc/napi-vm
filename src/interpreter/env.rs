@@ -138,6 +138,27 @@ impl Environment {
         }
     }
 
+    /// Remove a binding from this frame only (does not walk the parent chain).
+    /// Returns `true` if the binding existed and was removed.
+    pub fn remove(&mut self, n: &str) -> bool {
+        match &mut self.vars {
+            Vars::Small(vars) => {
+                if let Some(pos) = vars.iter().position(|(k, _)| k == n) {
+                    vars.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            }
+            Vars::Large(map) => map.remove(n).is_some(),
+        }
+    }
+
+    /// Check whether a binding exists in this frame only (no parent walk).
+    pub fn has(&self, n: &str) -> bool {
+        self.vars.get(n).is_some()
+    }
+
     /// Return the parent environment, if any. Used by the generator thread
     /// spawner to find the builtins frame.
     pub fn parent_env(&self) -> Option<Env> {

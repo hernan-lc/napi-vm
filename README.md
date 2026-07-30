@@ -86,6 +86,11 @@ vm.callFunction("point", [5, 6]); // { x: 5, y: 6 }
 | `vm.callFunction(name, args)` | Call a VM-defined global function; `args` is an array, returns a live JS value |
 | `vm.getGlobal(name)` | Read a global, stringified |
 | `vm.registerModule(name, code)` | Register an ES module so its exports are importable by later `run` calls |
+| `vm.removeModule(name)` | Remove a registered module (returns `bool`); call before re-registering on hot-reload |
+| `vm.hasModule(name)` | Check whether a module is registered |
+| `vm.listModules()` | Return the names of all registered modules |
+| `vm.removeGlobal(name)` | Remove a global binding, including exposed host functions (returns `bool`) |
+| `vm.hasGlobal(name)` | Check whether a global binding exists |
 | `vm.setImportMetaMain(bool)` | Set the value of `import.meta.main` |
 | `debugParse(code)` | Parse code and return the AST as a string |
 

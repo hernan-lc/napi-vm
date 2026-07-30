@@ -20,6 +20,24 @@ export declare class Vm {
    */
   exposeFunction(name: string, func: unknown): void
   /**
+   * Remove a previously registered module so its exports are no longer
+   * importable. Essential for hot-reload: call this before re-registering
+   * a changed module to avoid stale export state.
+   */
+  removeModule(name: string): boolean
+  /** Check whether a module with the given name is registered. */
+  hasModule(name: string): boolean
+  /** Return the names of all registered modules. */
+  listModules(): Array<string>
+  /**
+   * Remove a global binding (including exposed host functions). Returns
+   * `true` if the binding existed. Use before re-exposing a function on
+   * hot-reload to avoid leaking stale references.
+   */
+  removeGlobal(name: string): boolean
+  /** Check whether a global binding exists. */
+  hasGlobal(name: string): boolean
+  /**
    * Call a function defined in the VM (e.g. via a prior `run`) from Node,
    * marshalling arguments in and the return value out.
    */
