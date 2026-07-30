@@ -6,7 +6,10 @@ use std::rc::Rc;
 
 use super::{Environment, Interpreter, Module};
 use crate::error::{VmErr, vm_err, vm_ret, vm_throw};
-use crate::parser::{ClassMember, Expr, ExprOrBlock, ForInit, ObjectProp, Statement};
+use crate::parser::{
+    ClassMember, Expr, ExprOrBlock, ForInit, ObjectProp, Statement, arrow_body_references,
+    stmts_reference,
+};
 use crate::value::{PromiseState, Value};
 
 fn is_label_break(label: &Option<String>, m: &str) -> bool {
@@ -55,6 +58,7 @@ impl Interpreter {
                         is_arrow: false,
                         is_async: *is_async,
                         is_generator: *is_generator,
+                        uses_arguments: stmts_reference(body, "arguments"),
                     },
                 );
                 Ok(Value::Undefined)
@@ -100,6 +104,7 @@ impl Interpreter {
                                 is_arrow: false,
                                 is_async: false,
                                 is_generator: false,
+                                uses_arguments: stmts_reference(mb, "arguments"),
                             };
                             if *st {
                                 statics.push((mname.clone(), fn_val));
@@ -138,6 +143,7 @@ impl Interpreter {
                                 is_arrow: false,
                                 is_async: false,
                                 is_generator: false,
+                                uses_arguments: stmts_reference(gb, "arguments"),
                             };
                             if *st {
                                 statics.push((gname.clone(), getter_fn));
@@ -159,6 +165,7 @@ impl Interpreter {
                                 is_arrow: false,
                                 is_async: false,
                                 is_generator: false,
+                                uses_arguments: stmts_reference(sb, "arguments"),
                             };
                             if *st {
                                 statics.push((sname.clone(), setter_fn));
@@ -204,6 +211,7 @@ impl Interpreter {
                 let constructor = Value::Function {
                     name: Some(name.clone()),
                     params: Rc::new(ctor_params),
+                    uses_arguments: stmts_reference(&full_ctor_body, "arguments"),
                     body: Rc::new(full_ctor_body),
                     closure: Some(ctor_closure),
                     is_arrow: false,
@@ -624,6 +632,7 @@ impl Interpreter {
                                 is_arrow: false,
                                 is_async: false,
                                 is_generator: false,
+                                uses_arguments: stmts_reference(body, "arguments"),
                             };
                             o.push((name.clone(), fn_val));
                         }
@@ -636,6 +645,7 @@ impl Interpreter {
                                 is_arrow: false,
                                 is_async: false,
                                 is_generator: false,
+                                uses_arguments: stmts_reference(body, "arguments"),
                             };
                             o.push((name.clone(), fn_val));
                         }
@@ -648,6 +658,7 @@ impl Interpreter {
                                 is_arrow: false,
                                 is_async: false,
                                 is_generator: false,
+                                uses_arguments: stmts_reference(body, "arguments"),
                             };
                             o.push((name.clone(), fn_val));
                         }
@@ -825,8 +836,11 @@ impl Interpreter {
                         } else {
                             v
                         };
-                        if !self.global.borrow_mut().assign(n, fv.clone()) {
-                            self.global.borrow_mut().set(n, fv.clone());
+                        {
+                            let mut env = self.global.borrow_mut();
+                            if !env.assign(n, fv.clone()) {
+                                env.set(n, fv.clone());
+                            }
                         }
                         Ok(fv)
                     }
@@ -866,6 +880,7 @@ impl Interpreter {
                 name: None,
                 params: Rc::new(params.clone()),
                 closure: Some(self.global.clone()),
+                uses_arguments: arrow_body_references(body, "arguments"),
                 body: Rc::new(match body.as_ref() {
                     ExprOrBlock::Block(s) => s.clone(),
                     ExprOrBlock::Expr(e) => vec![Statement::Return(Some(e.clone()))],
@@ -888,6 +903,7 @@ impl Interpreter {
                 is_arrow: false,
                 is_async: *is_async,
                 is_generator: *is_generator,
+                uses_arguments: stmts_reference(body, "arguments"),
             }),
             Expr::New { callee, args } => {
                 let mut a = Vec::new();

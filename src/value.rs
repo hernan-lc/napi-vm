@@ -28,6 +28,9 @@ pub enum Value {
         is_arrow: bool,
         is_async: bool,
         is_generator: bool,
+        /// Whether the body references `arguments`. Frames for functions that
+        /// never read it skip building the (detached) arguments object.
+        uses_arguments: bool,
     },
     NativeFunction {
         name: String,

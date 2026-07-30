@@ -112,7 +112,7 @@ impl Interpreter {
         obj: &Value,
         prop: &Value,
         val: Value,
-    ) -> Result<Value, VmErr> {
+    ) -> Result<(), VmErr> {
         match (obj, prop) {
             (Value::Object { props, .. }, Value::String(k)) => {
                 // If a setter is defined for this key, invoke it.
@@ -125,38 +125,38 @@ impl Interpreter {
                     })
                     .map(|(_, xv)| xv.clone());
                 if let Some(setter_fn) = setter {
-                    self.call_this(&setter_fn, obj.clone(), vec![val.clone()])?;
-                    return Ok(val);
+                    self.call_this(&setter_fn, obj.clone(), vec![val])?;
+                    return Ok(());
                 }
                 let mut props = props.borrow_mut();
                 for (xk, xv) in props.iter_mut() {
                     if xk == k {
-                        *xv = val.clone();
-                        return Ok(val);
+                        *xv = val;
+                        return Ok(());
                     }
                 }
-                props.push((k.clone(), val.clone()));
-                Ok(val)
+                props.push((k.clone(), val));
+                Ok(())
             }
             // `window.x = v` / `globalThis.x = v` define a real global.
             (Value::GlobalObject, Value::String(k)) => {
-                self.global.borrow_mut().set(k, val.clone());
-                Ok(val)
+                self.global.borrow_mut().set(k, val);
+                Ok(())
             }
             (Value::Array(items), Value::Number(i)) => {
                 let mut items = items.borrow_mut();
                 let idx = *i as usize;
                 if idx < items.len() {
-                    items[idx] = val.clone();
+                    items[idx] = val;
                 } else {
                     while items.len() < idx {
                         items.push(Value::Undefined);
                     }
-                    items.push(val.clone());
+                    items.push(val);
                 }
-                Ok(val)
+                Ok(())
             }
-            _ => vm_err("Invalid assignment target"),
+            _ => Err(VmErr::Msg("Invalid assignment target".to_string())),
         }
     }
 
@@ -174,6 +174,7 @@ impl Interpreter {
                 is_arrow,
                 is_async,
                 is_generator,
+                uses_arguments,
                 ..
             } => {
                 // Calling a generator function does not run its body; it returns
@@ -243,15 +244,18 @@ impl Interpreter {
                     }
                 }
 
-                // Create arguments object
-                let args_obj = Value::object(
-                    args.iter()
-                        .enumerate()
-                        .map(|(i, v)| (i.to_string(), v.clone()))
-                        .collect(),
-                );
-                args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
-                fe.borrow_mut().set("arguments", args_obj);
+                // Create the (detached) arguments object only when the body
+                // actually reads it; most functions never do.
+                if *uses_arguments {
+                    let args_obj = Value::object(
+                        args.iter()
+                            .enumerate()
+                            .map(|(i, v)| (i.to_string(), v.clone()))
+                            .collect(),
+                    );
+                    args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
+                    fe.borrow_mut().set("arguments", args_obj);
+                }
 
                 let s = self.global.clone();
                 self.global = fe;
@@ -334,6 +338,7 @@ impl Interpreter {
                 params,
                 body,
                 closure,
+                uses_arguments,
                 ..
             } => {
                 let inst = Value::object(vec![]);
@@ -378,14 +383,16 @@ impl Interpreter {
                     }
                 }
 
-                let args_obj = Value::object(
-                    args.iter()
-                        .enumerate()
-                        .map(|(i, v)| (i.to_string(), v.clone()))
-                        .collect(),
-                );
-                args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
-                fe.borrow_mut().set("arguments", args_obj);
+                if *uses_arguments {
+                    let args_obj = Value::object(
+                        args.iter()
+                            .enumerate()
+                            .map(|(i, v)| (i.to_string(), v.clone()))
+                            .collect(),
+                    );
+                    args_obj.set_prop("length".to_string(), Value::Number(args.len() as f64));
+                    fe.borrow_mut().set("arguments", args_obj);
+                }
 
                 let s = self.global.clone();
                 self.global = fe;

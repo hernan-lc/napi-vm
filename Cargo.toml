@@ -18,3 +18,10 @@ criterion = "0.5"
 [[bench]]
 name = "vm"
 harness = false
+
+# Interpreter hot paths benefit from whole-program optimization and a single
+# codegen unit. `panic` stays at the default (unwind) because the NAPI layer
+# catches panics across the boundary.
+[profile.release]
+lto = "thin"
+codegen-units = 1
