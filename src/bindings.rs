@@ -400,6 +400,13 @@ struct AsyncState {
     pending: Mutex<HashMap<usize, mpsc::Receiver<Result<SendValue, String>>>>,
 }
 
+// Safety: `tsfn` is a raw pointer (hence `!Send + !Sync` by default), but
+// `napi_threadsafe_function` is explicitly designed for cross-thread use —
+// `napi_call_threadsafe_function` is thread-safe by contract. The remaining
+// fields (`AtomicUsize`, `Mutex<..>`) are already `Send + Sync`.
+unsafe impl Send for AsyncState {}
+unsafe impl Sync for AsyncState {}
+
 /// Bridge that stores persisted references to Node.js functions and invokes
 /// them synchronously (or asynchronously) on behalf of the VM.
 struct NapiHostBridge {
@@ -474,10 +481,10 @@ impl NapiHostBridge {
                 ptr::null_mut(), // no JS callback function
                 ptr::null_mut(), // no async_resource
                 name,
-                0,     // max_queue_size (0 = unlimited)
-                1,     // initial_thread_count
+                0,               // max_queue_size (0 = unlimited)
+                1,               // initial_thread_count
                 ptr::null_mut(), // thread_finalize_data
-                None,  // thread_finalize_cb
+                None,            // thread_finalize_cb
                 ptr::null_mut(), // context
                 Some(tsfn_callback),
                 &mut tsfn,
@@ -538,10 +545,10 @@ impl HostBridge for NapiHostBridge {
         // When running on the VM thread (inside `runAsync`), we cannot touch
         // `napi_env` directly — it's bound to the main thread. Route through
         // the TSFN + channel instead.
-        if self.on_vm_thread.load(Ordering::Acquire) != 0 {
-            if let Some(state) = self.get_async_state() {
-                return self.call_via_tsfn(state, id, args, &self.funcs);
-            }
+        if self.on_vm_thread.load(Ordering::Acquire) != 0
+            && let Some(state) = self.get_async_state()
+        {
+            return self.call_via_tsfn(state, id, args, &self.funcs);
         }
 
         let env = self.env;
@@ -583,9 +590,9 @@ impl HostBridge for NapiHostBridge {
     }
 
     fn call_host_async(&self, id: usize, args: Vec<Value>) -> Result<Value, VmErr> {
-        let state = self.get_async_state().ok_or_else(|| {
-            VmErr::Msg("async bridge not initialized".to_string())
-        })?;
+        let state = self
+            .get_async_state()
+            .ok_or_else(|| VmErr::Msg("async bridge not initialized".to_string()))?;
         let func_ref = *self
             .async_funcs
             .borrow()
@@ -624,13 +631,16 @@ impl HostBridge for NapiHostBridge {
     }
 
     fn await_host(&self, pending_id: usize) -> Result<Value, VmErr> {
-        let state = self.get_async_state().ok_or_else(|| {
-            VmErr::Msg("async bridge not initialized".to_string())
-        })?;
+        let state = self
+            .get_async_state()
+            .ok_or_else(|| VmErr::Msg("async bridge not initialized".to_string()))?;
         // Take the receiver out of the pending map and block on it.
-        let rx = state.pending.lock().unwrap().remove(&pending_id).ok_or_else(|| {
-            VmErr::Msg(format!("no pending async call #{}", pending_id))
-        })?;
+        let rx = state
+            .pending
+            .lock()
+            .unwrap()
+            .remove(&pending_id)
+            .ok_or_else(|| VmErr::Msg(format!("no pending async call #{}", pending_id)))?;
         match rx.recv() {
             Ok(Ok(SendValue(v))) => Ok(v),
             Ok(Err(msg)) => Err(VmErr::Msg(format!("Error: {}", msg))),
@@ -657,7 +667,9 @@ extern "C" fn tsfn_callback(
     let mut func = ptr::null_mut();
     let status = unsafe { sys::napi_get_reference_value(env, msg.func_ref, &mut func) };
     if status != sys::Status::napi_ok || func.is_null() {
-        let _ = msg.reply_tx.send(Err("failed to resolve async function ref".into()));
+        let _ = msg
+            .reply_tx
+            .send(Err("failed to resolve async function ref".into()));
         return;
     }
 
@@ -677,9 +689,8 @@ extern "C" fn tsfn_callback(
     let mut recv = ptr::null_mut();
     unsafe { sys::napi_get_global(env, &mut recv) };
     let mut result = ptr::null_mut();
-    let status = unsafe {
-        sys::napi_call_function(env, recv, func, argv.len(), argv.as_ptr(), &mut result)
-    };
+    let status =
+        unsafe { sys::napi_call_function(env, recv, func, argv.len(), argv.as_ptr(), &mut result) };
     if status != sys::Status::napi_ok {
         let mut exc = ptr::null_mut();
         unsafe { sys::napi_get_and_clear_last_exception(env, &mut exc) };
@@ -704,7 +715,7 @@ extern "C" fn tsfn_callback(
     let mut then_val = ptr::null_mut();
     let then_key = unsafe {
         let mut k = ptr::null_mut();
-        sys::napi_create_string_utf8(env, b"then\0".as_ptr() as *const c_char, 4, &mut k);
+        sys::napi_create_string_utf8(env, c"then".as_ptr(), 4, &mut k);
         k
     };
     unsafe { sys::napi_get_property(env, result, then_key, &mut then_val) };
@@ -715,8 +726,12 @@ extern "C" fn tsfn_callback(
     if then_type != sys::ValueType::napi_function {
         // Not a thenable — resolve immediately with the value.
         match from_napi(env, result) {
-            Ok(v) => { let _ = reply_tx.send(Ok(SendValue(v))); }
-            Err(e) => { let _ = reply_tx.send(Err(e.to_string())); }
+            Ok(v) => {
+                let _ = reply_tx.send(Ok(SendValue(v)));
+            }
+            Err(e) => {
+                let _ = reply_tx.send(Err(e.to_string()));
+            }
         }
         return;
     }
@@ -731,7 +746,7 @@ extern "C" fn tsfn_callback(
     unsafe {
         sys::napi_create_function(
             env,
-            b"resolve\0".as_ptr() as *const c_char,
+            c"resolve".as_ptr(),
             7,
             Some(promise_resolve_cb),
             resolve_tx as *mut std::ffi::c_void,
@@ -743,7 +758,7 @@ extern "C" fn tsfn_callback(
     unsafe {
         sys::napi_create_function(
             env,
-            b"reject\0".as_ptr() as *const c_char,
+            c"reject".as_ptr(),
             6,
             Some(promise_reject_cb),
             reject_tx as *mut std::ffi::c_void,
@@ -776,7 +791,14 @@ extern "C" fn promise_resolve_cb(
     let mut argv = [ptr::null_mut(); 1];
     let mut data = ptr::null_mut();
     unsafe {
-        sys::napi_get_cb_info(env, info, &mut argc, argv.as_mut_ptr(), ptr::null_mut(), &mut data);
+        sys::napi_get_cb_info(
+            env,
+            info,
+            &mut argc,
+            argv.as_mut_ptr(),
+            ptr::null_mut(),
+            &mut data,
+        );
     }
     if data.is_null() {
         return ptr::null_mut();
@@ -809,7 +831,14 @@ extern "C" fn promise_reject_cb(
     let mut argv = [ptr::null_mut(); 1];
     let mut data = ptr::null_mut();
     unsafe {
-        sys::napi_get_cb_info(env, info, &mut argc, argv.as_mut_ptr(), ptr::null_mut(), &mut data);
+        sys::napi_get_cb_info(
+            env,
+            info,
+            &mut argc,
+            argv.as_mut_ptr(),
+            ptr::null_mut(),
+            &mut data,
+        );
     }
     if data.is_null() {
         return ptr::null_mut();
@@ -1135,12 +1164,24 @@ impl VM {
                             // Unwrap settled promises: `runAsync` callers
                             // expect the resolved value, not `[object Promise]`.
                             match &v {
-                                Value::Promise { state: crate::value::PromiseState::Fulfilled, value } => {
-                                    let inner = value.as_ref().map(|b| (**b).clone()).unwrap_or(Value::Undefined);
+                                Value::Promise {
+                                    state: crate::value::PromiseState::Fulfilled,
+                                    value,
+                                } => {
+                                    let inner = value
+                                        .as_ref()
+                                        .map(|b| (**b).clone())
+                                        .unwrap_or(Value::Undefined);
                                     Ok(to_string(&inner))
                                 }
-                                Value::Promise { state: crate::value::PromiseState::Rejected, value } => {
-                                    let reason = value.as_ref().map(|b| (**b).clone()).unwrap_or(Value::Undefined);
+                                Value::Promise {
+                                    state: crate::value::PromiseState::Rejected,
+                                    value,
+                                } => {
+                                    let reason = value
+                                        .as_ref()
+                                        .map(|b| (**b).clone())
+                                        .unwrap_or(Value::Undefined);
                                     Err(to_string(&reason))
                                 }
                                 _ => Ok(to_string(&v)),
