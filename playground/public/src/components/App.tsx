@@ -5,9 +5,14 @@ import { Console } from "./Console.tsx";
 import { CompletionPopup } from "./CompletionPopup.tsx";
 import { useVm } from "../hooks/useVm.ts";
 import { useCompletion } from "../hooks/useCompletion.ts";
+import { useI18n } from "../i18n/useI18n.ts";
+import { useTheme } from "../hooks/useTheme.ts";
 import { SAMPLE } from "../examples.ts";
 
 export function App() {
+  const { t, locale, setLocale } = useI18n();
+  const { theme, toggleTheme } = useTheme();
+
   const {
     status,
     lines,
@@ -18,7 +23,7 @@ export function App() {
     clearLines,
     updateLoopLimit,
     refreshDiagnostic,
-  } = useVm();
+  } = useVm(t);
 
   const [code, setCode] = useState(SAMPLE);
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -75,10 +80,15 @@ export function App() {
         status={status}
         loopLimit={loopLimit}
         diagnostic={diagnostic}
+        theme={theme}
+        locale={locale}
+        t={t}
         onRun={handleRun}
         onReset={reset}
         onClear={clearLines}
         onLoopLimitChange={updateLoopLimit}
+        onToggleTheme={toggleTheme}
+        onLocaleChange={setLocale}
       />
       <main class="layout">
         <section class="editor-wrap">
@@ -113,10 +123,10 @@ export function App() {
           />
         </section>
         <div class="divider">
-          <span>console</span>
-          <span class="divider-count">{lines.length} {lines.length === 1 ? "entry" : "entries"}</span>
+          <span>{t.console}</span>
+          <span class="divider-count">{lines.length} {lines.length === 1 ? t.entry : t.entries}</span>
         </div>
-        <Console lines={lines} />
+        <Console lines={lines} t={t} />
       </main>
     </div>
   );

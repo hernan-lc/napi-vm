@@ -8,6 +8,8 @@ import {
   setLoopLimit,
 } from "../vm.ts";
 import type { Diagnostic, HostOptions, RunResult } from "../types.ts";
+import type { Translations } from "../i18n/translations.ts";
+import type { LogEntry, LogLevel } from "../components/logger/types.ts";
 
 declare class WasmVm {
   set_loop_limit(n: number): void;
@@ -21,33 +23,22 @@ declare class WasmVm {
 
 export type VmStatus = "loading" | "ready" | "error";
 
-export interface ConsoleLine {
-  id: number;
-  cls: string;
-  html: string;
-}
-
-export function useVm() {
+export function useVm(t: Translations) {
   const vmRef = useRef<unknown>(null);
   const [status, setStatus] = useState<VmStatus>("loading");
   const [loopLimit, setLoopLimitState] = useState(5_000_000);
-  const [lines, setLines] = useState<ConsoleLine[]>([]);
-  const [failedModules, setFailedModules] = useState<string[]>([]);
+  const [entries, setEntries] = useState<LogEntry[]>([]);
   const [diagnostic, setDiagnostic] = useState<Diagnostic | null>(null);
-  const lineId = useRef(0);
+  const entryId = useRef(0);
 
-  const addLine = useCallback((cls: string, html: string) => {
-    const id = ++lineId.current;
-    setLines((prev) => [...prev, { id, cls, html }]);
+  const addEntry = useCallback((level: LogLevel, text: string, html?: string) => {
+    const id = ++entryId.current;
+    const timestamp = Date.now();
+    setEntries((prev) => [...prev, { id, level, text, timestamp, html }]);
   }, []);
 
-  const sys = useCallback(
-    (text: string) => addLine("sys", escapeHtml(text)),
-    [addLine]
-  );
-
-  const clearLines = useCallback(() => {
-    setLines([]);
+  const clearEntries = useCallback(() => {
+    setEntries([]);
     setDiagnostic(null);
   }, []);
 
@@ -55,9 +46,9 @@ export function useVm() {
     (): HostOptions => ({
       loopLimit,
       onAlert: (msg: string) =>
-        addLine("warn", `<span class="tag">alert</span>${escapeHtml(msg)}`),
+        addEntry("warn", msg, `<span class="tag">${t.alert}</span>${escapeHtml(msg)}`),
     }),
-    [loopLimit, addLine]
+    [loopLimit, addEntry, t]
   );
 
   const run = useCallback(
@@ -69,18 +60,17 @@ export function useVm() {
       const ms = performance.now() - t0;
 
       for (const log of r.logs || []) {
-        const tag = log.level !== "log" ? `<span class="tag">${log.level}</span>` : "";
-        addLine(log.level, tag + escapeHtml(log.text));
+        const level = log.level as LogLevel;
+        addEntry(level, log.text);
       }
 
-      const msHtml = `<span class="ms">${ms.toFixed(1)} ms</span>`;
       if (r.ok) {
-        addLine("result", `<span class="arrow">&larr;</span>${escapeHtml(r.value)}${msHtml}`);
+        addEntry("result", `${r.value}  ${ms.toFixed(1)} ms`, `<span class="arrow">&larr;</span>${escapeHtml(r.value)}<span class="ms">${ms.toFixed(1)} ms</span>`);
       } else {
-        addLine("error", `${escapeHtml(r.error || "error")}${msHtml}`);
+        addEntry("error", `${r.error || "error"}  ${ms.toFixed(1)} ms`, `${escapeHtml(r.error || "error")}<span class="ms">${ms.toFixed(1)} ms</span>`);
       }
     },
-    [addLine]
+    [addEntry]
   );
 
   const reset = useCallback(() => {
@@ -88,10 +78,9 @@ export function useVm() {
     if (!vm) return;
     (vm as unknown as WasmVm).reset();
     const failed = rehost(vm as unknown as WasmVm, opts());
-    setFailedModules(failed);
-    for (const f of failed) sys("failed to register module " + f);
-    sys("VM state reset");
-  }, [opts, sys]);
+    for (const f of failed) addEntry("sys", "failed to register module " + f);
+    addEntry("sys", "VM state reset");
+  }, [opts, addEntry]);
 
   const updateLoopLimit = useCallback(
     (n: number) => {
@@ -120,13 +109,12 @@ export function useVm() {
         if (cancelled) return;
         const built = createVm(opts());
         vmRef.current = built.vm;
-        setFailedModules(built.failed);
         setStatus("ready");
-        sys("WASM VM ready \u2014 running entirely in your browser");
+        addEntry("sys", t.vmReady);
       } catch (e) {
         if (cancelled) return;
         setStatus("error");
-        sys("could not initialise the WASM VM: " + e);
+        addEntry("sys", t.vmFailed + " " + e);
       }
     }
     boot();
@@ -135,14 +123,13 @@ export function useVm() {
 
   return {
     status,
-    lines,
+    entries,
     diagnostic,
-    failedModules,
     loopLimit,
     run,
     reset,
-    clearLines,
-    sys,
+    clearEntries,
+    addEntry,
     updateLoopLimit,
     refreshDiagnostic,
   };
