@@ -1,18 +1,18 @@
-import type { ModuleDef } from "./types";
+import type { ModuleDef } from "./types.ts";
 
-const MATH = `
+export const MATH = `
 export function double(x) { return x * 2; }
 export function clamp(x, lo, hi) { return x < lo ? lo : (x > hi ? hi : x); }
 export const PI = 3.141592653589793;
 `;
 
-const FORMAT = `
+export const FORMAT = `
 export function upper(s) { return (s + "").toUpperCase(); }
 export function label(name, value) { return name + " = " + value; }
 export function pad2(n) { return n < 10 ? "0" + n : "" + n; }
 `;
 
-const STORE = `
+export const STORE = `
 import { clamp } from "math";
 
 export class Store {

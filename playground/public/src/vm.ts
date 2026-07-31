@@ -1,6 +1,9 @@
 import init, { WasmVm } from "/pkg/napi_vm.js";
-import { MODULES } from "./examples";
-import type { HostOptions } from "./types";
+import { MODULES, SAMPLE } from "./examples.ts";
+import type { CompletionItem, Diagnostic, HostOptions, ModuleDef, RunResult } from "./types.ts";
+
+export { SAMPLE, MODULES };
+export type { CompletionItem, Diagnostic, RunResult, ModuleDef };
 
 export async function initWasm(): Promise<void> {
   await init();
@@ -31,16 +34,16 @@ export function rehost(vm: WasmVm, opts: HostOptions): string[] {
   return setupHost(vm, { onAlert: opts.onAlert });
 }
 
-export function runCode(vm: WasmVm, code: string): ReturnType<WasmVm["run"]> {
-  return vm.run(code);
+export function runCode(vm: WasmVm, code: string): RunResult {
+  return vm.run(code) as RunResult;
 }
 
-export function complete(vm: WasmVm, code: string, byteOffset: number): ReturnType<WasmVm["complete"]> {
-  return vm.complete(code, byteOffset);
+export function complete(vm: WasmVm, code: string, byteOffset: number): CompletionItem[] {
+  return vm.complete(code, byteOffset) as CompletionItem[];
 }
 
-export function diagnose(vm: WasmVm, code: string): ReturnType<WasmVm["diagnose"]> {
-  return vm.diagnose(code);
+export function diagnose(vm: WasmVm, code: string): Diagnostic[] {
+  return vm.diagnose(code) as Diagnostic[];
 }
 
 export function setLoopLimit(vm: WasmVm, n: number): void {

@@ -32,22 +32,3 @@ export interface ModuleDef {
   name: string;
   source: string;
 }
-
-export interface ConsoleView {
-  addLine(cls: string, html: string): void;
-  sys(text: string): void;
-  clear(): void;
-  renderResult(r: RunResult, ms: number): void;
-}
-
-export interface CompletionController {
-  isOpen(): boolean;
-  close(): void;
-  request(force: boolean): void;
-  move(delta: number): void;
-  accept(): void;
-}
-
-export interface DiagnosticsController {
-  refresh(): void;
-}
