@@ -1,16 +1,5 @@
-// The playground's example program and the modules registered into the VM.
-//
-// This is data only — no logic — so the editor sample and the registered
-// modules stay easy to read and edit. The VM interprets JavaScript (not
-// TypeScript), so everything here is plain, runnable JS.
-//
-// Two VM quirks shape this example:
-//   • `String`/`Number` are namespace objects, not callable — coerce with
-//     concatenation (`s + ""`) instead of `String(s)`.
-//   • a method literally named `get`/`set` is misparsed as an accessor, so the
-//     Store class uses `read`/`write` instead.
+import type { ModuleDef } from "./types";
 
-/** Registered first; `store` imports from it, so order matters. */
 const MATH = `
 export function double(x) { return x * 2; }
 export function clamp(x, lo, hi) { return x < lo ? lo : (x > hi ? hi : x); }
@@ -23,7 +12,6 @@ export function label(name, value) { return name + " = " + value; }
 export function pad2(n) { return n < 10 ? "0" + n : "" + n; }
 `;
 
-// Imports from `math` (module-imports-module) and exposes a default export.
 const STORE = `
 import { clamp } from "math";
 
@@ -45,14 +33,12 @@ export function createStore(initial) { return new Store(initial); }
 export default createStore;
 `;
 
-/** Modules registered into every fresh VM, in dependency order. */
-export const MODULES = [
+export const MODULES: ModuleDef[] = [
   { name: "math", source: MATH },
   { name: "format", source: FORMAT },
   { name: "store", source: STORE },
 ];
 
-/** The program loaded into the editor on startup. */
 export const SAMPLE = `// napi-vm playground — a JS interpreter written in Rust, running in your
 // browser via WebAssembly. Ctrl/⌘+Enter to run · Ctrl+Space to complete.
 //

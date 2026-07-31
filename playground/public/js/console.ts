@@ -1,21 +1,21 @@
-// Console pane rendering: append log/result/error/system lines into the
-// console element. Pure presentation — no VM knowledge.
+import type { ConsoleView, RunResult } from "./types";
 
-const LEVEL_TAG = { warn: "warn", error: "error", dir: "dir", info: "info" };
+const LEVEL_TAG: Record<string, string> = {
+  warn: "warn",
+  error: "error",
+  dir: "dir",
+  info: "info",
+};
 
-export function escapeHtml(s) {
+export function escapeHtml(s: string | number | boolean): string {
   return String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
 
-/**
- * Bind a console renderer to a container element.
- * @param {HTMLElement} el
- */
-export function createConsole(el) {
-  function addLine(cls, html) {
+export function createConsole(el: HTMLElement): ConsoleView {
+  function addLine(cls: string, html: string): void {
     const div = document.createElement("div");
     div.className = "line " + cls;
     div.innerHTML = html;
@@ -23,16 +23,15 @@ export function createConsole(el) {
     el.scrollTop = el.scrollHeight;
   }
 
-  function sys(text) {
+  function sys(text: string): void {
     addLine("sys", escapeHtml(text));
   }
 
-  function clear() {
+  function clear(): void {
     el.innerHTML = "";
   }
 
-  /** Render a `WasmVm.run` result (`{ ok, value, error, logs }`) and its logs. */
-  function renderResult(r, ms) {
+  function renderResult(r: RunResult, ms: number): void {
     for (const log of r.logs || []) {
       const tag = LEVEL_TAG[log.level];
       const prefix = tag ? `<span class="tag">${tag}</span>` : "";

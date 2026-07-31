@@ -1,14 +1,16 @@
-// Autocomplete popup. Candidates come from the shared Rust core via
-// `WasmVm.complete`; this module only decides when to pop up, renders the
-// list, handles selection, and inserts the accepted label.
-import { complete } from "./vm.js";
-import { escapeHtml } from "./console.js";
+import { complete } from "./vm";
+import { escapeHtml } from "./console";
+import type { CompletionController, CompletionItem } from "./types";
 
-const KIND_LETTER = {
+declare class WasmVm {
+  complete(source: string, offset: number): CompletionItem[];
+}
+
+const KIND_LETTER: Record<string, string> = {
   variable: "x",
-  function: "ƒ",
-  method: "ƒ",
-  property: "•",
+  function: "\u0192",
+  method: "\u0192",
+  property: "\u2022",
   class: "C",
   module: "M",
   keyword: "k",
@@ -16,54 +18,45 @@ const KIND_LETTER = {
   exposed: "h",
 };
 
-/**
- * @param {object} opts
- * @param {HTMLTextAreaElement} opts.editor
- * @param {HTMLElement} opts.popup
- * @param {() => any} opts.getVm  returns the live WasmVm (or null)
- */
-export function createCompletion({ editor, popup, getVm }) {
-  let items = [];
+interface CompletionOpts {
+  editor: HTMLTextAreaElement;
+  popup: HTMLElement;
+  getVm: () => WasmVm | null;
+}
+
+export function createCompletion({ editor, popup, getVm }: CompletionOpts): CompletionController {
+  let items: CompletionItem[] = [];
   let sel = 0;
   let prefix = "";
 
-  function isOpen() {
+  function isOpen(): boolean {
     return !popup.hidden;
   }
 
-  /**
-   * Classify the text before the caret just enough to drive UX: member vs
-   * bare identifier, and the word fragment to replace on accept. The actual
-   * candidates come from the core, not from anything computed here.
-   */
-  function analyze(before) {
-    const word = (before.match(/([\w$]*)$/) || [, ""])[1];
+  function analyze(before: string): { kind: "member" | "ident"; prefix: string } {
+    const word = (before.match(/([\w$]*)$/) || [, ""])[1]!;
     const isMember = /[\w$)\]"']\.[\w$]*$/.test(before);
     return { kind: isMember ? "member" : "ident", prefix: word };
   }
 
-  function request(force) {
+  function request(force: boolean): void {
     const vm = getVm();
     if (!vm) return;
     const caret = editor.selectionStart;
     const before = editor.value.slice(0, caret);
     const a = analyze(before);
 
-    // Identifier completion is explicit-only (Ctrl+Space) to avoid noise;
-    // member completion pops automatically after a dot.
     if (a.kind === "ident" && (!force || a.prefix.length === 0)) {
       close();
       return;
     }
 
-    // The core works in UTF-8 byte offsets; the caret is a UTF-16 code unit
-    // offset. Re-encode the prefix so non-ASCII lines stay aligned.
     const byteOffset = new TextEncoder().encode(before).length;
     prefix = a.prefix;
-    show(complete(vm, editor.value, byteOffset));
+    show(complete(vm as any, editor.value, byteOffset) as CompletionItem[]);
   }
 
-  function show(list) {
+  function show(list: CompletionItem[]): void {
     if (!list || list.length === 0) {
       close();
       return;
@@ -77,31 +70,39 @@ export function createCompletion({ editor, popup, getVm }) {
       const letter = KIND_LETTER[it.kind] || "?";
       const detail = it.detail ? `<span class="detail">${escapeHtml(it.detail)}</span>` : "";
       div.innerHTML = `<span class="kind ${it.kind}">${letter}</span>${escapeHtml(it.label)}${detail}`;
-      div.addEventListener("mousedown", (e) => { e.preventDefault(); acceptItem(it); });
-      div.addEventListener("mousemove", () => { if (sel !== i) { sel = i; paintSel(); } });
+      div.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        acceptItem(it);
+      });
+      div.addEventListener("mousemove", () => {
+        if (sel !== i) {
+          sel = i;
+          paintSel();
+        }
+      });
       popup.appendChild(div);
     });
-    popup.hidden = false; // unhide first so offsetWidth/Height are measurable
+    popup.hidden = false;
     position();
   }
 
-  function paintSel() {
+  function paintSel(): void {
     [...popup.children].forEach((el, i) => el.classList.toggle("sel", i === sel));
     const s = popup.children[sel];
     if (s) s.scrollIntoView({ block: "nearest" });
   }
 
-  function move(delta) {
+  function move(delta: number): void {
     if (items.length === 0) return;
     sel = (sel + delta + items.length) % items.length;
     paintSel();
   }
 
-  function accept() {
+  function accept(): void {
     if (items[sel]) acceptItem(items[sel]);
   }
 
-  function acceptItem(item) {
+  function acceptItem(item: CompletionItem): void {
     const caret = editor.selectionStart;
     const start = caret - prefix.length;
     editor.setRangeText(item.label, start, caret, "end");
@@ -109,14 +110,14 @@ export function createCompletion({ editor, popup, getVm }) {
     editor.focus();
   }
 
-  function close() {
+  function close(): void {
     popup.hidden = true;
     items = [];
     sel = 0;
     prefix = "";
   }
 
-  function position() {
+  function position(): void {
     const caret = editor.selectionStart;
     const coords = caretCoordinates(editor, caret);
     const cs = getComputedStyle(editor);
@@ -126,7 +127,7 @@ export function createCompletion({ editor, popup, getVm }) {
     let left = coords.left - editor.scrollLeft + 2;
     let top = coords.top - editor.scrollTop + lh;
 
-    const wrap = editor.parentElement;
+    const wrap = editor.parentElement!;
     const maxLeft = wrap.clientWidth - popup.offsetWidth - 8;
     const maxTop = wrap.clientHeight - popup.offsetHeight - 8;
     left = Math.max(4, Math.min(left, maxLeft));
@@ -136,8 +137,7 @@ export function createCompletion({ editor, popup, getVm }) {
     popup.style.top = top + "px";
   }
 
-  // Mirror-div technique to measure caret pixel coordinates in a textarea.
-  function caretCoordinates(element, pos) {
+  function caretCoordinates(element: HTMLTextAreaElement, pos: number): { top: number; left: number } {
     const div = document.createElement("div");
     const style = div.style;
     const cs = getComputedStyle(element);
@@ -149,11 +149,13 @@ export function createCompletion({ editor, popup, getVm }) {
       "fontSizeAdjust", "lineHeight", "fontFamily", "textAlign", "textTransform",
       "textIndent", "textDecoration", "letterSpacing", "wordSpacing", "tabSize",
       "whiteSpace",
-    ];
+    ] as const;
     style.position = "absolute";
     style.visibility = "hidden";
     style.overflow = "hidden";
-    for (const p of props) style[p] = cs[p];
+    for (const p of props) {
+      (style as unknown as Record<string, string>)[p] = cs.getPropertyValue(p);
+    }
     div.textContent = element.value.substring(0, pos);
     const span = document.createElement("span");
     span.textContent = element.value.substring(pos) || ".";

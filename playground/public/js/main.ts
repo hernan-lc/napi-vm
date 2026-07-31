@@ -1,47 +1,42 @@
-// Playground entry point: wire the DOM to the wasm VM, console, completion,
-// and diagnostics modules, then boot. This is the only module the HTML loads
-// directly; everything else is imported.
-import { SAMPLE } from "./examples.js";
-import { initWasm, createVm, rehost, runCode, setLoopLimit } from "./vm.js";
-import { createConsole, escapeHtml } from "./console.js";
-import { createCompletion } from "./completion.js";
-import { createDiagnostics } from "./diagnostics.js";
+import { SAMPLE } from "./examples";
+import { initWasm, createVm, rehost, runCode, setLoopLimit } from "./vm";
+import { createConsole, escapeHtml } from "./console";
+import { createCompletion } from "./completion";
+import { createDiagnostics } from "./diagnostics";
 
-const editor = document.getElementById("editor");
-const popup = document.getElementById("popup");
-const consoleEl = document.getElementById("console");
-const dot = document.getElementById("dot");
-const statusText = document.getElementById("statusText");
-const loopSelect = document.getElementById("loopLimit");
-const diagEl = document.getElementById("diag");
+const editor = document.getElementById("editor") as HTMLTextAreaElement;
+const popup = document.getElementById("popup") as HTMLElement;
+const consoleEl = document.getElementById("console") as HTMLElement;
+const dot = document.getElementById("dot") as HTMLElement;
+const statusText = document.getElementById("statusText") as HTMLElement;
+const loopSelect = document.getElementById("loopLimit") as HTMLSelectElement;
+const diagEl = document.getElementById("diag") as HTMLElement;
 
 editor.value = SAMPLE;
 
 const consoleView = createConsole(consoleEl);
 
-let vm = null;
+let vm: any | null = null;
 
 const hostOpts = () => ({
   loopLimit: Number(loopSelect.value),
-  onAlert: (msg) =>
+  onAlert: (msg: string) =>
     consoleView.addLine("warn", `<span class="tag">alert</span>${escapeHtml(msg)}`),
 });
 
-function setStatus(cls, text) {
+function setStatus(cls: string, text: string): void {
   dot.className = "dot " + cls;
   statusText.textContent = text;
 }
 
-// ---- run / reset ---------------------------------------------------------
-
-function run() {
+function run(): void {
   if (!vm) return;
   const t0 = performance.now();
   const r = runCode(vm, editor.value);
   consoleView.renderResult(r, performance.now() - t0);
 }
 
-function reset() {
+function reset(): void {
   if (!vm) return;
   vm.reset();
   const failed = rehost(vm, hostOpts());
@@ -49,32 +44,28 @@ function reset() {
   consoleView.sys("VM state reset");
 }
 
-// ---- completion + diagnostics (debounced on input) -----------------------
-
 const completion = createCompletion({ editor, popup, getVm: () => vm });
 const diagnostics = createDiagnostics({ editor, el: diagEl, getVm: () => vm });
 
-let completeTimer = null;
-let diagTimer = null;
+let completeTimer: ReturnType<typeof setTimeout> | null = null;
+let diagTimer: ReturnType<typeof setTimeout> | null = null;
 editor.addEventListener("input", () => {
-  clearTimeout(completeTimer);
+  if (completeTimer !== null) clearTimeout(completeTimer);
   completeTimer = setTimeout(() => completion.request(false), 60);
-  clearTimeout(diagTimer);
+  if (diagTimer !== null) clearTimeout(diagTimer);
   diagTimer = setTimeout(() => diagnostics.refresh(), 250);
 });
 editor.addEventListener("click", () => completion.close());
 editor.addEventListener("blur", () => setTimeout(() => completion.close(), 120));
 
-// ---- editor keys ---------------------------------------------------------
-
-function insertAtCursor(text) {
+function insertAtCursor(text: string): void {
   const start = editor.selectionStart;
   const end = editor.selectionEnd;
   editor.setRangeText(text, start, end, "end");
   editor.dispatchEvent(new Event("input"));
 }
 
-editor.addEventListener("keydown", (e) => {
+editor.addEventListener("keydown", (e: KeyboardEvent) => {
   const mod = e.ctrlKey || e.metaKey;
 
   if (mod && e.key === "Enter") {
@@ -104,26 +95,22 @@ editor.addEventListener("keydown", (e) => {
   }
 });
 
-// ---- toolbar buttons -----------------------------------------------------
-
-document.getElementById("run").addEventListener("click", run);
-document.getElementById("reset").addEventListener("click", reset);
-document.getElementById("clear").addEventListener("click", () => consoleView.clear());
+document.getElementById("run")!.addEventListener("click", run);
+document.getElementById("reset")!.addEventListener("click", reset);
+document.getElementById("clear")!.addEventListener("click", () => consoleView.clear());
 loopSelect.addEventListener("change", () => {
   if (vm) setLoopLimit(vm, Number(loopSelect.value));
 });
 
-// ---- boot ----------------------------------------------------------------
-
-async function boot() {
-  setStatus("", "loading wasm…");
+async function boot(): Promise<void> {
+  setStatus("", "loading wasm\u2026");
   try {
-    await initWasm(); // fetch + stream-compile /pkg/napi_vm_bg.wasm
+    await initWasm();
     const built = createVm(hostOpts());
     vm = built.vm;
     for (const f of built.failed) consoleView.sys("failed to register module " + f);
     setStatus("open", "ready");
-    consoleView.sys("WASM VM ready — running entirely in your browser");
+    consoleView.sys("WASM VM ready \u2014 running entirely in your browser");
     diagnostics.refresh();
   } catch (e) {
     setStatus("closed", "failed to load wasm");
