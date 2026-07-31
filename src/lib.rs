@@ -2,8 +2,6 @@ pub mod bindings;
 pub mod builtins;
 pub mod error;
 pub mod host;
-#[cfg(feature = "inspector")]
-pub mod inspector;
 pub mod interpreter;
 pub mod lexer;
 pub mod parser;

@@ -705,4 +705,3 @@ module.exports.VM = nativeBinding.VM
 module.exports.createVm = nativeBinding.createVm
 module.exports.debugParse = nativeBinding.debugParse
 module.exports.runCode = nativeBinding.runCode
-module.exports.setInspectorConfig = nativeBinding.setInspectorConfig

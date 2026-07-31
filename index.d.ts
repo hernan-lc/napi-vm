@@ -75,31 +75,6 @@ export declare class Vm {
    * marshalling arguments in and the return value out.
    */
   callFunction(name: string, args: Array<unknown>): unknown
-  /**
-   * Evaluate `source` and print the resulting value through the native
-   * inspector: a compact, DevTools-style tree that renders inline in the
-   * console flow and never blocks — it prints and returns immediately,
-   * closed by default (open it level by level with `setInspectorConfig`
-   * or `INSPECTOR_DEPTH`). The value is walked directly inside Rust — no
-   * NAPI marshalling — so circular structures render as `[Circular *n]`.
-   *
-   * Only available when the crate is built with `--features inspector`.
-   */
-  inspect(source: string): void
-  /**
-   * Marshal a host (Node) value into the VM and print it through the
-   * inspector — convenient for inspecting a plain JS object without first
-   * registering it as a global. To inspect parsed JSON, pass
-   * `JSON.parse(str)`.
-   *
-   * Unlike `inspect(source)`, the value is *copied* across the NAPI
-   * boundary (`from_napi` is depth-bounded and not cycle-aware), so this
-   * path cannot show circular structures. For those, build the value inside
-   * the VM and inspect the expression instead.
-   *
-   * Only available when the crate is built with `--features inspector`.
-   */
-  inspectValue(value: unknown): void
 }
 export type VM = Vm
 
@@ -107,25 +82,4 @@ export declare function createVm(): Vm
 
 export declare function debugParse(source: string): string
 
-/**
- * Options for `setInspectorConfig`. Every field is optional; omitted fields
- * keep their current value.
- */
-export interface InspectorConfig {
-  /** Force colors on/off; omit to keep auto-detection. */
-  colors?: boolean
-  /**
-   * How many levels deep the dump opens containers before leaving them
-   * closed (`▶` rows). `0` prints the tree fully closed.
-   */
-  depth?: number
-}
-
 export declare function runCode(source: string): string
-
-/**
- * Override the global inspector configuration (colors + depth). Changes
- * apply to the next `vm.inspect` / `console.dir({ inspect: true })` dump.
- * Only available when built with `--features inspector`.
- */
-export declare function setInspectorConfig(opts: InspectorConfig): void

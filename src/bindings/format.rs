@@ -119,20 +119,14 @@ pub fn colors_enabled() -> bool {
 /// when `enabled` is false, so the same rendering path serves both TTY and
 /// piped/redirected output without branching at each call site.
 ///
-/// `pub(crate)` so the native inspector (`crate::inspector`) renders tokens
-/// with the exact same palette as `console.dir`.
+/// `pub(crate)` so internal formatters render tokens with the exact same
+/// palette as `console.dir`.
 pub(crate) struct Painter {
     enabled: bool,
 }
 
 impl Painter {
     const PLAIN: Painter = Painter { enabled: false };
-
-    /// A painter that emits ANSI colors when `enabled`, plain text otherwise.
-    #[cfg(feature = "inspector")]
-    pub(crate) fn new(enabled: bool) -> Self {
-        Painter { enabled }
-    }
 
     fn wrap(&self, code: &str, s: String) -> String {
         if self.enabled {
@@ -163,15 +157,6 @@ impl Painter {
     }
     pub(crate) fn null(&self, s: String) -> String {
         self.wrap("1;90", s) // bold gray
-    }
-    // ── UI chrome (used by the native inspector) ────────────────────
-    #[cfg(feature = "inspector")]
-    pub(crate) fn dim(&self, s: String) -> String {
-        self.wrap("2;37", s)
-    }
-    #[cfg(feature = "inspector")]
-    pub(crate) fn bold(&self, s: String) -> String {
-        self.wrap("1", s)
     }
 }
 

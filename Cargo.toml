@@ -10,16 +10,6 @@ crate-type = ["cdylib", "lib"]
 
 [features]
 default = []
-# SGR mouse-event parser + ANSI tracking sequences, exposed to JS
-# (parseMouseEvent / mouseEnableSeq / mouseDisableSeq). Independent of the
-# inspector; off by default to keep the default NAPI surface minimal.
-mouse = []
-# Native object inspector (DevTools-style foldable tree), implemented on the
-# guest `Value`. A non-blocking inline tree dump — it prints closed by
-# default (open it with `INSPECTOR_DEPTH` / setInspectorConfig) and returns
-# immediately: no session, no raw mode, no mouse, nothing to close. Off by
-# default to keep the default NAPI surface minimal; adds no dependencies.
-inspector = []
 
 [dependencies]
 napi = { version = "3.12.0", features = ["napi8"] }
