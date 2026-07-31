@@ -1,26 +1,40 @@
 import type { VmStatus } from "../hooks/useVm.ts";
 import type { Diagnostic } from "../types.ts";
+import type { Translations } from "../i18n/translations.ts";
+import type { Locale } from "../i18n/translations.ts";
+import { LOCALE_LABELS } from "../i18n/translations.ts";
+import type { Theme } from "../hooks/useTheme.ts";
 
 interface ToolbarProps {
   status: VmStatus;
   loopLimit: number;
   diagnostic: Diagnostic | null;
+  theme: Theme;
+  locale: Locale;
+  t: Translations;
   onRun: () => void;
   onReset: () => void;
   onClear: () => void;
   onLoopLimitChange: (n: number) => void;
+  onToggleTheme: () => void;
+  onLocaleChange: (l: Locale) => void;
 }
 
 export function Toolbar({
   status,
   loopLimit,
   diagnostic,
+  theme,
+  locale,
+  t,
   onRun,
   onReset,
   onClear,
   onLoopLimitChange,
+  onToggleTheme,
+  onLocaleChange,
 }: ToolbarProps) {
-  const statusLabel = status === "loading" ? "loading wasm\u2026" : status === "ready" ? "ready" : "error";
+  const statusLabel = status === "loading" ? t.loadingWasm : status === "ready" ? t.ready : t.error;
   const statusClass = status === "ready" ? "open" : status === "error" ? "closed" : "";
 
   return (
@@ -32,18 +46,18 @@ export function Toolbar({
       </div>
 
       <div class="controls">
-        <button class="primary" onClick={onRun} disabled={status !== "ready"} title="Ctrl/&#8984;+Enter">
-          &#9654; Run
+        <button class="primary" onClick={onRun} disabled={status !== "ready"} title={t.runHint}>
+          &#9654; {t.run}
         </button>
         <button onClick={onReset} disabled={status !== "ready"} title="Discard all VM state">
-          Reset
+          {t.reset}
         </button>
         <button onClick={onClear} title="Clear the console">
-          Clear
+          {t.clear}
         </button>
 
         <label class="loop">
-          loop limit
+          {t.loopLimit}
           <select
             value={String(loopLimit)}
             onChange={(e) => onLoopLimitChange(Number((e.target as HTMLSelectElement).value))}
@@ -60,10 +74,31 @@ export function Toolbar({
       <div class="right">
         {diagnostic && (
           <span class="diag bad">
-            &#9888; {diagnostic.message} &middot; line {diagnostic.line}
+            {t.diagWarning} {diagnostic.message} &middot; line {diagnostic.line}
           </span>
         )}
-        <span class="hint">Ctrl/&#8984;+&#8629; run &middot; Ctrl+Space complete</span>
+        <span class="hint">{t.runHint} &middot; {t.completeHint}</span>
+
+        <select
+          class="lang-select"
+          value={locale}
+          onChange={(e) => onLocaleChange((e.target as HTMLSelectElement).value as Locale)}
+          title={t.language}
+        >
+          {(Object.keys(LOCALE_LABELS) as Locale[]).map((l) => (
+            <option key={l} value={l}>{LOCALE_LABELS[l]}</option>
+          ))}
+        </select>
+
+        <button
+          class="icon-btn"
+          onClick={onToggleTheme}
+          title={t.theme}
+          aria-label={t.theme}
+        >
+          {theme === "dark" ? "☀" : "☾"}
+        </button>
+
         <span class="status">
           <span class={"dot " + statusClass}></span>
           <span>{statusLabel}</span>

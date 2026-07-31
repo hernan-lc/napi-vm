@@ -1,0 +1,144 @@
+/* ============================================================
+   tokens.css — design tokens / theme variables
+   ============================================================ */
+
+:root {
+  /* typography */
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+
+  /* radii */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* transitions */
+  --transition-fast: 0.12s ease;
+  --transition-normal: 0.2s ease;
+}
+
+/* ---- dark theme (default) ---- */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #0a0e14;
+  --bg-elev: #0d1117;
+  --bg-elev-2: #131820;
+  --bg-input: #0d1117;
+  --bg-hover: #1a2230;
+  --bg-active: #1e2a3a;
+
+  --fg: #c9d1d9;
+  --fg-dim: #6e7681;
+  --fg-muted: #484f58;
+
+  --border: #1e2632;
+  --border-focus: #2a3a52;
+
+  --accent: #58a6ff;
+  --accent-hover: #79c0ff;
+  --accent-soft: rgba(88, 166, 255, 0.1);
+
+  --success: #3fb950;
+  --success-soft: rgba(63, 185, 80, 0.15);
+  --danger: #f85149;
+  --danger-soft: rgba(248, 81, 73, 0.15);
+  --warning: #d29922;
+  --warning-soft: rgba(210, 153, 34, 0.15);
+  --info: #79c0ff;
+  --purple: #bc8cff;
+  --orange: #f0883e;
+
+  --console-bg: #080c10;
+  --console-line-border: rgba(255, 255, 255, 0.02);
+
+  --popup-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.2);
+  --toolbar-shadow: none;
+}
+
+/* ---- light theme ---- */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #ffffff;
+  --bg-elev: #f6f8fa;
+  --bg-elev-2: #eaeef2;
+  --bg-input: #ffffff;
+  --bg-hover: #dde3ea;
+  --bg-active: #c8d0da;
+
+  --fg: #1f2328;
+  --fg-dim: #656d76;
+  --fg-muted: #8b949e;
+
+  --border: #d0d7de;
+  --border-focus: #b6c2cf;
+
+  --accent: #0969da;
+  --accent-hover: #0550ae;
+  --accent-soft: rgba(9, 105, 218, 0.08);
+
+  --success: #1a7f37;
+  --success-soft: rgba(26, 127, 55, 0.12);
+  --danger: #cf222e;
+  --danger-soft: rgba(207, 34, 46, 0.1);
+  --warning: #9a6700;
+  --warning-soft: rgba(154, 103, 0, 0.12);
+  --info: #0969da;
+  --purple: #8250df;
+  --orange: #bc4c00;
+
+  --console-bg: #f6f8fa;
+  --console-line-border: rgba(0, 0, 0, 0.04);
+
+  --popup-shadow: 0 12px 32px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.08);
+  --toolbar-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+}
+
+/* ---- auto-detect via media query (when no data-theme is set) ---- */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+
+    --bg: #ffffff;
+    --bg-elev: #f6f8fa;
+    --bg-elev-2: #eaeef2;
+    --bg-input: #ffffff;
+    --bg-hover: #dde3ea;
+    --bg-active: #c8d0da;
+
+    --fg: #1f2328;
+    --fg-dim: #656d76;
+    --fg-muted: #8b949e;
+
+    --border: #d0d7de;
+    --border-focus: #b6c2cf;
+
+    --accent: #0969da;
+    --accent-hover: #0550ae;
+    --accent-soft: rgba(9, 105, 218, 0.08);
+
+    --success: #1a7f37;
+    --success-soft: rgba(26, 127, 55, 0.12);
+    --danger: #cf222e;
+    --danger-soft: rgba(207, 34, 46, 0.1);
+    --warning: #9a6700;
+    --warning-soft: rgba(154, 103, 0, 0.12);
+    --info: #0969da;
+    --purple: #8250df;
+    --orange: #bc4c00;
+
+    --console-bg: #f6f8fa;
+    --console-line-border: rgba(0, 0, 0, 0.04);
+
+    --popup-shadow: 0 12px 32px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.08);
+    --toolbar-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+  }
+}
