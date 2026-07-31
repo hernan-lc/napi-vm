@@ -5,10 +5,13 @@
 #[cfg(feature = "napi")]
 pub mod bindings;
 pub mod builtins;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 pub mod error;
 pub mod format;
 pub mod host;
 pub mod interpreter;
+pub mod lang;
 pub mod lexer;
 pub mod parser;
 pub mod span;

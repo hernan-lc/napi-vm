@@ -530,9 +530,18 @@ pub(crate) fn spawn_generator_thread(
     // spawn fails, `init` is dropped, both channels close, and the main
     // thread's `recv()` sees a disconnect, which it already handles as a
     // completed generator.
+    #[cfg(not(target_arch = "wasm32"))]
     let _ = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || run_generator_thread(init));
+
+    // `wasm32-unknown-unknown` has no OS threads. Dropping `init` closes the
+    // generator-side channel endpoints, so the driver observes a disconnect and
+    // treats the generator as immediately completed — graceful degradation
+    // (an empty iterator) rather than a panic. True suspension would require
+    // the wasm threads proposal or a CPS transform of generator bodies.
+    #[cfg(target_arch = "wasm32")]
+    drop(init);
 
     (to_gen_tx, from_gen_rx)
 }
@@ -541,6 +550,7 @@ pub(crate) fn spawn_generator_thread(
 /// (matching JS semantics: the body does not execute until the first `next()`),
 /// then runs the generator body to completion, communicating yields and the
 /// final return value over the channel.
+#[cfg(not(target_arch = "wasm32"))]
 fn run_generator_thread(init: crate::value::SendGenInit) {
     use crate::value::{GenResume, GenYield, SendValue};
 

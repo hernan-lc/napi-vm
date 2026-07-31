@@ -5,6 +5,7 @@
 //! milliseconds since the Unix epoch (1970-01-01T00:00:00Z); parsed strings are
 //! interpreted as UTC (the sandbox has no local-timezone concept).
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::VmErr;
@@ -20,11 +21,22 @@ pub(super) fn install(e: &mut Environment) {
 }
 
 fn date_now(_: &mut Interpreter, _: Value, _: Vec<Value>) -> Result<Value, VmErr> {
-    let ms = SystemTime::now()
+    Ok(Value::Number(now_ms()))
+}
+
+/// Milliseconds since the Unix epoch. On native targets this reads the system
+/// clock; on `wasm32` (where `SystemTime` panics) it asks the JS host.
+#[cfg(not(target_arch = "wasm32"))]
+fn now_ms() -> f64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as f64)
-        .unwrap_or(0.0);
-    Ok(Value::Number(ms))
+        .unwrap_or(0.0)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_ms() -> f64 {
+    js_sys::Date::now()
 }
 
 fn date_utc(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {

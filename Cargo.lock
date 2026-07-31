@@ -419,9 +419,11 @@ name = "napi-vm"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "js-sys",
  "napi",
  "napi-derive",
  "smallvec",
+ "wasm-bindgen",
 ]
 
 [[package]]

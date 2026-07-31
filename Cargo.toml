@@ -14,11 +14,23 @@ default = ["napi"]
 # pure-Rust core alone — for the language server, native GUI frontends, or the
 # `wasm32` target.
 napi = ["dep:napi", "dep:napi-derive"]
+# The browser layer: a `#[wasm_bindgen]` `WasmVm` that runs the VM in-page and
+# exposes the shared language services (completion/diagnostics/symbols). Build
+# with `--no-default-features --features wasm --target wasm32-unknown-unknown`.
+wasm = ["dep:wasm-bindgen"]
 
 [dependencies]
 napi = { version = "3.12.0", features = ["napi8"], optional = true }
 napi-derive = { version = "3.6.1", optional = true }
 smallvec = "1"
+# Browser ↔ Rust bindings for the `wasm` feature. `js-sys` (below, target-scoped)
+# provides the typed wrappers over JS built-ins used by the marshalling layer.
+wasm-bindgen = { version = "0.2", optional = true }
+
+# Browser host APIs (Date.now, console) for the wasm32 target. Scoped to the
+# target so native builds never pull it in.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
 
 [dev-dependencies]
 criterion = "0.5"
@@ -33,3 +45,9 @@ harness = false
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# `wasm-opt` (binaryen) is not installed in this environment; cargo's own LTO
+# already shrinks the module substantially, so skip the wasm-pack post-pass
+# rather than fail the build trying to fetch/run it.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

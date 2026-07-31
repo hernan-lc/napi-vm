@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>napi-vm playground</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="toolbar">
+      <div class="brand">napi-vm <span>playground</span></div>
+
+      <div class="controls">
+        <button id="run" class="primary" title="Ctrl/⌘+Enter">▶ Run</button>
+        <button id="reset" title="Discard all VM state">Reset VM</button>
+        <button id="clear" title="Clear the console">Clear</button>
+
+        <label class="loop">
+          loop limit
+          <select id="loopLimit">
+            <option value="100000">100K</option>
+            <option value="1000000">1M</option>
+            <option value="5000000" selected>5M</option>
+            <option value="20000000">20M</option>
+            <option value="100000000">100M</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="right">
+        <span id="diag" class="diag"></span>
+        <span class="hint">Ctrl/⌘+↵ run · Ctrl+Space complete</span>
+        <span class="status"><span id="dot" class="dot"></span><span id="statusText">loading wasm…</span></span>
+      </div>
+    </header>
+
+    <main>
+      <section class="editor-wrap">
+        <textarea id="editor" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+        <div id="popup" class="popup" hidden></div>
+      </section>
+
+      <div class="divider"><span>console</span></div>
+
+      <section class="console" id="console"></section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -169,6 +169,7 @@ impl Interpreter {
     }
 
     /// Attach the current call stack and last span to an error.
+    #[cfg_attr(not(feature = "napi"), allow(dead_code))]
     pub(crate) fn enrich_error(&self, err: VmErr, span: Option<Span>) -> VmErr {
         err.with_context(span, &self.call_stack)
     }
