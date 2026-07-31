@@ -218,4 +218,38 @@ mod tests {
         let names: Vec<&str> = s.iter().map(|x| x.name.as_str()).collect();
         assert!(names.contains(&"f") && names.contains(&"C") && names.contains(&"x"));
     }
+
+    #[test]
+    fn ident_playground_prefix() {
+        let ctx = AnalysisContext {
+            modules: vec![
+                ModuleInfo {
+                    name: "utils".into(),
+                    exports: vec!["format".into(), "parse".into()],
+                },
+                ModuleInfo {
+                    name: "math".into(),
+                    exports: vec!["PI".into()],
+                },
+            ],
+            ..Default::default()
+        };
+        let r = complete("@playground/u", "@playground/u".len(), &ctx);
+        let labels: Vec<&str> = r.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"@playground/utils"));
+    }
+
+    #[test]
+    fn member_playground_namespace_exports() {
+        let ctx = AnalysisContext {
+            modules: vec![ModuleInfo {
+                name: "utils".into(),
+                exports: vec!["format".into(), "parse".into()],
+            }],
+            ..Default::default()
+        };
+        let r = complete("@playground/utils.", "@playground/utils.".len(), &ctx);
+        let labels: Vec<&str> = r.iter().map(|c| c.label.as_str()).collect();
+        assert!(labels.contains(&"format") && labels.contains(&"parse"));
+    }
 }

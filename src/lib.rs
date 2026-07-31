@@ -21,6 +21,7 @@ pub mod value;
 pub use bindings::{VM, create_vm, debug_parse, run_code};
 pub use builtins::setup_builtins;
 pub use error::VmErr;
+pub use format::{Printer, PrintOptions};
 pub use interpreter::{Environment, Interpreter, Module};
 pub use lexer::{Lexer, Token};
 pub use parser::{Expr, Parser, Statement};

@@ -1,6 +1,7 @@
 //! String rendering of VM values: the plain `to_string` coercer, the
-//! multi-line `util.inspect`-style pretty printer, and its ANSI color
-//! support. Used by `console.dir`, the NAPI return-value stringification,
+//! multi-line `util.inspect`-style pretty printer, ANSI color support,
+//! and the [`Printer`] class with delegated element/subelement rendering.
+//! Used by `console.dir`, the NAPI return-value stringification,
 //! and the async bridge's error formatting.
 use std::rc::Rc;
 
@@ -11,6 +12,228 @@ use crate::value::Value;
 /// cyclic values print `[Circular]` and very deep ones print `[Object]` /
 /// `[Array]` instead of overflowing the native stack.
 const MAX_PRINT_DEPTH: usize = 128;
+
+/// Options that control how [`Printer`] renders values.
+#[derive(Clone, Debug)]
+pub struct PrintOptions {
+    /// Spaces used per indentation level (default 2).
+    pub indent: usize,
+    /// Maximum nesting depth before abbreviating to `[Object]` / `[Array]`
+    /// (default 128).
+    pub max_depth: usize,
+    /// Emit ANSI type colors when true; when false no codes are emitted.
+    pub colors: bool,
+}
+
+impl Default for PrintOptions {
+    fn default() -> Self {
+        Self {
+            indent: 2,
+            max_depth: MAX_PRINT_DEPTH,
+            colors: false,
+        }
+    }
+}
+
+/// Stateful, configurable value printer that delegates element and
+/// subelement rendering back to itself — analogous to Node's `util.inspect`.
+///
+/// The printer owns its visited-set so it can be reused across multiple
+/// values without re-allocating the hash set, and its `PrintOptions` let
+/// callers choose indentation, depth cap, and ANSI coloring in a single
+/// configuration pass.
+pub struct Printer {
+    options: PrintOptions,
+    visited: std::collections::HashSet<*const ()>,
+}
+
+impl Printer {
+    /// Construct a printer from the given options.
+    pub fn new(options: PrintOptions) -> Self {
+        Self {
+            options,
+            visited: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Create a printer with default options and no colors.
+    pub fn plain() -> Self {
+        Self::new(PrintOptions::default())
+    }
+
+    /// Create a printer with colors enabled when `colors` is true.
+    pub fn colored(colors: bool) -> Self {
+        Self::new(PrintOptions {
+            colors,
+            ..PrintOptions::default()
+        })
+    }
+
+    /// Return a short string representation of `val` — the same output
+    /// as the legacy `to_string` function.
+    pub fn print(&mut self, val: &Value) -> String {
+        self.visited.clear();
+        self.render_value(val, 0, false)
+    }
+
+    /// Return a multi-line, indented rendering of `val` — the same output
+    /// as the legacy `to_string_pretty` function.
+    pub fn print_pretty(&mut self, val: &Value) -> String {
+        self.visited.clear();
+        self.render_value(val, 0, true)
+    }
+
+    /// Return a multi-line, indented, ANSI-colored rendering of `val` —
+    /// equivalent to calling `to_string_pretty_colored(val, true)`.
+    pub fn print_colored(&mut self, val: &Value) -> String {
+        let saved = self.options.colors;
+        self.options.colors = true;
+        let result = self.print_pretty(val);
+        self.options.colors = saved;
+        result
+    }
+
+    // ---- internal delegated rendering ------------------------------------
+
+    fn render_value(&mut self, v: &Value, depth: usize, pretty: bool) -> String {
+        if depth >= self.options.max_depth {
+            return self.painter().special(match v {
+                Value::Object { .. } => "[Object]",
+                Value::Array(_) => "[Array]",
+                _ => "[Object]",
+            }.to_string());
+        }
+        match v {
+            Value::Undefined => "undefined".to_string(),
+            Value::Null => "null".to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Number(n) => {
+                if n.fract() == 0.0 && n.abs() < 1e15 {
+                    format!("{:.0}", n)
+                } else {
+                    n.to_string()
+                }
+            }
+            Value::String(s) => {
+                if pretty {
+                    self.painter().string(quote(s))
+                } else {
+                    s.clone()
+                }
+            }
+            Value::Object { props, .. } => {
+                let ptr = Rc::as_ptr(props) as *const ();
+                if !self.visited.insert(ptr) {
+                    return self.painter().special("[Circular]".to_string());
+                }
+                let borrow = props.borrow();
+                let result = if borrow.is_empty() {
+                    "{}".to_string()
+                } else if pretty {
+                    self.render_object_pretty(&borrow, depth)
+                } else {
+                    self.render_object_flat(&borrow, depth)
+                };
+                drop(borrow);
+                self.visited.remove(&ptr);
+                result
+            }
+            Value::Array(i) => {
+                let ptr = Rc::as_ptr(i) as *const ();
+                if !self.visited.insert(ptr) {
+                    return self.painter().special("[Circular]".to_string());
+                }
+                let borrow = i.borrow();
+                let result = if borrow.is_empty() {
+                    "[]".to_string()
+                } else if pretty {
+                    self.render_array_pretty(&borrow, depth)
+                } else {
+                    self.render_array_flat(&borrow, depth)
+                };
+                drop(borrow);
+                self.visited.remove(&ptr);
+                result
+            }
+            Value::Function(f) => self.painter().special(format!(
+                "[Function: {}]",
+                f.name.as_deref().unwrap_or("anonymous")
+            )),
+            Value::NativeFunction { name, .. } => {
+                self.painter().special(format!("[Function: {} [native]]", name))
+            }
+            Value::HostFunction { name, .. } => {
+                self.painter().special(format!("[Function: {} [native]]", name))
+            }
+            Value::GlobalObject => self.painter().special("[object global]".to_string()),
+            Value::Class(c) => self.painter().special(format!("[class {}]", c.name)),
+            Value::Promise { .. } | Value::HostPending { .. } => {
+                self.painter().special("[object Promise]".to_string())
+            }
+            Value::Generator { .. } => self.painter().special("[object Generator]".to_string()),
+            Value::Symbol(s) => self.painter().symbol(format!("Symbol({})", s)),
+            Value::Error(e) => self.painter().special(e.message.clone()),
+        }
+    }
+
+    fn render_object_flat(&self, props: &std::cell::Ref<'_, Vec<(String, Value)>>, _depth: usize) -> String {
+        let entries: Vec<String> = props
+            .iter()
+            .map(|(k, v)| format!("{}: {}", key_str(k), to_string(v)))
+            .collect();
+        format!("{{{}}}", entries.join(", "))
+    }
+
+    fn render_object_pretty(&mut self, props: &std::cell::Ref<'_, Vec<(String, Value)>>, depth: usize) -> String {
+        let indent = " ".repeat(self.options.indent * (depth + 1));
+        let outer = " ".repeat(self.options.indent * depth);
+        let entries = props
+            .iter()
+            .map(|(k, vv)| {
+                format!(
+                    "{}{}: {}",
+                    indent,
+                    self.painter().key(key_str(k)),
+                    self.render_value(vv, depth + 1, true)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+        format!("{{\n{}\n{}}}", entries, outer)
+    }
+
+    fn render_array_flat(&self, items: &std::cell::Ref<'_, Vec<Value>>, _depth: usize) -> String {
+        let entries: Vec<String> = items.iter().map(to_string).collect();
+        format!("[ {} ]", entries.join(", "))
+    }
+
+    fn render_array_pretty(&mut self, items: &std::cell::Ref<'_, Vec<Value>>, depth: usize) -> String {
+        let has_compound = items
+            .iter()
+            .any(|x| matches!(x, Value::Object { .. } | Value::Array(_)));
+        if !has_compound {
+            let entries: Vec<String> = items
+                .iter()
+                .map(|x| self.render_value(x, depth + 1, true))
+                .collect();
+            return format!("[ {} ]", entries.join(", "));
+        }
+        let indent = " ".repeat(self.options.indent * (depth + 1));
+        let outer = " ".repeat(self.options.indent * depth);
+        let entries = items
+            .iter()
+            .map(|x| format!("{}{}", indent, self.render_value(x, depth + 1, true)))
+            .collect::<Vec<_>>()
+            .join(",\n");
+        format!("[\n{}\n{}]", entries, outer)
+    }
+
+    fn painter(&self) -> Painter {
+        Painter {
+            enabled: self.options.colors,
+        }
+    }
+}
 
 pub fn to_string(val: &Value) -> String {
     let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();

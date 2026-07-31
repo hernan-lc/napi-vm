@@ -43,7 +43,23 @@ export function useCompletion(
     setState((s) => (s.open ? { items: [], sel: 0, prefix: "", open: false } : s));
   }, []);
 
+  const afterLast = (s: string, sep: string): string => {
+    const idx = s.lastIndexOf(sep);
+    return idx >= 0 ? s.slice(idx + sep.length) : s;
+  };
+
   const analyze = (before: string): { kind: "member" | "ident"; prefix: string } => {
+    // @playground/<module> namespace: offer module completions.
+    if (before.includes("@playground/")) {
+      const after = afterLast(before, "@playground/");
+      // If the text after @playground/ contains a dot, it's a member
+      // completion for module exports (e.g. @playground/math.floor).
+      if (after.includes(".")) {
+        const dotIdx = after.lastIndexOf(".");
+        return { kind: "member", prefix: after.slice(dotIdx + 1) };
+      }
+      return { kind: "ident", prefix: after };
+    }
     const word = (before.match(/([\w$]*)$/) || [, ""])[1]!;
     const isMember = /[\w$)\]"']\.[\w$]*$/.test(before);
     return { kind: isMember ? "member" : "ident", prefix: word };
@@ -59,8 +75,12 @@ export function useCompletion(
       const a = analyze(before);
 
       if (a.kind === "ident" && (!force || a.prefix.length === 0)) {
-        close();
-        return;
+        // Keep open for @playground/ even with empty prefix so all
+        // registered modules are offered as completions.
+        if (!before.includes("@playground/")) {
+          close();
+          return;
+        }
       }
 
       const byteOffset = new TextEncoder().encode(before).length;

@@ -580,7 +580,7 @@ impl Parser {
                 Token::LParen => {
                     self.adv();
                     let mut a = Vec::new();
-                    while !matches!(self.cur(), Token::RParen) {
+                    while !matches!(self.cur(), Token::RParen) && !self.eof() {
                         if let Some(arg) = self.assign() {
                             a.push(arg);
                         } else {

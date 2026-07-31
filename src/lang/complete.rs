@@ -30,7 +30,7 @@ pub fn complete(source: &str, offset: usize, ctx: &AnalysisContext) -> Vec<Compl
 
     match analyze_trigger(before) {
         Trigger::Member { receiver, prefix } => complete_member(&receiver, &prefix, &scope, ctx),
-        Trigger::Ident { prefix } => complete_ident(&prefix, &scope, ctx),
+        Trigger::Ident { prefix } => complete_ident(&prefix, before, &scope, ctx),
     }
 }
 
@@ -74,8 +74,14 @@ fn analyze_trigger(before: &str) -> Trigger {
 }
 
 /// Match `receiver.prefix` at the end of `before`, covering dotted chains,
-/// string-literal receivers, and simple array-literal receivers.
+/// string-literal receivers, simple array-literal receivers, and
+/// `@playground/<module>.` namespace receivers.
 fn match_member(before: &str) -> Option<(String, String)> {
+    // @playground/<module>.<prefix> namespace receiver first,
+    // before generic dotted chains.
+    if let Some((recv, prefix)) = playground_member(before) {
+        return Some((recv, prefix));
+    }
     // Dotted identifier chain: Math.fl / user.addr.va
     if let Some((recv, prefix)) = rsplit_member(before, |c| {
         c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.'
@@ -152,9 +158,21 @@ fn literal_receiver(before: &str, quote: char) -> Option<(String, String)> {
     Some((recv, prefix))
 }
 
+/// Match a trailing `@playground/<module>.<prefix>` pattern.
+fn playground_member(before: &str) -> Option<(String, String)> {
+    let dot_pos = before.rfind('.')?;
+    let recv = &before[..dot_pos];
+    let prefix = &before[dot_pos + 1..];
+    if recv.starts_with("@playground/") && !recv["@playground/".len()..].is_empty() {
+        Some((recv.to_string(), prefix.to_string()))
+    } else {
+        None
+    }
+}
+
 // ---- identifier completion -----------------------------------------------
 
-fn complete_ident(prefix: &str, scope: &Scope, ctx: &AnalysisContext) -> Vec<Completion> {
+fn complete_ident(prefix: &str, before: &str, scope: &Scope, ctx: &AnalysisContext) -> Vec<Completion> {
     let mut out: Vec<Completion> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut add = |label: &str, kind: CompletionKind, detail: Option<&str>| {
@@ -209,6 +227,27 @@ fn complete_ident(prefix: &str, scope: &Scope, ctx: &AnalysisContext) -> Vec<Com
         add(k, CompletionKind::Keyword, None);
     }
 
+    // 6. @playground/ namespace: offer @playground/<module> when the
+    //    user is typing in a @playground/ import specifier.
+    if let Some(module_prefix) = before.rsplit_once("@playground/").map(|(_, rest)| rest) {
+        let mut playgrounds: Vec<Completion> = Vec::new();
+        for ctx_mod in &ctx.modules {
+            if ctx_mod.name.starts_with(module_prefix) {
+                playgrounds.push(Completion {
+                    label: format!("@playground/{}", ctx_mod.name),
+                    kind: CompletionKind::Module,
+                    detail: Some("@playground module".to_string()),
+                });
+            }
+        }
+        playgrounds.sort_by(|a, b| a.label.cmp(&b.label));
+        for c in playgrounds {
+            if seen.insert(c.label.clone()) {
+                out.push(c);
+            }
+        }
+    }
+
     out
 }
 
@@ -233,6 +272,19 @@ fn complete_member(
     };
 
     let head = receiver.split('.').next().unwrap_or(receiver);
+
+    // @playground/<module> → the module's exports.
+    if head.starts_with("@playground/") {
+        let module_name = &head["@playground/".len()..];
+        if let Some(info) = ctx.modules.iter().find(|m| m.name == module_name) {
+            let mut exports = info.exports.clone();
+            exports.sort();
+            for e in &exports {
+                add(e, CompletionKind::Property);
+            }
+            return filter_sorted(out);
+        }
+    }
 
     // import * as ns  →  the module's exports.
     if let Some(module) = scope.module_for_namespace(head) {
