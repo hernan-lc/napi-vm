@@ -1,0 +1,210 @@
+/* ============================================================
+   logger.css — console/logger panel with filtering
+   ============================================================ */
+
+.logger {
+  flex: 1 1 45%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--console-bg);
+  overflow: hidden;
+}
+
+.logger.empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.logger-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.logger-filters {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.filter-chip:hover {
+  border-color: var(--border-focus);
+}
+
+.filter-chip.active {
+  color: var(--fg);
+}
+
+.filter-chip.active.level-log { border-color: var(--fg-dim); color: var(--fg); }
+.filter-chip.active.level-info { border-color: var(--info); color: var(--info); }
+.filter-chip.active.level-warn { border-color: var(--warning); color: var(--warning); }
+.filter-chip.active.level-error { border-color: var(--danger); color: var(--danger); }
+.filter-chip.active.level-debug { border-color: var(--purple); color: var(--purple); }
+.filter-chip.active.level-dir { border-color: var(--purple); color: var(--purple); }
+.filter-chip.active.level-result { border-color: var(--success); color: var(--success); }
+.filter-chip.active.level-sys { border-color: var(--fg-muted); color: var(--fg-muted); }
+
+.chip-icon {
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.chip-count {
+  min-width: 14px;
+  text-align: center;
+}
+
+.logger-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.logger-search {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 3px 8px;
+  font-size: 11.5px;
+  color: var(--fg);
+  font-family: var(--font-sans);
+  width: 140px;
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.logger-search:focus {
+  border-color: var(--accent);
+}
+
+.logger-search::placeholder {
+  color: var(--fg-muted);
+}
+
+.logger-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-2) 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.logger-body.collapsed {
+  display: none;
+}
+
+.logger-empty-filter {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.log-entry {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 2px var(--space-4);
+  border-bottom: 1px solid var(--console-line-border);
+  animation: logFadeIn 0.15s ease;
+}
+
+@keyframes logFadeIn {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.log-entry:hover {
+  background: var(--accent-soft);
+}
+
+.log-time {
+  color: var(--fg-muted);
+  font-size: 10.5px;
+  flex-shrink: 0;
+  min-width: 60px;
+  user-select: none;
+}
+
+.log-icon {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  user-select: none;
+}
+
+.icon-log { color: var(--fg-dim); }
+.icon-info { color: var(--info); }
+.icon-warn { color: var(--warning); }
+.icon-error { color: var(--danger); }
+.icon-debug { color: var(--purple); }
+.icon-dir { color: var(--purple); }
+.icon-result { color: var(--success); }
+.icon-sys { color: var(--fg-muted); }
+
+.log-content {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-content .tag {
+  color: var(--fg-dim);
+  margin-right: var(--space-2);
+  font-weight: 500;
+  font-size: 10.5px;
+  text-transform: uppercase;
+}
+
+.log-content .arrow {
+  color: var(--fg-dim);
+  margin-right: var(--space-2);
+}
+
+.log-content .ms {
+  color: var(--fg-muted);
+  font-size: 10.5px;
+  margin-left: var(--space-2);
+  opacity: 0.7;
+}
+
+/* ---- scrollbar ---- */
+.logger-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.logger-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.logger-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.logger-body::-webkit-scrollbar-thumb:hover {
+  background: var(--border-focus);
+}

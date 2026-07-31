@@ -1,10 +1,11 @@
 import { useCallback, useRef, useState } from "preact/hooks";
 import { Toolbar } from "./Toolbar.tsx";
 import { Editor } from "./Editor.tsx";
-import { Console } from "./Console.tsx";
+import { Logger } from "./logger/Logger.tsx";
 import { CompletionPopup } from "./CompletionPopup.tsx";
 import { useVm } from "../hooks/useVm.ts";
 import { useCompletion } from "../hooks/useCompletion.ts";
+import { useResizable } from "../hooks/useResizable.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 import { useTheme } from "../hooks/useTheme.ts";
 import { SAMPLE } from "../examples.ts";
@@ -12,15 +13,16 @@ import { SAMPLE } from "../examples.ts";
 export function App() {
   const { t, locale, setLocale } = useI18n();
   const { theme, toggleTheme } = useTheme();
+  const { ratio, containerRef, handleMousedown } = useResizable();
 
   const {
     status,
-    lines,
+    entries,
     diagnostic,
     loopLimit,
     run,
     reset,
-    clearLines,
+    clearEntries,
     updateLoopLimit,
     refreshDiagnostic,
   } = useVm(t);
@@ -85,13 +87,13 @@ export function App() {
         t={t}
         onRun={handleRun}
         onReset={reset}
-        onClear={clearLines}
+        onClear={clearEntries}
         onLoopLimitChange={updateLoopLimit}
         onToggleTheme={toggleTheme}
         onLocaleChange={setLocale}
       />
-      <main class="layout">
-        <section class="editor-wrap">
+      <main class="layout" ref={containerRef}>
+        <section class="editor-wrap" style={{ flex: `1 1 ${ratio * 100}%` }}>
           <Editor
             value={code}
             onChange={handleCodeChange}
@@ -122,11 +124,16 @@ export function App() {
             popupRef={popupRef as any}
           />
         </section>
-        <div class="divider">
-          <span>{t.console}</span>
-          <span class="divider-count">{lines.length} {lines.length === 1 ? t.entry : t.entries}</span>
+
+        <div
+          class="divider-resizable"
+          onMouseDown={handleMousedown}
+        >
+          <span class="divider-label">{t.console}</span>
+          <span class="divider-count">{entries.length} {entries.length === 1 ? t.entry : t.entries}</span>
         </div>
-        <Console lines={lines} t={t} />
+
+        <Logger entries={entries} t={t} />
       </main>
     </div>
   );

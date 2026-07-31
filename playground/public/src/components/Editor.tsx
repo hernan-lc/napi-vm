@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "preact/hooks";
 import type { Diagnostic } from "../types.ts";
+import { highlightToHtml } from "./editor/highlight.ts";
 
 interface EditorProps {
   value: string;
@@ -86,7 +87,7 @@ export function Editor({
   return (
     <div class="editor-container">
       <div class="editor-highlight" ref={highlightRef} aria-hidden="true">
-        <pre><code>{value}</code></pre>
+        <pre><code dangerouslySetInnerHTML={{ __html: highlightToHtml(value) + "\n" }} /></pre>
       </div>
       <textarea
         ref={editorRef}

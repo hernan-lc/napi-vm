@@ -23,9 +23,18 @@
   --transition-normal: 0.2s ease;
 }
 
-/* ---- dark theme (default) ---- */
+/* ---- syntax highlighting (dark) ---- */
 :root,
 [data-theme="dark"] {
+  --tok-keyword: #ff7b72;
+  --tok-string: #a5d6ff;
+  --tok-comment: #8b949e;
+  --tok-number: #79c0ff;
+  --tok-operator: #ff7b72;
+  --tok-function: #d2a8ff;
+  --tok-property: #7ee787;
+  --tok-punctuation: #c9d1d9;
+
   color-scheme: dark;
 
   --bg: #0a0e14;
@@ -63,8 +72,17 @@
   --toolbar-shadow: none;
 }
 
-/* ---- light theme ---- */
+/* ---- syntax highlighting (light) ---- */
 [data-theme="light"] {
+  --tok-keyword: #cf222e;
+  --tok-string: #0a3069;
+  --tok-comment: #6e7781;
+  --tok-number: #0550ae;
+  --tok-keyword: #cf222e;
+  --tok-function: #8250df;
+  --tok-property: #116329;
+  --tok-punctuation: #24292f;
+
   color-scheme: light;
 
   --bg: #ffffff;
@@ -105,6 +123,15 @@
 /* ---- auto-detect via media query (when no data-theme is set) ---- */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
+    --tok-keyword: #cf222e;
+    --tok-string: #0a3069;
+    --tok-comment: #6e7781;
+    --tok-number: #0550ae;
+    --tok-operator: #cf222e;
+    --tok-function: #8250df;
+    --tok-property: #116329;
+    --tok-punctuation: #24292f;
+
     color-scheme: light;
 
     --bg: #ffffff;
