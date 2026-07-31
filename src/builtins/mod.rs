@@ -521,7 +521,7 @@ fn console_dir(_interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Val
         }
         _ => None,
     };
-    let colors = colors_opt.unwrap_or_else(crate::bindings::colors_enabled);
+    let colors = colors_opt.unwrap_or_else(crate::format::colors_enabled);
 
     // Only the values are printed; a trailing options object is not a value
     // to inspect (matches Node's `console.dir(obj, options)` signature).
@@ -533,7 +533,7 @@ fn console_dir(_interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Val
 
     let s = values
         .iter()
-        .map(|v| crate::bindings::to_string_pretty_colored(v, colors))
+        .map(|v| crate::format::to_string_pretty_colored(v, colors))
         .collect::<Vec<_>>()
         .join(" ");
     println!("{}", s);

@@ -16,7 +16,8 @@
     "test": "bun test",
     "bench": "node bench/bench.js",
     "bench:stress": "bun bench/stress.ts",
-    "bench:rust": "cargo bench"
+    "bench:rust": "cargo bench",
+    "playground": "bun playground/server.ts"
   },
   "repository": {
     "type": "git",

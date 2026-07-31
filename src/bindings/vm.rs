@@ -17,7 +17,7 @@ use crate::parser::Parser;
 use crate::value::Value;
 
 use super::bridge::{NapiHostBridge, run_async_done_cb};
-use super::format::to_string;
+use crate::format::to_string;
 use super::marshal::{SendPtr, chk, from_napi, make_str, to_napi};
 
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {

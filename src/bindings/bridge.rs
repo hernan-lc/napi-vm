@@ -20,7 +20,7 @@ use crate::error::VmErr;
 use crate::host::HostBridge;
 use crate::value::{SendValue, Value};
 
-use super::format::to_string;
+use crate::format::to_string;
 use super::marshal::{chk, from_napi, get_named_str, make_str, to_napi};
 
 /// Message sent from the VM thread to the main thread via the TSFN.

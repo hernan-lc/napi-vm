@@ -9,11 +9,15 @@ edition = "2024"
 crate-type = ["cdylib", "lib"]
 
 [features]
-default = []
+default = ["napi"]
+# The Node.js N-API layer. Turn off (`--no-default-features`) to build the
+# pure-Rust core alone — for the language server, native GUI frontends, or the
+# `wasm32` target.
+napi = ["dep:napi", "dep:napi-derive"]
 
 [dependencies]
-napi = { version = "3.12.0", features = ["napi8"] }
-napi-derive = "3.6.1"
+napi = { version = "3.12.0", features = ["napi8"], optional = true }
+napi-derive = { version = "3.6.1", optional = true }
 smallvec = "1"
 
 [dev-dependencies]
