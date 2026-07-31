@@ -1,0 +1,89 @@
+// The playground's example program and the modules registered into the VM.
+//
+// This is data only — no logic — so the editor sample and the registered
+// modules stay easy to read and edit. The VM interprets JavaScript (not
+// TypeScript), so everything here is plain, runnable JS.
+//
+// Two VM quirks shape this example:
+//   • `String`/`Number` are namespace objects, not callable — coerce with
+//     concatenation (`s + ""`) instead of `String(s)`.
+//   • a method literally named `get`/`set` is misparsed as an accessor, so the
+//     Store class uses `read`/`write` instead.
+
+/** Registered first; `store` imports from it, so order matters. */
+const MATH = `
+export function double(x) { return x * 2; }
+export function clamp(x, lo, hi) { return x < lo ? lo : (x > hi ? hi : x); }
+export const PI = 3.141592653589793;
+`;
+
+const FORMAT = `
+export function upper(s) { return (s + "").toUpperCase(); }
+export function label(name, value) { return name + " = " + value; }
+export function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+`;
+
+// Imports from `math` (module-imports-module) and exposes a default export.
+const STORE = `
+import { clamp } from "math";
+
+export class Store {
+  constructor(initial) {
+    this.state = initial;
+    this.listeners = [];
+  }
+  read(key) { return this.state[key]; }
+  write(key, value) {
+    this.state[key] = clamp(value, -1000000, 1000000);
+    for (let i = 0; i < this.listeners.length; i++) this.listeners[i](key, value);
+    return this;
+  }
+  subscribe(fn) { this.listeners.push(fn); return this; }
+}
+
+export function createStore(initial) { return new Store(initial); }
+export default createStore;
+`;
+
+/** Modules registered into every fresh VM, in dependency order. */
+export const MODULES = [
+  { name: "math", source: MATH },
+  { name: "format", source: FORMAT },
+  { name: "store", source: STORE },
+];
+
+/** The program loaded into the editor on startup. */
+export const SAMPLE = `// napi-vm playground — a JS interpreter written in Rust, running in your
+// browser via WebAssembly. Ctrl/⌘+Enter to run · Ctrl+Space to complete.
+//
+// Built from three registered modules:
+//   math   → import * as math         (namespace import)
+//   format → import { upper, label }  (named imports)
+//   store  → import createStore        (default export; store imports math)
+//
+// Try completing: "math." or "Math." after a dot, "al" for the exposed
+// alert(), or Ctrl+Space on "up" / "cr" for the imported names.
+
+import * as math from "math";
+import { upper, label } from "format";
+import createStore from "store";
+
+const store = createStore({ count: 0, limit: 5 });
+store.subscribe((key, value) => console.log("changed", key, "->", value));
+
+function bump(times) {
+  for (let i = 0; i < times; i++) {
+    const next = math.clamp(store.read("count") + 1, 0, store.read("limit"));
+    store.write("count", next);
+  }
+  return store.read("count");
+}
+
+console.log(label("double(21)", math.double(21)));
+console.log(upper("modular"));
+bump(10);
+console.log("final count:", store.read("count"));
+
+alert("store count is " + store.read("count"));
+store;
+`;

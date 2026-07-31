@@ -29,13 +29,24 @@ after changing the Rust core.
 
 ## Layout
 
-| Path                 | Purpose                                                    |
-| -------------------- | ---------------------------------------------------------- |
-| `server.ts`          | Static file server for `public/` and `pkg/`                |
-| `public/index.html`  | Editor + console UI                                        |
-| `public/app.js`      | ES module: loads the wasm `WasmVm`, wires run/complete/etc. |
-| `public/style.css`   | Theme                                                      |
-| `smoke.ts`           | Headless end-to-end test of the wasm API (`bun smoke.ts`)  |
+| Path                    | Purpose                                                        |
+| ----------------------- | -------------------------------------------------------------- |
+| `server.ts`             | Static file server for `public/` and `pkg/`                    |
+| `public/index.html`     | Editor + console UI; loads `/js/main.js`                       |
+| `public/js/main.js`     | Entry module: DOM wiring, run/reset/keys, boot                 |
+| `public/js/vm.js`       | Wasm init, VM factory, host setup, language-service wrappers   |
+| `public/js/examples.js` | The editor sample + the registered demo modules (data only)    |
+| `public/js/console.js`  | Console pane rendering                                         |
+| `public/js/completion.js` | Autocomplete popup (candidates come from the Rust core)      |
+| `public/js/diagnostics.js` | Live diagnostics indicator                                  |
+| `public/style.css`      | Theme                                                          |
+| `smoke.ts`              | Headless end-to-end test of the wasm API (`bun smoke.ts`)      |
+
+The frontend is split into plain ES modules with no build step — the browser
+imports them directly. `main.js` is the only module the HTML references; it
+composes the rest through small factory functions (`createConsole`,
+`createCompletion`, `createDiagnostics`) and a `getVm` accessor, so no module
+holds a stale reference across a VM reset.
 
 ## The wasm API
 
