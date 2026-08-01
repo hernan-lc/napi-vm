@@ -93,10 +93,9 @@ fn match_member(before: &str) -> Option<(String, String)> {
     // Dotted identifier chain: Math.fl / user.addr.va
     if let Some((recv, prefix)) = rsplit_member(before, |c| {
         c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '.'
-    }) {
-        if recv.contains('.') || is_ident_start(recv.chars().next()) {
-            return Some((recv, prefix));
-        }
+    }) && (recv.contains('.') || is_ident_start(recv.chars().next()))
+    {
+        return Some((recv, prefix));
     }
     // String literal receiver: "abc".to / 'x'.
     if let Some((recv, prefix)) = literal_receiver(before, '"') {
@@ -108,11 +107,11 @@ fn match_member(before: &str) -> Option<(String, String)> {
     // Array literal receiver: [1, 2].ma
     if let Some(prefix) = trailing_ident(before) {
         let rest = &before[..before.len() - prefix.len()];
-        if rest.ends_with("].") {
-            if let Some(open) = rest[..rest.len() - 1].rfind('[') {
-                let recv = rest[open..rest.len() - 1].to_string(); // includes the `]`
-                return Some((recv, prefix));
-            }
+        if rest.ends_with("].")
+            && let Some(open) = rest[..rest.len() - 1].rfind('[')
+        {
+            let recv = rest[open..rest.len() - 1].to_string(); // includes the `]`
+            return Some((recv, prefix));
         }
     }
     None
@@ -288,28 +287,27 @@ fn complete_member(
     let head = receiver.split('.').next().unwrap_or(receiver);
 
     // @playground/<module> → the module's exports.
-    if head.starts_with("@playground/") {
-        let module_name = &head["@playground/".len()..];
-        if let Some(info) = ctx.modules.iter().find(|m| m.name == module_name) {
-            let mut exports = info.exports.clone();
-            exports.sort();
-            for e in &exports {
-                add(e, CompletionKind::Property);
-            }
-            return filter_sorted(out);
+    if let Some(module_name) = head.strip_prefix("@playground/")
+        && let Some(info) = ctx.modules.iter().find(|m| m.name == module_name)
+    {
+        let mut exports = info.exports.clone();
+        exports.sort();
+        for e in &exports {
+            add(e, CompletionKind::Property);
         }
+        return filter_sorted(out);
     }
 
     // import * as ns  →  the module's exports.
-    if let Some(module) = scope.module_for_namespace(head) {
-        if let Some(info) = ctx.modules.iter().find(|m| m.name == module) {
-            let mut exports = info.exports.clone();
-            exports.sort();
-            for e in &exports {
-                add(e, CompletionKind::Property);
-            }
-            return filter_sorted(out);
+    if let Some(module) = scope.module_for_namespace(head)
+        && let Some(info) = ctx.modules.iter().find(|m| m.name == module)
+    {
+        let mut exports = info.exports.clone();
+        exports.sort();
+        for e in &exports {
+            add(e, CompletionKind::Property);
         }
+        return filter_sorted(out);
     }
 
     // Named built-in global (Math, JSON, console, …).

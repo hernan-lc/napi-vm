@@ -131,11 +131,11 @@ fn walk_stmt(s: &Statement, scope: &mut Scope) {
             walk_stmts(body, scope);
         }
         Statement::For { init, body, .. } => {
-            if let Some(fi) = init {
-                if let ForInit::Var { decls, .. } = fi.as_ref() {
-                    for (n, e) in decls {
-                        push(scope, n, CompletionKind::Variable, init_shape(e.as_ref()));
-                    }
+            if let Some(fi) = init
+                && let ForInit::Var { decls, .. } = fi.as_ref()
+            {
+                for (n, e) in decls {
+                    push(scope, n, CompletionKind::Variable, init_shape(e.as_ref()));
                 }
             }
             walk_stmts(body, scope);

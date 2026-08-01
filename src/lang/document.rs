@@ -613,50 +613,49 @@ impl Builder<'_> {
                 if let Expr::Member {
                     object, property, ..
                 } = callee.as_ref()
+                    && let Some(method) = expression_property_name(property)
                 {
-                    if let Some(method) = expression_property_name(property) {
-                        let object_ty = self.expr(object, env);
-                        if method == "resolve"
-                            && matches!(object.as_ref(), Expr::Identifier(name) if name == "Promise")
-                        {
-                            return Type::Promise(Box::new(
-                                args.first()
-                                    .map(|arg| self.expr(arg, env))
-                                    .unwrap_or(Type::Undefined),
-                            ));
+                    let object_ty = self.expr(object, env);
+                    if method == "resolve"
+                        && matches!(object.as_ref(), Expr::Identifier(name) if name == "Promise")
+                    {
+                        return Type::Promise(Box::new(
+                            args.first()
+                                .map(|arg| self.expr(arg, env))
+                                .unwrap_or(Type::Undefined),
+                        ));
+                    }
+                    if method == "then"
+                        && let Some(Expr::ArrowFn { params, body }) = args.first()
+                    {
+                        let mut arrow_env = env.clone();
+                        let value_ty = object_ty.unwrap_promise();
+                        for param in params {
+                            arrow_env.insert(param.clone(), value_ty.clone());
+                            self.bindings.insert(
+                                param.clone(),
+                                Binding {
+                                    kind: "parameter".into(),
+                                    ty: value_ty.clone(),
+                                },
+                            );
                         }
-                        if method == "then" {
-                            if let Some(Expr::ArrowFn { params, body }) = args.first() {
-                                let mut arrow_env = env.clone();
-                                let value_ty = object_ty.unwrap_promise();
-                                for param in params {
-                                    arrow_env.insert(param.clone(), value_ty.clone());
-                                    self.bindings.insert(
-                                        param.clone(),
-                                        Binding {
-                                            kind: "parameter".into(),
-                                            ty: value_ty.clone(),
-                                        },
-                                    );
-                                }
-                                let result = match body.as_ref() {
-                                    ExprOrBlock::Expr(value) => self.expr(value, &mut arrow_env),
-                                    ExprOrBlock::Block(body) => {
-                                        self.function_result(params, body, &arrow_env)
-                                    }
-                                };
-                                for param in params {
-                                    self.bindings.insert(
-                                        param.clone(),
-                                        Binding {
-                                            kind: "parameter".into(),
-                                            ty: value_ty.clone(),
-                                        },
-                                    );
-                                }
-                                return Type::Promise(Box::new(result));
+                        let result = match body.as_ref() {
+                            ExprOrBlock::Expr(value) => self.expr(value, &mut arrow_env),
+                            ExprOrBlock::Block(body) => {
+                                self.function_result(params, body, &arrow_env)
                             }
+                        };
+                        for param in params {
+                            self.bindings.insert(
+                                param.clone(),
+                                Binding {
+                                    kind: "parameter".into(),
+                                    ty: value_ty.clone(),
+                                },
+                            );
                         }
+                        return Type::Promise(Box::new(result));
                     }
                 }
                 match self.expr(callee, env) {
@@ -856,17 +855,14 @@ impl Builder<'_> {
         env: &mut HashMap<String, Type>,
         fields: &mut BTreeMap<String, Type>,
     ) {
-        if let Expr::Assignment { target, value, .. } = expr {
-            if let Expr::Member {
+        if let Expr::Assignment { target, value, .. } = expr
+            && let Expr::Member {
                 object, property, ..
             } = target.as_ref()
-            {
-                if matches!(object.as_ref(), Expr::This) {
-                    if let Some(name) = expression_property_name(property) {
-                        fields.insert(name.to_string(), self.expr(value, env));
-                    }
-                }
-            }
+            && matches!(object.as_ref(), Expr::This)
+            && let Some(name) = expression_property_name(property)
+        {
+            fields.insert(name.to_string(), self.expr(value, env));
         }
         self.expr(expr, env);
     }

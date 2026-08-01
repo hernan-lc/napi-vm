@@ -36,6 +36,12 @@ pub struct LanguageService {
     inner: CoreLanguageService,
 }
 
+impl Default for LanguageService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl LanguageService {
     #[napi(constructor)]

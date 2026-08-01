@@ -9,12 +9,14 @@
     "index.js",
     "index.d.ts",
     "*.node",
+    "docs",
     "lsp",
     "runtime"
   ],
   "scripts": {
     "build": "npx napi build --platform --release",
     "build:debug": "npx napi build --platform",
+    "lint:rust": "cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings",
     "test": "bun test",
     "bench": "node bench/bench.js",
     "bench:stress": "bun bench/stress.ts",
