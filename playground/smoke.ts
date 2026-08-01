@@ -102,6 +102,14 @@ check(
   JSON.stringify(hoverInfo),
 );
 
+const classSource = 'class Store { constructor(initial) { this.state = initial; } read(key) { return this.state[key]; } } function createStore(initial) { return new Store(initial); } const store = createStore({ count: 0 }); store.read("count");';
+const classHover = vm.hover(classSource, classSource.lastIndexOf("createStore") + 2);
+check(
+  "native hover preserves class instance type",
+  String(classHover?.detail).includes("Store"),
+  JSON.stringify(classHover),
+);
+
 // 9. Identifier completion offers globals + scope decls.
 const src = "const counter = 1;\nfunction bump() {}\n";
 comp = vm.complete(src, src.length);

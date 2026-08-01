@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::lexer::Token;
-use crate::parser::{BinOp, Expr, ExprOrBlock, ObjectProp, Statement, VarKind};
+use crate::parser::{BinOp, ClassMember, Expr, ExprOrBlock, ObjectProp, Statement, VarKind};
 use crate::span::SpannedToken;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +20,15 @@ pub enum Type {
     Null,
     Undefined,
     Object(BTreeMap<String, Type>),
+    Class {
+        name: String,
+        fields: BTreeMap<String, Type>,
+        constructor: Vec<String>,
+    },
+    Instance {
+        name: String,
+        fields: BTreeMap<String, Type>,
+    },
     Array(Box<Type>),
     Promise(Box<Type>),
     Function {
@@ -33,6 +42,9 @@ impl Type {
     fn property(&self, name: &str) -> Type {
         match self {
             Type::Object(fields) => fields.get(name).cloned().unwrap_or(Type::Unknown),
+            Type::Class { fields, .. } | Type::Instance { fields, .. } => {
+                fields.get(name).cloned().unwrap_or(Type::Unknown)
+            }
             Type::Array(_) if name == "length" => Type::Number,
             Type::Promise(value) if matches!(name, "then" | "catch" | "finally") => {
                 Type::Function {
@@ -79,6 +91,7 @@ impl Type {
                     .join("\n");
                 format!("{{\n{}\n}}", body)
             }
+            Type::Class { name, .. } | Type::Instance { name, .. } => name.clone(),
         }
     }
 }
@@ -152,6 +165,7 @@ impl Document {
             "function" => format!("(function) {}: {}", name, binding.ty.display()),
             "parameter" => format!("(parameter) {}: {}", name, binding.ty.display()),
             "import" => format!("(import) {}: {}", name, binding.ty.display()),
+            "class" => format!("(class) {}: {}", name, binding.ty.display()),
             kind => format!("{} {}: {}", kind, name, binding.ty.display()),
         };
         Some(HoverInfo { detail })
@@ -244,6 +258,17 @@ impl Builder {
                     name.clone(),
                     Binding {
                         kind: "function".into(),
+                        ty: ty.clone(),
+                    },
+                );
+                env.insert(name.clone(), ty);
+            }
+            Statement::ClassDecl { name, body, .. } => {
+                let ty = self.class_type(name, body, env);
+                self.bindings.insert(
+                    name.clone(),
+                    Binding {
+                        kind: "class".into(),
                         ty: ty.clone(),
                     },
                 );
@@ -514,13 +539,155 @@ impl Builder {
                     Type::Number
                 }
             }
-            Expr::New { .. } => Type::Object(BTreeMap::new()),
+            Expr::New { callee, .. } => match self.expr(callee, env) {
+                Type::Class { name, fields, .. } => Type::Instance { name, fields },
+                _ => Type::Unknown,
+            },
             Expr::Conditional { consequent, .. } => self.expr(consequent, env),
             Expr::Unary { .. } => Type::Number,
             Expr::Assignment { value, .. } => self.expr(value, env),
             Expr::Spread(value) => self.expr(value, env),
             Expr::This | Expr::Super | Expr::ImportMeta | Expr::Yield(_) => Type::Unknown,
         }
+    }
+
+    fn class_type(
+        &mut self,
+        name: &str,
+        members: &[ClassMember],
+        outer: &HashMap<String, Type>,
+    ) -> Type {
+        let mut fields = BTreeMap::new();
+        let mut constructor = Vec::new();
+
+        for member in members {
+            match member {
+                ClassMember::Method {
+                    name: member_name,
+                    is_static,
+                    params,
+                    body,
+                } if !is_static && member_name == "constructor" => {
+                    constructor = params.clone();
+                    let mut env = outer.clone();
+                    for param in params {
+                        env.insert(param.clone(), Type::Any);
+                    }
+                    self.collect_instance_fields(body, &mut env, &mut fields);
+                }
+                ClassMember::Method {
+                    name: member_name,
+                    is_static,
+                    params,
+                    body,
+                } if !is_static => {
+                    let env = outer.clone();
+                    let result = self.function_result(params, body, &env);
+                    fields.insert(
+                        member_name.clone(),
+                        Type::Function {
+                            params: params.clone(),
+                            result: Box::new(result),
+                            async_fn: false,
+                        },
+                    );
+                }
+                ClassMember::Field {
+                    name: field_name,
+                    is_static,
+                    init,
+                } if !is_static => {
+                    fields.insert(
+                        field_name.clone(),
+                        init.as_ref()
+                            .map(|value| self.expr(value, &mut outer.clone()))
+                            .unwrap_or(Type::Unknown),
+                    );
+                }
+                ClassMember::Getter {
+                    name: field_name,
+                    is_static,
+                    body,
+                } if !is_static => {
+                    fields.insert(field_name.clone(), self.function_result(&[], body, outer));
+                }
+                ClassMember::Setter {
+                    name: field_name,
+                    is_static,
+                    param,
+                    body,
+                } if !is_static => {
+                    fields.insert(
+                        field_name.clone(),
+                        Type::Function {
+                            params: vec![param.clone()],
+                            result: Box::new(self.function_result(
+                                std::slice::from_ref(param),
+                                body,
+                                outer,
+                            )),
+                            async_fn: false,
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        Type::Class {
+            name: name.to_string(),
+            fields,
+            constructor,
+        }
+    }
+
+    fn collect_instance_fields(
+        &mut self,
+        statements: &[Statement],
+        env: &mut HashMap<String, Type>,
+        fields: &mut BTreeMap<String, Type>,
+    ) {
+        for statement in statements {
+            match statement {
+                Statement::Expr(expr) => self.collect_instance_expr(expr, env, fields),
+                Statement::If { then, else_, .. } => {
+                    self.collect_instance_fields(then, env, fields);
+                    if let Some(else_body) = else_ {
+                        self.collect_instance_fields(else_body, env, fields);
+                    }
+                }
+                Statement::Block(body)
+                | Statement::While { body, .. }
+                | Statement::DoWhile { body, .. }
+                | Statement::For { body, .. }
+                | Statement::ForIn { body, .. }
+                | Statement::ForOf { body, .. } => {
+                    self.collect_instance_fields(body, env, fields);
+                }
+                _ => self.statement(statement, env),
+            }
+        }
+    }
+
+    fn collect_instance_expr(
+        &mut self,
+        expr: &Expr,
+        env: &mut HashMap<String, Type>,
+        fields: &mut BTreeMap<String, Type>,
+    ) {
+        if let Expr::Assignment { target, value, .. } = expr {
+            if let Expr::Member {
+                object, property, ..
+            } = target.as_ref()
+            {
+                if matches!(object.as_ref(), Expr::This) {
+                    if let Some(name) = expression_property_name(property) {
+                        fields.insert(name.to_string(), self.expr(value, env));
+                    }
+                }
+            }
+        }
+        self.expr(expr, env);
     }
 }
 
@@ -568,5 +735,32 @@ mod tests {
         let user_hover = hover(source, "user");
         assert!(user_hover.contains("(parameter) user: {"));
         assert_eq!(hover(source, "name"), "(property) name: string");
+    }
+
+    #[test]
+    fn preserves_class_instance_type_through_factory() {
+        let source = r#"
+            class Store {
+                constructor(initial) {
+                    this.state = initial;
+                    this.listeners = [];
+                }
+                read(key) { return this.state[key]; }
+            }
+            function createStore(initial) { return new Store(initial); }
+            const store = createStore({ count: 0 });
+            store.read("count");
+            store.state;
+        "#;
+
+        let class_offset = source.find("class Store").unwrap() + "class ".len() + 1;
+        assert_eq!(
+            Document::parse(source).hover(class_offset).unwrap().detail,
+            "(class) Store: Store"
+        );
+        assert!(hover(source, "createStore").contains("Store"));
+        assert_eq!(hover(source, "store"), "const store: Store");
+        assert!(hover(source, "read").starts_with("(property) read:"));
+        assert_eq!(hover(source, "state"), "(property) state: any");
     }
 }
