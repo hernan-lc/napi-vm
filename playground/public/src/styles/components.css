@@ -34,6 +34,8 @@ select:hover { border-color: var(--border-focus); }
 .kind.module { color: var(--accent); }
 .kind.exposed { color: var(--success); }
 
+.editor-hover { position: absolute; z-index: 30; max-width: min(420px, calc(100% - 24px)); padding: 7px 9px; border: 1px solid var(--border-focus); border-radius: 6px; color: var(--fg); background: var(--bg-elev-2); box-shadow: var(--popup-shadow); font: 11px var(--font-mono); line-height: 1.35; white-space: nowrap; pointer-events: none; transform: translateY(-100%); }
+
 .dialog-backdrop { position: fixed; z-index: 200; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, .48); }
 .dialog { width: min(360px, 100%); padding: 20px; border: 1px solid var(--border-focus); border-radius: 8px; background: var(--bg-elev-2); box-shadow: var(--popup-shadow); }
 .dialog h2 { margin: 0; color: var(--fg); font-size: 14px; font-weight: 650; }

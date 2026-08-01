@@ -1,4 +1,5 @@
 import type { CompletionItem } from "../types.ts";
+import { debugLog } from "../debug.ts";
 
 interface CompletionPopupProps {
   items: CompletionItem[];
@@ -15,6 +16,7 @@ function escapeHtml(s: string): string {
 }
 
 export function CompletionPopup({ items, sel, open, kindLetter, onAccept, popupRef, position }: CompletionPopupProps) {
+  debugLog("popup:render", { open, count: items.length, selected: items[sel]?.label, position });
   if (!open || items.length === 0) return null;
 
   return (

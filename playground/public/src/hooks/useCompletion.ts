@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { complete } from "../vm.ts";
+import { debugLog } from "../debug.ts";
 import type { CompletionItem, CompletionPosition } from "../types.ts";
 import { COMPLETION, COMPLETION_KIND_LETTERS, EDITOR } from "../constants.ts";
 
@@ -32,6 +33,7 @@ export function useCompletion(
   stateRef.current = state;
 
   const close = useCallback(() => {
+    debugLog("close");
     setState((s) => (s.open ? { ...s, items: [], sel: 0, prefix: "", open: false } : s));
   }, []);
 
@@ -78,24 +80,41 @@ export function useCompletion(
     (force: boolean) => {
       const vm = getVm();
       const editor = editorRef.current;
-      if (!vm || !editor) return;
+      debugLog("request:start", { force, hasVm: Boolean(vm), hasEditor: Boolean(editor) });
+      if (!vm || !editor) {
+        debugLog("request:missing-dependency");
+        return;
+      }
       const caret = editor.selectionStart;
       const before = editor.value.slice(0, caret);
       const a = analyze(before);
+      const byteOffset = TEXT_ENCODER.encode(before).length;
+      debugLog("request:trigger", {
+        caret,
+        byteOffset,
+        kind: a.kind,
+        prefix: a.prefix,
+        tail: before.slice(-80),
+      });
 
-      if (a.kind === "ident" && (!force || a.prefix.length === 0)) {
-        // Keep open for @playground/ even with empty prefix so all
-        // registered modules are offered as completions.
+      if (a.kind === "ident" && a.prefix.length === 0 && !force) {
+        // Avoid opening a full global list on an empty line. Once the user
+        // types a prefix, identifier completion is requested automatically.
         if (!before.includes(COMPLETION.modulePrefix)) {
+          debugLog("request:skip-empty-ident");
           close();
           return;
         }
       }
 
-      const byteOffset = TEXT_ENCODER.encode(before).length;
       const list = complete(vm as unknown as WasmVm, editor.value, byteOffset);
+      debugLog("request:result", {
+        count: list?.length ?? 0,
+        labels: (list || []).slice(0, 20).map((item) => item.label),
+      });
 
       if (!list || list.length === 0) {
+        debugLog("request:empty");
         close();
         return;
       }
@@ -107,6 +126,7 @@ export function useCompletion(
         open: true,
         position: caretPosition(editor, before),
       });
+      debugLog("popup:open", { count: list.length, prefix: a.prefix });
     },
     [getVm, editorRef, close]
   );
@@ -121,10 +141,14 @@ export function useCompletion(
   const accept = useCallback(() => {
     const editor = editorRef.current;
     const { items, sel, prefix } = stateRef.current;
-    if (!editor || !items[sel]) return;
+    if (!editor || !items[sel]) {
+      debugLog("accept:missing-item", { hasEditor: Boolean(editor), sel, count: items.length });
+      return;
+    }
 
     const caret = editor.selectionStart;
     const start = caret - prefix.length;
+    debugLog("accept", { label: items[sel].label, prefix, start, caret });
     editor.setRangeText(items[sel].label, start, caret, "end");
     close();
     editor.focus();

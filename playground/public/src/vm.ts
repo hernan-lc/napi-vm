@@ -1,4 +1,5 @@
 import init, { WasmVm } from "/pkg/napi_vm.js";
+import { debugLog } from "./debug.ts";
 import { MODULES, SAMPLE } from "./examples.ts";
 import type { CompletionItem, Diagnostic, HostOptions, ModuleDef, RunResult } from "./types.ts";
 
@@ -39,7 +40,13 @@ export function runCode(vm: WasmVm, code: string): RunResult {
 }
 
 export function complete(vm: WasmVm, code: string, byteOffset: number): CompletionItem[] {
-  return vm.complete(code, byteOffset) as CompletionItem[];
+  const result = vm.complete(code, byteOffset) as CompletionItem[];
+  debugLog("wasm:complete", {
+    byteOffset,
+    resultCount: result?.length ?? 0,
+    labels: (result || []).slice(0, 20).map((item) => item.label),
+  });
+  return result;
 }
 
 export function diagnose(vm: WasmVm, code: string): Diagnostic[] {

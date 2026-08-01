@@ -23,7 +23,7 @@ function bump(times) {
   }
   return store.read("count");
 }
-createStore.
+console.log()
 console.log(label("double(21)", math.double(21)));
 console.log(upper("modular"));
 bump(10);
