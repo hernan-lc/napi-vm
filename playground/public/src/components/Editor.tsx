@@ -210,7 +210,8 @@ export function Editor({
       />
       {hover && (
         <div class="editor-hover" style={{ top: `${hover.top}px`, left: `${hover.left}px` }} role="tooltip">
-          {hover.info.detail}
+          <div>{hover.info.detail}</div>
+          {hover.info.documentation && <div class="editor-hover-doc">{hover.info.documentation}</div>}
         </div>
       )}
       {diagnostic && (

@@ -18,6 +18,19 @@ export interface CompletionItem {
 
 export interface HoverInfo {
   detail: string;
+  documentation?: string;
+}
+
+export interface HostFunctionParameter {
+  name: string;
+  type: string;
+}
+
+export interface HostFunctionInfo {
+  params?: HostFunctionParameter[];
+  returns?: string;
+  documentation?: string;
+  async?: boolean;
 }
 
 export interface CompletionPosition {

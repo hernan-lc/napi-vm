@@ -117,6 +117,28 @@ check(
   JSON.stringify(dateHover),
 );
 
+vm.expose_function_with_info("alert", (message: unknown) => {
+  alerted = String(message);
+}, {
+  params: [{ name: "message", type: "string" }],
+  returns: "void",
+  documentation: "Displays a message in the playground console.",
+});
+const alertSource = "alert(\"hello\");";
+const alertHover = vm.hover(alertSource, alertSource.indexOf("alert") + 2);
+check(
+  "host function hover includes type",
+  alertHover?.detail === "(function) alert: (message: string) => void" &&
+    alertHover?.documentation === "Displays a message in the playground console.",
+  JSON.stringify(alertHover),
+);
+comp = vm.complete("al", 2);
+check(
+  "host function completion includes signature",
+  comp.some((item: any) => item.label === "alert" && item.detail === "(message: string) => void"),
+  JSON.stringify(comp),
+);
+
 const mathModule = readFileSync(
   join(import.meta.dir, "public", "examples", "modules", "math.js"),
   "utf8",

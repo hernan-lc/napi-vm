@@ -1,7 +1,15 @@
 import init, { WasmVm } from "/pkg/napi_vm.js";
 import { debugLog } from "./debug.ts";
 import { MODULES, SAMPLE } from "./examples.ts";
-import type { CompletionItem, Diagnostic, HoverInfo, HostOptions, ModuleDef, RunResult } from "./types.ts";
+import type {
+  CompletionItem,
+  Diagnostic,
+  HoverInfo,
+  HostFunctionInfo,
+  HostOptions,
+  ModuleDef,
+  RunResult,
+} from "./types.ts";
 
 export { SAMPLE, MODULES };
 export type { CompletionItem, Diagnostic, RunResult, ModuleDef };
@@ -11,7 +19,16 @@ export async function initWasm(): Promise<void> {
 }
 
 function setupHost(vm: WasmVm, { onAlert }: { onAlert: (msg: string) => void }): string[] {
-  vm.expose_function("alert", (msg: unknown) => onAlert(String(msg)));
+  exposeFunction(
+    vm,
+    "alert",
+    (msg: unknown) => onAlert(String(msg)),
+    {
+      params: [{ name: "message", type: "string" }],
+      returns: "void",
+      documentation: "Displays a message in the playground console.",
+    },
+  );
   const failed: string[] = [];
   for (const { name, source } of MODULES) {
     try {
@@ -21,6 +38,19 @@ function setupHost(vm: WasmVm, { onAlert }: { onAlert: (msg: string) => void }):
     }
   }
   return failed;
+}
+
+export function exposeFunction(
+  vm: WasmVm,
+  name: string,
+  fn: (...args: unknown[]) => unknown,
+  info?: HostFunctionInfo,
+): void {
+  if (info) {
+    vm.expose_function_with_info(name, fn, info);
+  } else {
+    vm.expose_function(name, fn as (msg: unknown) => void);
+  }
 }
 
 export function createVm(opts: HostOptions): { vm: WasmVm; failed: string[] } {

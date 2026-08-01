@@ -966,11 +966,8 @@ mod tests {
             documentation: Some("Displays a message in the playground.".into()),
             async_fn: false,
         }];
-        let document = Document::parse_with_context(
-            "alert(\"hello\");",
-            &HashMap::new(),
-            &host_functions,
-        );
+        let document =
+            Document::parse_with_context("alert(\"hello\");", &HashMap::new(), &host_functions);
         let info = document
             .hover(2)
             .expect("host function should have hover information");
