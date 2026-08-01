@@ -5,8 +5,6 @@
 #[cfg(feature = "napi")]
 pub mod bindings;
 pub mod builtins;
-#[cfg(feature = "wasm")]
-pub mod wasm;
 pub mod error;
 pub mod format;
 pub mod host;
@@ -16,12 +14,14 @@ pub mod lexer;
 pub mod parser;
 pub mod span;
 pub mod value;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 #[cfg(feature = "napi")]
 pub use bindings::{VM, create_vm, debug_parse, run_code};
 pub use builtins::setup_builtins;
 pub use error::VmErr;
-pub use format::{Printer, PrintOptions};
+pub use format::{PrintOptions, Printer};
 pub use interpreter::{Environment, Interpreter, Module};
 pub use lexer::{Lexer, Token};
 pub use parser::{Expr, Parser, Statement};

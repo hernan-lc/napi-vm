@@ -48,6 +48,8 @@ export interface Translations {
   closeTab: string;
   untitledFile: string;
   cannotDeleteLastFile: string;
+  readOnlyFile: string;
+  openImportHint: string;
   cancel: string;
   ok: string;
 }
@@ -100,6 +102,8 @@ const en: Translations = {
   closeTab: "Close tab",
   untitledFile: "untitled.js",
   cannotDeleteLastFile: "The workspace must keep one file.",
+  readOnlyFile: "Read-only example module",
+  openImportHint: "Ctrl/⌘+click an import to open it",
   cancel: "Cancel",
   ok: "OK",
 };
@@ -152,6 +156,8 @@ const es: Translations = {
   closeTab: "Cerrar pestaña",
   untitledFile: "sin-título.js",
   cannotDeleteLastFile: "El espacio de trabajo debe conservar un archivo.",
+  readOnlyFile: "Módulo de ejemplo de solo lectura",
+  openImportHint: "Ctrl/⌘+clic en un import para abrirlo",
   cancel: "Cancelar",
   ok: "Aceptar",
 };
@@ -204,6 +210,8 @@ const pt: Translations = {
   closeTab: "Fechar aba",
   untitledFile: "sem-título.js",
   cannotDeleteLastFile: "O espaço de trabalho precisa manter um arquivo.",
+  readOnlyFile: "Módulo de exemplo somente leitura",
+  openImportHint: "Ctrl/⌘+clique em um import para abrir",
   cancel: "Cancelar",
   ok: "OK",
 };

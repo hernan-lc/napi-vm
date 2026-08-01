@@ -6,7 +6,10 @@
 
 use std::collections::HashMap;
 
-use super::{AnalysisContext, Completion, Diagnostic, Document, HoverInfo, Symbol, complete, diagnose, symbols};
+use super::{
+    AnalysisContext, Completion, Diagnostic, Document, HoverInfo, Symbol, complete, diagnose,
+    symbols,
+};
 
 #[derive(Debug, Default)]
 pub struct LanguageService {
@@ -28,7 +31,8 @@ impl LanguageService {
         if !self.documents.contains_key(uri) {
             return false;
         }
-        self.documents.insert(uri.to_string(), Document::parse(source));
+        self.documents
+            .insert(uri.to_string(), Document::parse(source));
         true
     }
 
@@ -45,7 +49,12 @@ impl LanguageService {
         self.documents.get(uri)?.hover(offset)
     }
 
-    pub fn complete(&self, uri: &str, offset: usize, context: &AnalysisContext) -> Option<Vec<Completion>> {
+    pub fn complete(
+        &self,
+        uri: &str,
+        offset: usize,
+        context: &AnalysisContext,
+    ) -> Option<Vec<Completion>> {
         Some(complete(self.documents.get(uri)?.source(), offset, context))
     }
 
@@ -66,11 +75,27 @@ mod tests {
     fn document_lifecycle_rebuilds_analysis() {
         let mut service = LanguageService::new();
         service.open("file:///async.js", "const total = 1; total;");
-        let offset = service.source("file:///async.js").unwrap().rfind("total").unwrap() + 1;
-        assert_eq!(service.hover("file:///async.js", offset).unwrap().detail, "const total: number");
+        let offset = service
+            .source("file:///async.js")
+            .unwrap()
+            .rfind("total")
+            .unwrap()
+            + 1;
+        assert_eq!(
+            service.hover("file:///async.js", offset).unwrap().detail,
+            "const total: number"
+        );
         assert!(service.update("file:///async.js", "const total = \"ready\"; total;"));
-        let offset = service.source("file:///async.js").unwrap().rfind("total").unwrap() + 1;
-        assert_eq!(service.hover("file:///async.js", offset).unwrap().detail, "const total: string");
+        let offset = service
+            .source("file:///async.js")
+            .unwrap()
+            .rfind("total")
+            .unwrap()
+            + 1;
+        assert_eq!(
+            service.hover("file:///async.js", offset).unwrap().detail,
+            "const total: string"
+        );
         assert!(service.close("file:///async.js"));
         assert!(service.hover("file:///async.js", 0).is_none());
     }

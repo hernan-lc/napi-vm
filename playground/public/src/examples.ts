@@ -5,9 +5,9 @@ import FORMAT from "../examples/modules/format.js?raw";
 import STORE from "../examples/modules/store.js?raw";
 
 export const MODULES: ModuleDef[] = [
-  { name: "math", source: MATH },
-  { name: "format", source: FORMAT },
-  { name: "store", source: STORE },
+  { name: "./modules/math.js", source: MATH },
+  { name: "./modules/format.js", source: FORMAT },
+  { name: "./modules/store.js", source: STORE },
 ];
 
 export { SAMPLE };

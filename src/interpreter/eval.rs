@@ -537,7 +537,8 @@ impl Interpreter {
                 named,
                 namespace,
             } => {
-                if let Some(md) = self.modules.get(module) {
+                let resolved_module = self.resolve_module_name(module);
+                if let Some(md) = self.modules.get(&resolved_module) {
                     if let Some(d) = default {
                         let v = md.default.clone().unwrap_or(Value::Undefined);
                         self.global.borrow_mut().set(d, v);

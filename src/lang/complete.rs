@@ -180,7 +180,12 @@ fn playground_member(before: &str) -> Option<(String, String)> {
 
 // ---- identifier completion -----------------------------------------------
 
-fn complete_ident(prefix: &str, before: &str, scope: &Scope, ctx: &AnalysisContext) -> Vec<Completion> {
+fn complete_ident(
+    prefix: &str,
+    before: &str,
+    scope: &Scope,
+    ctx: &AnalysisContext,
+) -> Vec<Completion> {
     let mut out: Vec<Completion> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut add = |label: &str, kind: CompletionKind, detail: Option<&str>| {
@@ -359,8 +364,14 @@ fn is_member_name(label: &str) -> bool {
 
 /// ALL_CAPS built-ins (Math.PI, Symbol.iterator aside) are constants.
 fn member_kind(label: &str) -> CompletionKind {
-    let is_const = label.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-        && label.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false);
+    let is_const = label
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && label
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_uppercase())
+            .unwrap_or(false);
     if is_const {
         CompletionKind::Property
     } else {

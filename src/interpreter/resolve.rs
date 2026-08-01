@@ -38,9 +38,7 @@ impl Interpreter {
             if !is_completion_identifier(part) {
                 return None;
             }
-            value = self
-                .prop(&value, &Value::String(part.to_string()))
-                .ok()?;
+            value = self.prop(&value, &Value::String(part.to_string())).ok()?;
         }
         Some(value)
     }
@@ -71,23 +69,23 @@ impl Interpreter {
                 }
             }
             Value::Array(_) => {
-                for name in crate::lang::catalog::prototype_members(
-                    crate::lang::catalog::ProtoKind::Array,
-                ) {
+                for name in
+                    crate::lang::catalog::prototype_members(crate::lang::catalog::ProtoKind::Array)
+                {
                     add(name, CompletionKind::Method);
                 }
             }
             Value::String(_) => {
-                for name in crate::lang::catalog::prototype_members(
-                    crate::lang::catalog::ProtoKind::String,
-                ) {
+                for name in
+                    crate::lang::catalog::prototype_members(crate::lang::catalog::ProtoKind::String)
+                {
                     add(name, CompletionKind::Method);
                 }
             }
             Value::Number(_) => {
-                for name in crate::lang::catalog::prototype_members(
-                    crate::lang::catalog::ProtoKind::Number,
-                ) {
+                for name in
+                    crate::lang::catalog::prototype_members(crate::lang::catalog::ProtoKind::Number)
+                {
                     add(name, CompletionKind::Method);
                 }
             }

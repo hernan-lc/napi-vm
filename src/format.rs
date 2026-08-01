@@ -97,11 +97,14 @@ impl Printer {
 
     fn render_value(&mut self, v: &Value, depth: usize, pretty: bool) -> String {
         if depth >= self.options.max_depth {
-            return self.painter().special(match v {
-                Value::Object { .. } => "[Object]",
-                Value::Array(_) => "[Array]",
-                _ => "[Object]",
-            }.to_string());
+            return self.painter().special(
+                match v {
+                    Value::Object { .. } => "[Object]",
+                    Value::Array(_) => "[Array]",
+                    _ => "[Object]",
+                }
+                .to_string(),
+            );
         }
         match v {
             Value::Undefined => "undefined".to_string(),
@@ -159,12 +162,12 @@ impl Printer {
                 "[Function: {}]",
                 f.name.as_deref().unwrap_or("anonymous")
             )),
-            Value::NativeFunction { name, .. } => {
-                self.painter().special(format!("[Function: {} [native]]", name))
-            }
-            Value::HostFunction { name, .. } => {
-                self.painter().special(format!("[Function: {} [native]]", name))
-            }
+            Value::NativeFunction { name, .. } => self
+                .painter()
+                .special(format!("[Function: {} [native]]", name)),
+            Value::HostFunction { name, .. } => self
+                .painter()
+                .special(format!("[Function: {} [native]]", name)),
             Value::GlobalObject => self.painter().special("[object global]".to_string()),
             Value::Class(c) => self.painter().special(format!("[class {}]", c.name)),
             Value::Promise { .. } | Value::HostPending { .. } => {
@@ -176,7 +179,11 @@ impl Printer {
         }
     }
 
-    fn render_object_flat(&self, props: &std::cell::Ref<'_, Vec<(String, Value)>>, _depth: usize) -> String {
+    fn render_object_flat(
+        &self,
+        props: &std::cell::Ref<'_, Vec<(String, Value)>>,
+        _depth: usize,
+    ) -> String {
         let entries: Vec<String> = props
             .iter()
             .map(|(k, v)| format!("{}: {}", key_str(k), to_string(v)))
@@ -184,7 +191,11 @@ impl Printer {
         format!("{{{}}}", entries.join(", "))
     }
 
-    fn render_object_pretty(&mut self, props: &std::cell::Ref<'_, Vec<(String, Value)>>, depth: usize) -> String {
+    fn render_object_pretty(
+        &mut self,
+        props: &std::cell::Ref<'_, Vec<(String, Value)>>,
+        depth: usize,
+    ) -> String {
         let indent = " ".repeat(self.options.indent * (depth + 1));
         let outer = " ".repeat(self.options.indent * depth);
         let entries = props
@@ -207,7 +218,11 @@ impl Printer {
         format!("[ {} ]", entries.join(", "))
     }
 
-    fn render_array_pretty(&mut self, items: &std::cell::Ref<'_, Vec<Value>>, depth: usize) -> String {
+    fn render_array_pretty(
+        &mut self,
+        items: &std::cell::Ref<'_, Vec<Value>>,
+        depth: usize,
+    ) -> String {
         let has_compound = items
             .iter()
             .any(|x| matches!(x, Value::Object { .. } | Value::Array(_)));

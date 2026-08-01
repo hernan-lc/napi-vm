@@ -114,6 +114,32 @@ impl Interpreter {
         Ok(r)
     }
 
+    /// Resolve a relative import from the module currently being evaluated.
+    /// Module names use browser-style POSIX paths so the same source behaves
+    /// consistently in the native VM and in the browser playground.
+    pub(crate) fn resolve_module_name(&self, module: &str) -> String {
+        if !module.starts_with('.') {
+            return module.to_string();
+        }
+
+        let current = self.cur_mod.as_deref().unwrap_or("./playground.js");
+        let current = current.strip_prefix("./").unwrap_or(current);
+        let mut parts: Vec<&str> = current
+            .rsplit_once('/')
+            .map(|(base, _)| base.split('/').collect())
+            .unwrap_or_default();
+        for part in module.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                value => parts.push(value),
+            }
+        }
+        format!("./{}", parts.join("/"))
+    }
+
     /// Refill the loop budget. Called at each NAPI entry point (`run`,
     /// `registerModule`, `callFunction`) so every top-level execution gets a
     /// full budget. Not called from `run` itself: block bodies and loop

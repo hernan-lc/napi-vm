@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "preact/hooks";
-import type { Diagnostic } from "../types.ts";
+import type { Diagnostic, HoverInfo } from "../types.ts";
 import { highlightToHtml } from "./editor/highlight.ts";
-import type { HoverInfo } from "../types.ts";
+import { importSpecifierAt } from "./editor/imports.ts";
 import { EDITOR, EDITOR_KEYS } from "../constants.ts";
 import type { Translations } from "../i18n/translations.ts";
 import { debugLog } from "../debug.ts";
@@ -15,6 +15,8 @@ interface EditorProps {
   onCompletionMove: (delta: number) => void;
   onCompletionAccept: () => void;
   onHoverAt: (source: string, offset: number) => HoverInfo | null;
+  onOpenImport: (specifier: string) => void;
+  readOnly: boolean;
   completionOpen: boolean;
   diagnostic: Diagnostic | null;
   editorRef: { current: HTMLTextAreaElement | null };
@@ -43,6 +45,8 @@ export function Editor({
   onCompletionMove,
   onCompletionAccept,
   onHoverAt,
+  onOpenImport,
+  readOnly,
   completionOpen,
   diagnostic,
   editorRef,
@@ -161,6 +165,19 @@ export function Editor({
     if (editor) reportCursor(editor);
   };
 
+  const handleClick = (event: MouseEvent) => {
+    const editor = event.currentTarget as HTMLTextAreaElement;
+    reportCursor(editor);
+    if (event.ctrlKey || event.metaKey) {
+      const point = sourceOffsetAtPoint(event);
+      const specifier = point ? importSpecifierAt(value, point.offset) : null;
+      if (specifier) {
+        event.preventDefault();
+        onOpenImport(specifier);
+      }
+    }
+  };
+
   return (
     <div class="editor-container">
       <div class="editor-gutter" ref={gutterRef} aria-hidden="true">
@@ -180,11 +197,12 @@ export function Editor({
         autocapitalize="off"
         autocomplete="off"
         aria-label={t.editorAriaLabel}
+        readOnly={readOnly}
         value={value}
         onInput={handleInput}
         onScroll={(e) => syncScroll(e.currentTarget as HTMLTextAreaElement)}
         onKeyDown={handleKeyDown}
-        onClick={handleSelectionChange}
+        onClick={handleClick}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHover(null)}
         onKeyUp={handleSelectionChange}

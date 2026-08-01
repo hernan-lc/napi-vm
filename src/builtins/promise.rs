@@ -178,7 +178,10 @@ fn promise_catch(
     promise_then(
         interpreter,
         this,
-        vec![Value::Undefined, args.first().cloned().unwrap_or(Value::Undefined)],
+        vec![
+            Value::Undefined,
+            args.first().cloned().unwrap_or(Value::Undefined),
+        ],
     )
 }
 

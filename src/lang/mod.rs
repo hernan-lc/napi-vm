@@ -16,8 +16,8 @@ pub mod catalog;
 mod complete;
 mod diagnostics;
 mod document;
-mod service;
 mod scope;
+mod service;
 mod symbols;
 
 pub use complete::complete;

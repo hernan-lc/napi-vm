@@ -15,5 +15,7 @@ mod bridge;
 mod marshal;
 mod vm;
 
-pub use crate::format::{colors_enabled, to_string, to_string_pretty, to_string_pretty_colored, Printer, PrintOptions};
+pub use crate::format::{
+    PrintOptions, Printer, colors_enabled, to_string, to_string_pretty, to_string_pretty_colored,
+};
 pub use vm::{VM, create_vm, debug_parse, run_code, run_source};

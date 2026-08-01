@@ -9,10 +9,11 @@ import { useCompletion } from "../hooks/useCompletion.ts";
 import { useResizable } from "../hooks/useResizable.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 import { useTheme } from "../hooks/useTheme.ts";
-import { ASYNC_SAMPLE, LOOP_SAMPLE, SAMPLE } from "../examples.ts";
+import { ASYNC_SAMPLE, LOOP_SAMPLE, MODULES, SAMPLE } from "../examples.ts";
 import { hover as hoverCode } from "../vm.ts";
 import { COMPLETION, EDITOR, RESIZER, UI, WORKSPACE } from "../constants.ts";
 import type { WorkspaceFile } from "../types.ts";
+import { resolveWorkspaceImport } from "./editor/imports.ts";
 
 const SEED_FILES: WorkspaceFile[] = [
   { id: "playground", name: "playground.js", content: SAMPLE },
@@ -20,21 +21,33 @@ const SEED_FILES: WorkspaceFile[] = [
   { id: "loop", name: "loop-guard.js", content: LOOP_SAMPLE },
 ];
 
+const READONLY_FILES: WorkspaceFile[] = MODULES.map((module) => ({
+  id: `module-${module.name.replace(/^\.\//, "").replaceAll("/", "-").replaceAll(".", "-")}`,
+  name: module.name.replace(/^\.\//, ""),
+  content: module.source,
+  readonly: true,
+}));
+
+const DEFAULT_FILES = [...SEED_FILES, ...READONLY_FILES];
+
+function isWorkspaceFile(file: unknown): file is WorkspaceFile {
+  return !!file && typeof file === "object" &&
+    typeof (file as WorkspaceFile).id === "string" &&
+    typeof (file as WorkspaceFile).name === "string" &&
+    typeof (file as WorkspaceFile).content === "string";
+}
+
 function loadWorkspace(): WorkspaceFile[] {
   try {
     const raw = localStorage.getItem(WORKSPACE.storageKey);
-    if (!raw) return SEED_FILES;
+    if (!raw) return DEFAULT_FILES;
     const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return SEED_FILES;
-    const files = parsed.filter((file): file is WorkspaceFile => (
-      !!file && typeof file === "object" &&
-      typeof (file as WorkspaceFile).id === "string" &&
-      typeof (file as WorkspaceFile).name === "string" &&
-      typeof (file as WorkspaceFile).content === "string"
-    ));
-    return files.length > 0 ? files : SEED_FILES;
+    if (!Array.isArray(parsed)) return DEFAULT_FILES;
+    const readonlyIds = new Set(READONLY_FILES.map((file) => file.id));
+    const files = parsed.filter(isWorkspaceFile).filter((file) => !readonlyIds.has(file.id));
+    return files.length > 0 ? [...files, ...READONLY_FILES] : DEFAULT_FILES;
   } catch {
-    return SEED_FILES;
+    return DEFAULT_FILES;
   }
 }
 
@@ -118,7 +131,9 @@ export function App() {
   }, [renamingId]);
 
   const updateActiveContent = useCallback((content: string) => {
-    setFiles((current) => current.map((file) => file.id === activeFileId ? { ...file, content, dirty: true } : file));
+    setFiles((current) => current.map((file) => file.id === activeFileId && !file.readonly
+      ? { ...file, content, dirty: true }
+      : file));
   }, [activeFileId]);
 
   const handleRun = useCallback(() => {
@@ -167,6 +182,7 @@ export function App() {
 
   const beginRename = useCallback((file: WorkspaceFile, event: Event) => {
     event.stopPropagation();
+    if (file.readonly) return;
     setRenamingId(file.id);
     setRenameValue(file.name);
   }, []);
@@ -180,6 +196,7 @@ export function App() {
   }, [renameValue, renamingId]);
 
   const removeFile = useCallback((id: string) => {
+    if (files.find((file) => file.id === id)?.readonly) return;
     const nextFiles = files.filter((item) => item.id !== id);
     setFiles(nextFiles);
     setOpenTabs((tabs) => tabs.filter((tabId) => tabId !== id));
@@ -193,6 +210,15 @@ export function App() {
     setRenamingId(null);
     compClose();
   }, [activeFileId, compClose, files]);
+
+  const openImport = useCallback((specifier: string) => {
+    if (!activeFile) return;
+    const resolved = resolveWorkspaceImport(activeFile.name, specifier);
+    if (!resolved) return;
+    const candidates = [resolved, `${resolved}.js`, `${resolved}/index.js`];
+    const target = files.find((file) => candidates.includes(file.name));
+    if (target) openFile(target.id);
+  }, [activeFile, files, openFile]);
 
   const deleteFile = useCallback((file: WorkspaceFile, event: Event) => {
     event.stopPropagation();
@@ -280,10 +306,10 @@ export function App() {
                     />
                   ) : (
                     <button class="file-open" onClick={() => openFile(file.id)}>
-                      <span class="js-icon">JS</span><span class="file-name">{file.name}</span>{file.dirty && <span class="file-dirty">●</span>}
+                      <span class="js-icon">JS</span><span class="file-name">{file.name}</span>{file.readonly && <span class="file-readonly" title={t.readOnlyFile}>•</span>}{file.dirty && <span class="file-dirty">●</span>}
                     </button>
                   )}
-                  {renamingId !== file.id && (
+                  {renamingId !== file.id && !file.readonly && (
                     <span class="file-actions">
                       <button onClick={(event) => beginRename(file, event)} title={t.renameFile} aria-label={t.renameFile}>✎</button>
                       <button onClick={(event) => deleteFile(file, event)} title={t.deleteFile} aria-label={t.deleteFile}>×</button>
@@ -313,11 +339,11 @@ export function App() {
               </div>
               <div class="editor-head-meta"><span class="language-pill">{t.editorLanguage}</span><span>{t.encoding}</span><span>{t.indentation}</span></div>
             </div>
-            <div class="editor-hints">
+            <div class="editor-hints" title={t.openImportHint}>
               <span class="hint-breadcrumb"><span class="crumb-muted">{UI.brandSubtitle}</span><span>/</span><span>{activeFile?.name ?? t.fileName}</span><span>/</span><span>{UI.editorScope}</span></span>
               <span class="hint-actions"><span class="hint-key">⌘ Space</span> {t.autocomplete} <span class="hint-key">⌘ S</span> {t.runShortcut}</span>
             </div>
-            <div class="editor-stage">
+            <div class="editor-stage" title={t.openImportHint}>
               <Editor
                 value={activeContent}
                 onChange={handleCodeChange}
@@ -327,6 +353,8 @@ export function App() {
                 onCompletionMove={compMove}
                 onCompletionAccept={handleCompletionAccept}
                 onHoverAt={getHover}
+                onOpenImport={openImport}
+                readOnly={activeFile?.readonly ?? false}
                 completionOpen={compOpen}
                 diagnostic={diagnostic}
                 editorRef={editorRef}

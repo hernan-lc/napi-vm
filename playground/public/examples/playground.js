@@ -1,22 +1,16 @@
 // napi-vm playground — a JS interpreter written in Rust, running in your
 // browser via WebAssembly. Ctrl/⌘+Enter to run · Ctrl+Space to complete.
 //
-// Built from three registered modules:
+// Built from three read-only browser modules in ./modules:
 //   math   → import * as math         (namespace import)
 //   format → import { upper, label }  (named imports)
 //   store  → import createStore        (default export; store imports math)
 //
 // Try completing: "math." or "Math." after a dot, "al" for the exposed
 // alert(), or Ctrl+Space on "up" / "cr" for the imported names.
-/* this is for test in playground and necesary resolve on click and serve files if exist
 import * as math from "./modules/math.js";
 import { upper, label } from "./modules/format.js";
 import createStore from "./modules/store.js";
-*/
-
-import * as math from "math";
-import { upper, label } from "format";
-import createStore from "store";
 
 const store = createStore({ count: 0, limit: 5 });
 store.subscribe((key, value) => console.log("changed", key, "->", value));

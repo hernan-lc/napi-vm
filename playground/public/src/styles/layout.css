@@ -50,6 +50,7 @@
 .file-open { min-width: 0; flex: 1; justify-content: flex-start; padding: 6px 7px 6px 30px; border: 0; border-radius: var(--radius-md); background: transparent; color: inherit; font: inherit; overflow: hidden; }
 .file-open:hover { background: transparent; }
 .file-name, .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-readonly { margin-left: 5px; color: var(--fg-muted); font-size: 10px; }
 .file-dirty, .tab-dirty { margin-left: auto; color: var(--warning); font-size: 8px; }
 .file-actions { display: none; align-items: center; gap: 1px; padding-right: 5px; }
 .file-row:hover .file-actions, .file-row.active .file-actions { display: inline-flex; }
@@ -97,6 +98,7 @@
 .editor-highlight .tok-punctuation { color: var(--tok-punctuation); }
 .editor-input { position: relative; z-index: 1; width: 100%; height: 100%; resize: none; border: 0; outline: none; background: transparent; color: transparent; caret-color: var(--accent); padding: var(--editor-pad-y) var(--editor-pad-x) var(--editor-pad-y) calc(54px + var(--editor-pad-x)); font: var(--editor-font-size)/var(--editor-line-height) var(--font-mono); tab-size: 2; white-space: pre; overflow: auto; }
 .editor-input::selection { background: var(--selection); color: transparent; }
+.editor-input[readonly] { cursor: default; }
 .editor-diagnostic { position: absolute; z-index: 10; right: 16px; bottom: 13px; display: flex; align-items: center; gap: 8px; max-width: min(580px, 75%); padding: 7px 10px; color: var(--danger); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 6px; font: 11px var(--font-mono); }
 .diag-icon { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; background: var(--danger); color: var(--bg); font-weight: 700; }
 .diag-loc { color: var(--fg-muted); margin-left: auto; white-space: nowrap; }

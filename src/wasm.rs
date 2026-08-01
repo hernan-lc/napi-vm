@@ -74,7 +74,11 @@ fn value_to_js_d(v: &Value, depth: usize) -> Result<JsValue, VmErr> {
         }
         Value::Error(e) => {
             let obj = js_sys::Object::new();
-            let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("name"), &JsValue::from_str(&e.name));
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("name"),
+                &JsValue::from_str(&e.name),
+            );
             let _ = js_sys::Reflect::set(
                 &obj,
                 &JsValue::from_str("message"),
@@ -364,6 +368,7 @@ impl WasmVm {
     /// pretty-printed result (empty on error); `error` is empty on success.
     pub fn run(&mut self, source: &str) -> JsValue {
         self.logs.borrow_mut().clear();
+        self.interp.cur_mod = Some("./playground.js".to_string());
         self.interp.set_source(source);
         self.interp.begin_execution();
         let toks = Lexer::new(source).tokenize_with_spans();
@@ -378,6 +383,7 @@ impl WasmVm {
                 .run(&stmts)
                 .map_err(|e| self.interp.enrich_error(e, None))
         };
+        self.interp.cur_mod = None;
         self.build_run_result(result)
     }
 

@@ -17,8 +17,8 @@ use crate::parser::Parser;
 use crate::value::Value;
 
 use super::bridge::{NapiHostBridge, run_async_done_cb};
-use crate::format::to_string;
 use super::marshal::{SendPtr, chk, from_napi, make_str, to_napi};
+use crate::format::to_string;
 
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
     let mut interp = Interpreter::with_builtins();
@@ -421,8 +421,6 @@ impl VM {
         Ok(unsafe { Unknown::from_raw_unchecked(raw_env, out) })
     }
 }
-
-
 
 #[napi]
 pub fn create_vm() -> VM {

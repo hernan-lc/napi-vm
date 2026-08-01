@@ -47,4 +47,5 @@ export interface WorkspaceFile {
   name: string;
   content: string;
   dirty?: boolean;
+  readonly?: boolean;
 }

@@ -86,27 +86,42 @@ fn walk_stmt(s: &Statement, scope: &mut Scope) {
             destructuring,
             ..
         } => {
-            push(scope, name, CompletionKind::Variable, init_shape(init.as_deref()));
+            push(
+                scope,
+                name,
+                CompletionKind::Variable,
+                init_shape(init.as_deref()),
+            );
             if let Some(p) = destructuring {
                 for n in pattern_names(p) {
                     push(scope, &n, CompletionKind::Variable, None);
                 }
             }
         }
-        Statement::FnDecl { name, params, body, .. } => {
+        Statement::FnDecl {
+            name, params, body, ..
+        } => {
             push(scope, name, CompletionKind::Function, None);
             for p in params {
                 push(scope, p, CompletionKind::Variable, None);
             }
             walk_stmts(body, scope);
         }
-        Statement::ClassDecl { name, superclass, body } => {
+        Statement::ClassDecl {
+            name,
+            superclass,
+            body,
+        } => {
             push(scope, name, CompletionKind::Class, None);
             // A class body introduces no outer-scope names, but a superclass
             // expression may reference in-scope identifiers; nothing to collect.
             let _ = (superclass, body);
         }
-        Statement::If { test: _, then, else_ } => {
+        Statement::If {
+            test: _,
+            then,
+            else_,
+        } => {
             walk_stmts(then, scope);
             if let Some(e) = else_ {
                 walk_stmts(e, scope);

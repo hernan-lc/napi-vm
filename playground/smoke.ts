@@ -70,6 +70,14 @@ check(
   JSON.stringify(comp),
 );
 
+vm.register_module("./fixtures/math.js", "export const double = (x) => x * 2;");
+vm.register_module(
+  "./fixtures/store.js",
+  'import { double } from "./math.js"; export default (value) => double(value);',
+);
+r = vm.run('import run from "./fixtures/store.js"; run(21)');
+check("relative nested imports resolve", r.ok === true && r.value === "42", JSON.stringify(r));
+
 // 7. Member completion on a builtin.
 comp = vm.complete("Math.fl", "Math.fl".length);
 check("Math.floor completes", comp.some((c: any) => c.label === "floor"), JSON.stringify(comp));
