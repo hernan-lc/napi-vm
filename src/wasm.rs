@@ -24,7 +24,7 @@ use wasm_bindgen::prelude::*;
 use crate::error::VmErr;
 use crate::host::HostBridge;
 use crate::interpreter::Interpreter;
-use crate::lang::{AnalysisContext, CompletionKind, DiagnosticSeverity, ModuleInfo};
+use crate::lang::{AnalysisContext, Completion, CompletionKind, DiagnosticSeverity, ModuleInfo};
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::{MAX_ARRAY_LEN, Value, limit_err};
@@ -477,8 +477,24 @@ impl WasmVm {
     /// an array of `{ label, kind, detail }`.
     pub fn complete(&self, source: &str, offset: usize) -> JsValue {
         let ctx = self.analysis_context();
+        let mut completions = crate::lang::complete(source, offset, &ctx);
+        if let Some((receiver, prefix)) = crate::lang::member_trigger(source, offset) {
+            let mut seen: std::collections::HashSet<String> =
+                completions.iter().map(|item| item.label.clone()).collect();
+            for (label, kind) in self.interp.completion_property_members(&receiver) {
+                if label.starts_with(&prefix) && seen.insert(label.clone()) {
+                    completions.push(Completion {
+                        label,
+                        kind,
+                        detail: Some("runtime member".to_string()),
+                    });
+                }
+            }
+            completions.sort_by(|a, b| a.label.cmp(&b.label));
+        }
+
         let arr = js_sys::Array::new();
-        for c in crate::lang::complete(source, offset, &ctx) {
+        for c in completions {
             let o = js_sys::Object::new();
             set_prop(&o, "label", &JsValue::from_str(&c.label));
             set_prop(&o, "kind", &JsValue::from_str(kind_str(c.kind)));

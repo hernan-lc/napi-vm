@@ -19,6 +19,8 @@ mod scope;
 mod symbols;
 
 pub use complete::complete;
+#[cfg(feature = "wasm")]
+pub(crate) use complete::member_trigger;
 pub use diagnostics::diagnose;
 
 use crate::lexer::Lexer;

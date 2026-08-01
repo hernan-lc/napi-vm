@@ -34,6 +34,14 @@ pub fn complete(source: &str, offset: usize, ctx: &AnalysisContext) -> Vec<Compl
     }
 }
 
+/// Return the member receiver and identifier prefix at a cursor position.
+/// The WASM host uses this to merge runtime members with static candidates.
+#[cfg(feature = "wasm")]
+pub(crate) fn member_trigger(source: &str, offset: usize) -> Option<(String, String)> {
+    let offset = snap_boundary(source, offset.min(source.len()));
+    match_member(&source[..offset])
+}
+
 /// Parse without ever failing: the parser skips what it cannot understand, so
 /// this always yields the best-effort AST for the currently-typed source.
 fn parse_lenient(source: &str) -> Vec<Statement> {

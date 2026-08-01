@@ -3,9 +3,125 @@
 
 use super::Interpreter;
 use crate::error::VmErr;
+#[cfg(feature = "wasm")]
+use crate::lang::CompletionKind;
 use crate::value::Value;
 
 impl Interpreter {
+    /// Enumerate properties visible on a simple runtime receiver such as
+    /// `store` or `user.profile`. This only reads existing values and walks
+    /// their prototype objects; it never evaluates guest source.
+    #[cfg(feature = "wasm")]
+    pub(crate) fn completion_property_members(
+        &self,
+        receiver: &str,
+    ) -> Vec<(String, CompletionKind)> {
+        let Some(value) = self.completion_receiver_value(receiver) else {
+            return Vec::new();
+        };
+        let mut members = Vec::new();
+        self.collect_completion_members(&value, &mut members, 0);
+        members.sort_by(|a, b| a.0.cmp(&b.0));
+        members.dedup_by(|a, b| a.0 == b.0);
+        members
+    }
+
+    #[cfg(feature = "wasm")]
+    fn completion_receiver_value(&self, receiver: &str) -> Option<Value> {
+        let mut parts = receiver.split('.');
+        let first = parts.next()?;
+        if !is_completion_identifier(first) {
+            return None;
+        }
+        let mut value = self.global.borrow().get(first)?;
+        for part in parts {
+            if !is_completion_identifier(part) {
+                return None;
+            }
+            value = self
+                .prop(&value, &Value::String(part.to_string()))
+                .ok()?;
+        }
+        Some(value)
+    }
+
+    #[cfg(feature = "wasm")]
+    fn collect_completion_members(
+        &self,
+        value: &Value,
+        members: &mut Vec<(String, CompletionKind)>,
+        depth: usize,
+    ) {
+        if depth > 32 {
+            return;
+        }
+        let mut add = |name: &str, kind: CompletionKind| {
+            if is_completion_identifier(name) && !name.starts_with("__") {
+                members.push((name.to_string(), kind));
+            }
+        };
+
+        match value {
+            Value::Object { props, proto } => {
+                for (name, property) in props.borrow().iter() {
+                    add(name, completion_kind(property));
+                }
+                if let Some(proto) = proto {
+                    self.collect_completion_members(proto, members, depth + 1);
+                }
+            }
+            Value::Array(_) => {
+                for name in crate::lang::catalog::prototype_members(
+                    crate::lang::catalog::ProtoKind::Array,
+                ) {
+                    add(name, CompletionKind::Method);
+                }
+            }
+            Value::String(_) => {
+                for name in crate::lang::catalog::prototype_members(
+                    crate::lang::catalog::ProtoKind::String,
+                ) {
+                    add(name, CompletionKind::Method);
+                }
+            }
+            Value::Number(_) => {
+                for name in crate::lang::catalog::prototype_members(
+                    crate::lang::catalog::ProtoKind::Number,
+                ) {
+                    add(name, CompletionKind::Method);
+                }
+            }
+            Value::Promise { .. } => {
+                for name in crate::lang::catalog::prototype_members(
+                    crate::lang::catalog::ProtoKind::Promise,
+                ) {
+                    add(name, CompletionKind::Method);
+                }
+            }
+            Value::Class(class) => {
+                for (name, property) in class.statics.borrow().iter() {
+                    add(name, completion_kind(property));
+                }
+                self.collect_completion_members(&class.prototype, members, depth + 1);
+            }
+            Value::GlobalObject => {
+                for name in self.global.borrow().all_keys() {
+                    add(&name, CompletionKind::Global);
+                }
+            }
+            Value::HostFunction { .. }
+            | Value::Function(_)
+            | Value::NativeFunction { .. }
+            | Value::Undefined
+            | Value::Null
+            | Value::Bool(_)
+            | Value::Error(_)
+            | Value::Generator { .. }
+            | Value::HostPending { .. }
+            | Value::Symbol(_) => {}
+        }
+    }
+
     /// Resolve a property value, invoking it if it is a getter.
     pub(super) fn get_prop_value(&mut self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         let v = self.prop(o, p)?;
@@ -206,6 +322,29 @@ impl Interpreter {
             },
             _ => Ok(Value::Undefined),
         }
+    }
+}
+
+#[cfg(feature = "wasm")]
+fn is_completion_identifier(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().enumerate().all(|(index, c)| {
+            if index == 0 {
+                c.is_ascii_alphabetic() || c == '_' || c == '$'
+            } else {
+                c.is_ascii_alphanumeric() || c == '_' || c == '$'
+            }
+        })
+}
+
+#[cfg(feature = "wasm")]
+fn completion_kind(value: &Value) -> CompletionKind {
+    match value {
+        Value::Function(_)
+        | Value::NativeFunction { .. }
+        | Value::HostFunction { .. }
+        | Value::Class(_) => CompletionKind::Method,
+        _ => CompletionKind::Property,
     }
 }
 

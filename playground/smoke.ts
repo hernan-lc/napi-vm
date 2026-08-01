@@ -74,7 +74,16 @@ check(
 comp = vm.complete("Math.fl", "Math.fl".length);
 check("Math.floor completes", comp.some((c: any) => c.label === "floor"), JSON.stringify(comp));
 
-// 8. Identifier completion offers globals + scope decls.
+// 8. Runtime member completion reads live object/prototype properties without
+// executing the receiver expression again.
+r = vm.run('const store = { count: 1, nested: { ready: true }, read() { return this.count; } }; store;');
+check("runtime object created", r.ok === true, JSON.stringify(r));
+comp = vm.complete("store.re", "store.re".length);
+check("runtime object members complete", comp.some((c: any) => c.label === "read"), JSON.stringify(comp));
+comp = vm.complete("store.nested.re", "store.nested.re".length);
+check("runtime nested members complete", comp.some((c: any) => c.label === "ready"), JSON.stringify(comp));
+
+// 9. Identifier completion offers globals + scope decls.
 const src = "const counter = 1;\nfunction bump() {}\n";
 comp = vm.complete(src, src.length);
 check(
@@ -84,13 +93,13 @@ check(
 comp = vm.complete("Ma", 2);
 check("global completes", comp.some((c: any) => c.label === "Math"));
 
-// 9. Diagnostics.
+// 10. Diagnostics.
 let diag = vm.diagnose("const x = [1, 2;");
 check("unbalanced diagnosed", (diag?.length ?? 0) > 0, JSON.stringify(diag));
 diag = vm.diagnose("const x = [1, 2];");
 check("balanced clean", (diag?.length ?? 0) === 0, JSON.stringify(diag));
 
-// 10. Symbols.
+// 11. Symbols.
 const syms = vm.symbols("function f(){} class C{} const x = 1;");
 check(
   "symbols found",
@@ -100,7 +109,7 @@ check(
   JSON.stringify(syms),
 );
 
-// 11. Reset clears state. (`to_string` renders strings unquoted, so the
+// 12. Reset clears state. (`to_string` renders strings unquoted, so the
 // `typeof` result arrives as the bare text `undefined`.)
 vm.reset();
 r = vm.run("typeof counter");
