@@ -367,8 +367,19 @@ impl WasmVm {
     /// Execute a script. Returns `{ ok, value, error, logs }`. `value` is the
     /// pretty-printed result (empty on error); `error` is empty on success.
     pub fn run(&mut self, source: &str) -> JsValue {
+        self.run_source(None, source)
+    }
+
+    /// Execute a source file with its workspace path as the module context.
+    /// Relative imports are resolved from this path, without assuming a
+    /// particular entry-file name.
+    pub fn run_file(&mut self, name: &str, source: &str) -> JsValue {
+        self.run_source(Some(name), source)
+    }
+
+    fn run_source(&mut self, module_name: Option<&str>, source: &str) -> JsValue {
         self.logs.borrow_mut().clear();
-        self.interp.cur_mod = Some("./playground.js".to_string());
+        self.interp.cur_mod = module_name.map(ToString::to_string);
         self.interp.set_source(source);
         self.interp.begin_execution();
         let toks = Lexer::new(source).tokenize_with_spans();

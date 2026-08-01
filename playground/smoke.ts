@@ -75,8 +75,10 @@ vm.register_module(
   "./fixtures/store.js",
   'import { double } from "./math.js"; export default (value) => double(value);',
 );
-r = vm.run('import run from "./fixtures/store.js"; run(21)');
+r = vm.run_file("./playground.js", 'import run from "./fixtures/store.js"; run(21)');
 check("relative nested imports resolve", r.ok === true && r.value === "42", JSON.stringify(r));
+r = vm.run('import run from "./fixtures/store.js"; run(21)');
+check("relative imports require explicit context", r.ok === false && String(r.error).includes("module context"), JSON.stringify(r));
 
 // 7. Member completion on a builtin.
 comp = vm.complete("Math.fl", "Math.fl".length);

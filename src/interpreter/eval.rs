@@ -538,7 +538,10 @@ impl Interpreter {
                 namespace,
             } => {
                 let resolved_module = self.resolve_module_name(module);
-                if let Some(md) = self.modules.get(&resolved_module) {
+                if let Some(md) = resolved_module
+                    .as_ref()
+                    .and_then(|name| self.modules.get(name))
+                {
                     if let Some(d) = default {
                         let v = md.default.clone().unwrap_or(Value::Undefined);
                         self.global.borrow_mut().set(d, v);
@@ -560,7 +563,14 @@ impl Interpreter {
                     }
                     Ok(Value::Undefined)
                 } else {
-                    vm_err(format!("Module not found: {}", module))
+                    if module.starts_with('.') && self.cur_mod.is_none() {
+                        vm_err(format!(
+                            "Relative import requires a module context: {}",
+                            module
+                        ))
+                    } else {
+                        vm_err(format!("Module not found: {}", module))
+                    }
                 }
             }
             Statement::Empty => Ok(Value::Undefined),

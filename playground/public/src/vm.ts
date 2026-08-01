@@ -35,8 +35,8 @@ export function rehost(vm: WasmVm, opts: HostOptions): string[] {
   return setupHost(vm, { onAlert: opts.onAlert });
 }
 
-export function runCode(vm: WasmVm, code: string): RunResult {
-  return vm.run(code) as RunResult;
+export function runCode(vm: WasmVm, code: string, moduleName?: string): RunResult {
+  return (moduleName ? vm.run_file(moduleName, code) : vm.run(code)) as RunResult;
 }
 
 export function complete(vm: WasmVm, code: string, byteOffset: number): CompletionItem[] {

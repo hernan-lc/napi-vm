@@ -45,11 +45,11 @@ export function useVm(t: Translations) {
   );
 
   const run = useCallback(
-    (code: string) => {
+    (code: string, moduleName?: string) => {
       const vm = vmRef.current;
       if (!vm) return;
       const t0 = performance.now();
-      const r = runCode(vm as unknown as WasmVm, code);
+      const r = runCode(vm as unknown as WasmVm, code, moduleName);
       const ms = performance.now() - t0;
 
       for (const log of r.logs || []) {

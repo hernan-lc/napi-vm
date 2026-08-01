@@ -137,7 +137,7 @@ export function App() {
   }, [activeFileId]);
 
   const handleRun = useCallback(() => {
-    if (activeFile) run(activeFile.content);
+    if (activeFile) run(activeFile.content, activeFile.name);
   }, [activeFile, run]);
 
   const handleCodeChange = useCallback((next: string) => {
