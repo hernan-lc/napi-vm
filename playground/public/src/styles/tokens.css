@@ -21,6 +21,11 @@
   /* transitions */
   --transition-fast: 0.12s ease;
   --transition-normal: 0.2s ease;
+
+  --editor-font-size: 13px;
+  --editor-line-height: 22px;
+  --editor-pad-y: 18px;
+  --editor-pad-x: 18px;
 }
 
 /* ---- syntax highlighting (dark) ---- */
@@ -41,6 +46,13 @@
   --bg-elev: #0d1117;
   --bg-elev-2: #131820;
   --bg-input: #0d1117;
+  --editor-bg: #0b1017;
+  --gutter-bg: #0a0e14;
+  --sidebar-bg: #0b1017;
+  --sidebar-active: #151f2d;
+  --selection: rgba(88, 166, 255, 0.2);
+  --js-bg: #d7a929;
+  --js-fg: #1b1d1f;
   --bg-hover: #1a2230;
   --bg-active: #1e2a3a;
 
@@ -89,6 +101,13 @@
   --bg-elev: #f6f8fa;
   --bg-elev-2: #eaeef2;
   --bg-input: #ffffff;
+  --editor-bg: #fbfcfd;
+  --gutter-bg: #f6f8fa;
+  --sidebar-bg: #f6f8fa;
+  --sidebar-active: #e8eef5;
+  --selection: rgba(9, 105, 218, 0.16);
+  --js-bg: #e7bd36;
+  --js-fg: #3b3007;
   --bg-hover: #dde3ea;
   --bg-active: #c8d0da;
 
@@ -138,6 +157,13 @@
     --bg-elev: #f6f8fa;
     --bg-elev-2: #eaeef2;
     --bg-input: #ffffff;
+    --editor-bg: #fbfcfd;
+    --gutter-bg: #f6f8fa;
+    --sidebar-bg: #f6f8fa;
+    --sidebar-active: #e8eef5;
+    --selection: rgba(9, 105, 218, 0.16);
+    --js-bg: #e7bd36;
+    --js-fg: #3b3007;
     --bg-hover: #dde3ea;
     --bg-active: #c8d0da;
 

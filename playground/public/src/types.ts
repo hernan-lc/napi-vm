@@ -16,6 +16,11 @@ export interface CompletionItem {
   detail?: string;
 }
 
+export interface CompletionPosition {
+  top: number;
+  left: number;
+}
+
 export interface Diagnostic {
   line: number;
   col: number;

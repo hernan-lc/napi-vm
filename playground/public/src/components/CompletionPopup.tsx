@@ -7,17 +7,23 @@ interface CompletionPopupProps {
   kindLetter: Record<string, string>;
   onAccept: (item: CompletionItem) => void;
   popupRef: { current: HTMLDivElement | null };
+  position: { top: number; left: number };
 }
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export function CompletionPopup({ items, sel, open, kindLetter, onAccept, popupRef }: CompletionPopupProps) {
+export function CompletionPopup({ items, sel, open, kindLetter, onAccept, popupRef, position }: CompletionPopupProps) {
   if (!open || items.length === 0) return null;
 
   return (
-    <div class="popup" role="listbox" ref={popupRef}>
+    <div
+      class="popup"
+      role="listbox"
+      ref={popupRef}
+      style={{ top: `${position.top}px`, left: `${position.left}px` }}
+    >
       {items.map((it, i) => {
         const letter = kindLetter[it.kind] || "?";
         const detail = it.detail ? (
@@ -35,7 +41,7 @@ export function CompletionPopup({ items, sel, open, kindLetter, onAccept, popupR
             }}
           >
             <span class={"kind " + it.kind}>{letter}</span>
-            <span>{escapeHtml(it.label)}</span>
+            <span class="item-label">{escapeHtml(it.label)}</span>
             {detail}
           </div>
         );

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "preact/hooks";
-import type { Translations } from "../i18n/translations.ts";
+import type { Translations } from "../../i18n/translations.ts";
 import type { LogEntry, LoggerFilter } from "./types.ts";
 import { DEFAULT_FILTER, LEVEL_ICONS, LEVEL_LABELS } from "./types.ts";
 

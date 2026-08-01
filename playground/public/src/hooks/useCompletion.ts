@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { complete } from "../vm.ts";
-import type { CompletionItem } from "../types.ts";
+import type { CompletionItem, CompletionPosition } from "../types.ts";
 
-declare class WasmVm {
-  complete(source: string, offset: number): CompletionItem[];
-}
+const TEXT_ENCODER = new TextEncoder();
+const MEASURE_CANVAS = document.createElement("canvas");
+
+type WasmVm = Parameters<typeof complete>[0];
 
 const KIND_LETTER: Record<string, string> = {
   variable: "x",
@@ -23,6 +24,7 @@ export interface CompletionState {
   sel: number;
   prefix: string;
   open: boolean;
+  position: CompletionPosition;
 }
 
 export function useCompletion(
@@ -35,13 +37,31 @@ export function useCompletion(
     sel: 0,
     prefix: "",
     open: false,
+    position: { top: 0, left: 0 },
   });
   const stateRef = useRef(state);
   stateRef.current = state;
 
   const close = useCallback(() => {
-    setState((s) => (s.open ? { items: [], sel: 0, prefix: "", open: false } : s));
+    setState((s) => (s.open ? { ...s, items: [], sel: 0, prefix: "", open: false } : s));
   }, []);
+
+  const caretPosition = (editor: HTMLTextAreaElement, before: string): CompletionPosition => {
+    const style = getComputedStyle(editor);
+    const lineHeight = parseFloat(style.lineHeight) || 21;
+    const paddingTop = parseFloat(style.paddingTop) || 0;
+    const paddingLeft = parseFloat(style.paddingLeft) || 0;
+    const lines = before.split("\n");
+    const line = lines.length - 1;
+    const lastLine = lines[line] || "";
+    const ctx = MEASURE_CANVAS.getContext("2d");
+    if (ctx) ctx.font = `${style.fontSize} ${style.fontFamily}`;
+    const width = ctx?.measureText(lastLine).width ?? lastLine.length * 8;
+    return {
+      top: Math.max(8, paddingTop + (line + 1) * lineHeight - editor.scrollTop),
+      left: Math.max(paddingLeft + 8, paddingLeft + width - editor.scrollLeft),
+    };
+  };
 
   const afterLast = (s: string, sep: string): string => {
     const idx = s.lastIndexOf(sep);
@@ -83,7 +103,7 @@ export function useCompletion(
         }
       }
 
-      const byteOffset = new TextEncoder().encode(before).length;
+      const byteOffset = TEXT_ENCODER.encode(before).length;
       const list = complete(vm as unknown as WasmVm, editor.value, byteOffset);
 
       if (!list || list.length === 0) {
@@ -96,6 +116,7 @@ export function useCompletion(
         sel: 0,
         prefix: a.prefix,
         open: true,
+        position: caretPosition(editor, before),
       });
     },
     [getVm, editorRef, close]

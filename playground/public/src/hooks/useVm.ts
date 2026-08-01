@@ -11,20 +11,13 @@ import type { Diagnostic, HostOptions, RunResult } from "../types.ts";
 import type { Translations } from "../i18n/translations.ts";
 import type { LogEntry, LogLevel } from "../components/logger/types.ts";
 
-declare class WasmVm {
-  set_loop_limit(n: number): void;
-  reset(): void;
-  expose_function(name: string, fn: (msg: unknown) => void): void;
-  register_module(name: string, source: string): void;
-  run(code: string): RunResult;
-  complete(source: string, offset: number): import("../types.ts").CompletionItem[];
-  diagnose(source: string): Diagnostic[];
-}
+type WasmVm = ReturnType<typeof createVm>["vm"];
 
 export type VmStatus = "loading" | "ready" | "error";
 
 export function useVm(t: Translations) {
   const vmRef = useRef<unknown>(null);
+  const getVm = useCallback(() => vmRef.current, []);
   const [status, setStatus] = useState<VmStatus>("loading");
   const [loopLimit, setLoopLimitState] = useState(5_000_000);
   const [entries, setEntries] = useState<LogEntry[]>([]);
@@ -122,6 +115,7 @@ export function useVm(t: Translations) {
   }, []);
 
   return {
+    getVm,
     status,
     entries,
     diagnostic,

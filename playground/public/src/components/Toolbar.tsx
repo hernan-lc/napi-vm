@@ -40,28 +40,33 @@ export function Toolbar({
   return (
     <header class="toolbar">
       <div class="brand">
-        <span class="brand-icon">&#9654;</span>
+        <span class="brand-mark"><span></span><span></span><span></span></span>
         <span class="brand-name">napi-vm</span>
-        <span class="brand-sub">playground</span>
+        <span class="brand-sub">/ playground</span>
       </div>
 
-      <div class="controls">
-        <button class="primary" onClick={onRun} disabled={status !== "ready"} title={t.runHint}>
-          &#9654; {t.run}
-        </button>
-        <button onClick={onReset} disabled={status !== "ready"} title="Discard all VM state">
-          {t.reset}
-        </button>
-        <button onClick={onClear} title="Clear the console">
-          {t.clear}
-        </button>
+      <div class="toolbar-separator" />
 
-        <label class="loop">
-          {t.loopLimit}
-          <select
-            value={String(loopLimit)}
-            onChange={(e) => onLoopLimitChange(Number((e.target as HTMLSelectElement).value))}
-          >
+      <div class="toolbar-file"><span class="file-dot" /> playground.js <span class="file-state">·</span></div>
+
+      <div class="controls">
+        <button class="primary run-button" onClick={onRun} disabled={status !== "ready"} title={t.runHint}>
+          <span class="button-play">▶</span> {t.run}
+          <kbd>⌘ ↵</kbd>
+        </button>
+        <button class="toolbar-button" onClick={onReset} disabled={status !== "ready"} title="Discard all VM state">
+          ↻ <span class="button-label">{t.reset}</span>
+        </button>
+        <button class="toolbar-button" onClick={onClear} title="Clear the console">
+          ◌ <span class="button-label">{t.clear}</span>
+        </button>
+      </div>
+
+      <div class="right">
+        {diagnostic && <span class="diag bad"><span class="diag-dot" /> {t.diagWarning}</span>}
+        <label class="loop compact-loop">
+          <span>limit</span>
+          <select value={String(loopLimit)} onChange={(e) => onLoopLimitChange(Number((e.target as HTMLSelectElement).value))}>
             <option value="100000">100K</option>
             <option value="1000000">1M</option>
             <option value="5000000">5M</option>
@@ -69,40 +74,11 @@ export function Toolbar({
             <option value="100000000">100M</option>
           </select>
         </label>
-      </div>
-
-      <div class="right">
-        {diagnostic && (
-          <span class="diag bad">
-            {t.diagWarning} {diagnostic.message} &middot; line {diagnostic.line}
-          </span>
-        )}
-        <span class="hint">{t.runHint} &middot; {t.completeHint}</span>
-
-        <select
-          class="lang-select"
-          value={locale}
-          onChange={(e) => onLocaleChange((e.target as HTMLSelectElement).value as Locale)}
-          title={t.language}
-        >
-          {(Object.keys(LOCALE_LABELS) as Locale[]).map((l) => (
-            <option key={l} value={l}>{LOCALE_LABELS[l]}</option>
-          ))}
+        <span class="status"><span class={"dot " + statusClass}></span><span>{statusLabel}</span></span>
+        <select class="lang-select" value={locale} onChange={(e) => onLocaleChange((e.target as HTMLSelectElement).value as Locale)} title={t.language}>
+          {(Object.keys(LOCALE_LABELS) as Locale[]).map((l) => <option key={l} value={l}>{LOCALE_LABELS[l]}</option>)}
         </select>
-
-        <button
-          class="icon-btn"
-          onClick={onToggleTheme}
-          title={t.theme}
-          aria-label={t.theme}
-        >
-          {theme === "dark" ? "☀" : "☾"}
-        </button>
-
-        <span class="status">
-          <span class={"dot " + statusClass}></span>
-          <span>{statusLabel}</span>
-        </span>
+        <button class="icon-btn theme-button" onClick={onToggleTheme} title={t.theme} aria-label={t.theme}>{theme === "dark" ? "☼" : "☾"}</button>
       </div>
     </header>
   );
