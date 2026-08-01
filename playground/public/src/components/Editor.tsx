@@ -114,6 +114,9 @@ export function Editor({
 
   const handleKeyDown = (e: KeyboardEvent) => {
     const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key.toLowerCase() === "r") {
+      debugLog("editor:browser-refresh-key", { key: e.key, code: e.code });
+    }
     if (mod || e.key === EDITOR_KEYS.tab || e.key === EDITOR_KEYS.run) {
       debugLog("editor:keydown", { key: e.key, code: e.code, mod, completionOpen });
     }

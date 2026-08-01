@@ -90,18 +90,11 @@ function parseSegments(source: string): Segment[] {
   let textStart = 0;
   while (cursor < source.length) {
     if (source[cursor] === "\"" || source[cursor] === "'") {
-      const quote = source[cursor++];
-      while (cursor < source.length) {
-        if (source[cursor] === "\\") {
-          cursor += 2;
-          continue;
-        }
-        if (source[cursor] === quote) {
-          cursor++;
-          break;
-        }
-        cursor++;
-      }
+      const parsed = readString(source, cursor);
+      if (textStart < cursor) segments.push(source.slice(textStart, cursor));
+      segments.push(parsed.node);
+      cursor = parsed.next;
+      textStart = cursor;
       continue;
     }
     if (source[cursor] === "{" || source[cursor] === "[") {
@@ -114,10 +107,36 @@ function parseSegments(source: string): Segment[] {
         continue;
       }
     }
+
+    const scalar = readStandalonePrimitive(source, cursor);
+    if (scalar) {
+      if (textStart < cursor) segments.push(source.slice(textStart, cursor));
+      segments.push(scalar.node);
+      cursor = scalar.next;
+      textStart = cursor;
+      continue;
+    }
     cursor++;
   }
   if (textStart < source.length) segments.push(source.slice(textStart));
   return segments.length ? segments : [source];
+}
+
+function readStandalonePrimitive(source: string, index: number): ParsedValue | null {
+  const previous = source[index - 1] || "";
+  if (/[\w$.-]/.test(previous)) return null;
+
+  const rest = source.slice(index);
+  const number = rest.match(/^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/);
+  if (number && !/[\w$]/.test(rest[number[0].length] || "")) {
+    return { node: { kind: "primitive", value: number[0] }, next: index + number[0].length };
+  }
+
+  const keyword = rest.match(/^(?:true|false|null|undefined|NaN|Infinity)\b/);
+  if (keyword) {
+    return { node: { kind: "primitive", value: keyword[0] }, next: index + keyword[0].length };
+  }
+  return null;
 }
 
 function preview(node: InspectNode, depth = 0): string {

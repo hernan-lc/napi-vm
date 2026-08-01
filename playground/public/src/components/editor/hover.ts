@@ -62,22 +62,53 @@ function propertyType(source: string, name: string): string {
 }
 
 function parameterType(source: string, name: string): string {
+  const chain = source.match(new RegExp(`([A-Za-z_$][\\w$]*(?:\\([^\\n]*?\\))?)\\s*\\.then\\s*\\(\\s*\\(\\s*${escapeRegExp(name)}\\s*\\)\\s*=>`));
+  if (chain) {
+    const functionName = chain[1].replace(/\s*\(.*/, "");
+    const returned = functionReturnType(source, functionName);
+    if (returned.startsWith("Promise<")) return returned.slice(8, -1);
+    if (returned !== "unknown") return returned;
+  }
+
   const call = source.match(new RegExp(`\\b\\w+\\s*\\(\\s*([^,)]+)`));
   if (call && call[1].trim() === name) return expressionType(call[1]);
   return "unknown";
 }
 
 function expressionType(expression: string): string {
-  const value = expression.trim();
+  const value = expression.trim().replace(/^await\s+/, "");
   if (/^(?:["']|`)/.test(value)) return "string";
   if (/^(?:true|false)\b/.test(value)) return "boolean";
   if (/^-?(?:\d|\.\d)/.test(value)) return "number";
   if (/^\[/.test(value)) return "unknown[]";
   if (/^\{/.test(value)) return "object";
   if (/^(?:Date\.now|Math\.|Number\(|parseInt\(|parseFloat\()/.test(value)) return "number";
-  if (/^Promise\./.test(value)) return "Promise<unknown>";
+  if (/^Promise\.(?:resolve|all|race)\s*\(\s*\{/.test(value)) {
+    return value.startsWith("Promise.resolve") && expression.trim().startsWith("await") ? "object" : "Promise<object>";
+  }
+  if (/^Promise\./.test(value)) return expression.trim().startsWith("await") ? "unknown" : "Promise<unknown>";
   if (/^async\b/.test(value)) return "Promise<unknown>";
   return "unknown";
+}
+
+function functionReturnType(source: string, name: string): string {
+  const start = source.search(new RegExp(`(?:async\\s+)?function\\s+${escapeRegExp(name)}\\s*\\(`));
+  if (start < 0) return "unknown";
+  const bodyStart = source.indexOf("{", start);
+  if (bodyStart < 0) return "unknown";
+  const body = source.slice(bodyStart);
+  const returned = body.match(/\breturn\s+([^;\n]+);/);
+  if (!returned) return "unknown";
+
+  const returnExpression = returned[1].trim();
+  if (/^\w+$/.test(returnExpression)) {
+    const declaration = source.match(new RegExp(`\\b(?:const|let|var)\\s+${escapeRegExp(returnExpression)}\\s*=\\s*([^;\\n]+)`));
+    if (declaration) return expressionType(declaration[1]);
+  }
+  const type = expressionType(returnExpression);
+  return source.slice(start, bodyStart).trim().startsWith("async") && !type.startsWith("Promise<")
+    ? `Promise<${type}>`
+    : type;
 }
 
 function escapeRegExp(value: string): string {
