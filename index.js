@@ -700,6 +700,7 @@ if (!nativeBinding) {
 }
 
 module.exports = nativeBinding
+module.exports.LanguageService = nativeBinding.LanguageService
 module.exports.Vm = nativeBinding.Vm
 module.exports.VM = nativeBinding.VM
 module.exports.createVm = nativeBinding.createVm

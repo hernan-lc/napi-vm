@@ -1,0 +1,14 @@
+id = "napi-vm"
+name = "napi-vm"
+version = "0.1.0"
+schema_version = 1
+authors = ["napi-vm"]
+description = "NAPI-backed language intelligence for napi-vm playground projects."
+repository = "https://github.com/nglmercer/napi-vm"
+
+[language_servers.napi-vm]
+name = "napi-vm LSP"
+languages = ["JavaScript"]
+
+[language_servers.napi-vm.language_ids]
+JavaScript = "javascript"

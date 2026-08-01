@@ -86,7 +86,15 @@ impl HostFunctionInfo {
 
     pub fn signature(&self) -> String {
         let params = if self.params.is_empty() {
-            "...args".into()
+            // An explicitly typed zero-argument function is different from
+            // an untyped host callback. The latter keeps the conservative
+            // `...args` fallback; metadata with a concrete return type (or
+            // documentation) can accurately advertise `()`.
+            if self.return_type == "unknown" && self.documentation.is_none() {
+                "...args".into()
+            } else {
+                String::new()
+            }
         } else {
             self.params
                 .iter()

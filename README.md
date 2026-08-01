@@ -22,7 +22,7 @@ Execute JavaScript in an isolated environment with no access to the host system'
 - **Browser playground** — WASM execution with syntax highlighting, autocomplete, diagnostics, hover information, expandable console values, and an editable file explorer
 - **Typed host functions** — Optional parameter types, return types, async metadata, and documentation for exposed browser functions
 
-> **Status:** the core language, classes, a working standard library, async/`await`, generators with true mid-body suspension (`yield`/`next`/`next(val)`), module export wiring, and a full `Symbol` + iterator protocol are implemented and covered by 566 passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture).
+> **Status:** the core language, classes, a working standard library, async/`await`, generators with true mid-body suspension (`yield`/`next`/`next(val)`), module export wiring, and a full `Symbol` + iterator protocol are implemented and covered by 568 passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture).
 
 ## Installation
 
@@ -146,6 +146,67 @@ The playground registers modules by their workspace path, so code such as
 autocomplete, and import navigation. Registered module source is analyzed as
 UTF-8 and shared with the Rust language service.
 
+### Node language service and LSP
+
+The editor analysis is also available from Node through the native addon. It is
+transport-neutral in Rust and exposed as `LanguageService`, so a desktop app,
+web editor, or LSP adapter can share the same completion, hover, and diagnostic
+implementation.
+
+```javascript
+const { LanguageService } = require("./index.js");
+
+const service = new LanguageService();
+service.registerHostFunction(
+  "alert",
+  [{ name: "message", typeName: "string" }],
+  "void",
+  "Displays a message.",
+);
+service.open("file:///main.js", 'alert("hello");');
+
+console.log(service.hover("file:///main.js", 3));
+// { detail: "(function) alert: (message: string) => void", ... }
+```
+
+For editor clients, `lsp/server.cjs` is a small stdio JSON-RPC adapter around
+that class. It loads host functions and registered module exports from a JSON
+manifest; it never executes the example file just to produce autocomplete.
+This keeps runtime callbacks and static editor metadata separate:
+
+```bash
+npm run build
+node lsp/server.cjs --config examples/hotreload.napi-vm.json
+```
+
+The manifest is intentionally explicit because JavaScript functions do not
+retain TypeScript parameter and return annotations at runtime:
+
+```json
+{
+  "hostFunctions": [
+    {
+      "name": "hostNow",
+      "params": [],
+      "returns": "number",
+      "documentation": "Returns the current timestamp."
+    }
+  ],
+  "modules": [{ "name": "math", "path": "examples/callbacks/modules/math.js" }]
+}
+```
+
+`examples/hotreload.ts` remains an execution and hot-reload demo. The companion
+`examples/hotreload.napi-vm.json` is the editor contract used by the LSP.
+Run the protocol regression test with `npm run lsp:smoke`.
+
+The optional `zed-extension/` directory contains a thin local Zed launcher. It
+starts the Node process using Zed's bundled Node runtime and keeps JavaScript's
+normal syntax highlighting. Install it as a local extension, then put a
+`.napi-vm.json` manifest in the workspace root. Zed uses LSP for advanced
+language support, while the shared Rust service remains the source of truth for
+completion and hover.
+
 ### Hot reload
 
 The VM exposes the primitives needed for clean hot-reload cycles without
@@ -266,6 +327,8 @@ harness is a working template for operational isolation.
 | `npm run bench` | End-to-end JS benchmark through the NAPI binding |
 | `npm run bench:stress` | Stress tests: hot-reload cycles, listener leaks, large JSON emit, middleware pressure (`--quick` for CI) |
 | `npm run bench:rust` | Criterion microbenchmarks of the interpreter pipeline |
+| `npm run lsp` | Start the Node stdio language server |
+| `npm run lsp:smoke` | Verify initialize, completion, hover, and shutdown over LSP framing |
 | `npm run playground:build` | Build the browser WASM package |
 | `npm run playground` | Start the Vite browser playground |
 | `bun playground/smoke.ts` | Run the headless WASM/playground regression checks |

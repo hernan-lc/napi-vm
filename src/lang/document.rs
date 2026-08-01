@@ -270,6 +270,12 @@ impl Document {
         &self.source
     }
 
+    pub fn export_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.exports.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     fn token_at(&self, offset: usize) -> Option<usize> {
         let mut offset = offset.min(self.source.len());
         while offset > 0 && !self.source.is_char_boundary(offset) {

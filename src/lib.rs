@@ -18,7 +18,7 @@ pub mod value;
 pub mod wasm;
 
 #[cfg(feature = "napi")]
-pub use bindings::{VM, create_vm, debug_parse, run_code};
+pub use bindings::{LanguageService, VM, create_vm, debug_parse, run_code};
 pub use builtins::setup_builtins;
 pub use error::VmErr;
 pub use format::{PrintOptions, Printer};
