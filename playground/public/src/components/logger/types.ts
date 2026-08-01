@@ -1,5 +1,16 @@
 export type LogLevel = "log" | "info" | "warn" | "error" | "debug" | "dir" | "result" | "sys";
 
+export const LOG_LEVELS = {
+  log: "log",
+  info: "info",
+  warn: "warn",
+  error: "error",
+  debug: "debug",
+  dir: "dir",
+  result: "result",
+  sys: "sys",
+} as const satisfies Record<LogLevel, LogLevel>;
+
 export interface LogEntry {
   id: number;
   level: LogLevel;

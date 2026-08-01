@@ -4,6 +4,7 @@ import type { Translations } from "../i18n/translations.ts";
 import type { Locale } from "../i18n/translations.ts";
 import { LOCALE_LABELS } from "../i18n/translations.ts";
 import type { Theme } from "../hooks/useTheme.ts";
+import { LOOP_LIMIT_OPTIONS, UI } from "../constants.ts";
 
 interface ToolbarProps {
   status: VmStatus;
@@ -41,23 +42,23 @@ export function Toolbar({
     <header class="toolbar">
       <div class="brand">
         <span class="brand-mark"><span></span><span></span><span></span></span>
-        <span class="brand-name">napi-vm</span>
-        <span class="brand-sub">/ playground</span>
+        <span class="brand-name">{UI.productName}</span>
+        <span class="brand-sub">/ {UI.brandSubtitle}</span>
       </div>
 
       <div class="toolbar-separator" />
 
-      <div class="toolbar-file"><span class="file-dot" /> playground.js <span class="file-state">·</span></div>
+      <div class="toolbar-file"><span class="file-dot" /> {t.fileName} <span class="file-state">·</span></div>
 
       <div class="controls">
         <button class="primary run-button" onClick={onRun} disabled={status !== "ready"} title={t.runHint}>
           <span class="button-play">▶</span> {t.run}
           <kbd>⌘ ↵</kbd>
         </button>
-        <button class="toolbar-button" onClick={onReset} disabled={status !== "ready"} title="Discard all VM state">
+        <button class="toolbar-button" onClick={onReset} disabled={status !== "ready"} title={t.discardVmState}>
           ↻ <span class="button-label">{t.reset}</span>
         </button>
-        <button class="toolbar-button" onClick={onClear} title="Clear the console">
+        <button class="toolbar-button" onClick={onClear} title={t.clearConsole}>
           ◌ <span class="button-label">{t.clear}</span>
         </button>
       </div>
@@ -65,13 +66,9 @@ export function Toolbar({
       <div class="right">
         {diagnostic && <span class="diag bad"><span class="diag-dot" /> {t.diagWarning}</span>}
         <label class="loop compact-loop">
-          <span>limit</span>
+          <span>{t.loopLimit}</span>
           <select value={String(loopLimit)} onChange={(e) => onLoopLimitChange(Number((e.target as HTMLSelectElement).value))}>
-            <option value="100000">100K</option>
-            <option value="1000000">1M</option>
-            <option value="5000000">5M</option>
-            <option value="20000000">20M</option>
-            <option value="100000000">100M</option>
+            {LOOP_LIMIT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
         <span class="status"><span class={"dot " + statusClass}></span><span>{statusLabel}</span></span>

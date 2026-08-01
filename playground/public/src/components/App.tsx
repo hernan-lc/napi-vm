@@ -8,14 +8,16 @@ import { useCompletion } from "../hooks/useCompletion.ts";
 import { useResizable } from "../hooks/useResizable.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 import { useTheme } from "../hooks/useTheme.ts";
-import { MODULES, SAMPLE } from "../examples.ts";
+import { SAMPLE } from "../examples.ts";
+import { COMPLETION, EDITOR, EXAMPLE_FILE_NAMES, EXAMPLE_ICONS, EXAMPLE_IDS, RESIZER, UI, type ExampleId } from "../constants.ts";
+import type { Translations } from "../i18n/translations.ts";
 
 const EXAMPLES = [
-  { id: "modules", name: "modules.js", label: "Modules & imports", code: SAMPLE },
+  { id: EXAMPLE_IDS.modules, name: EXAMPLE_FILE_NAMES[EXAMPLE_IDS.modules], labelKey: "examplesModules", code: SAMPLE },
   {
-    id: "async",
-    name: "async.js",
-    label: "Promises & async",
+    id: EXAMPLE_IDS.async,
+    name: EXAMPLE_FILE_NAMES[EXAMPLE_IDS.async],
+    labelKey: "examplesAsync",
     code: `async function loadUser(id) {
   const response = await Promise.resolve({ id, name: "Ada" });
   return response;
@@ -27,9 +29,9 @@ loadUser(42).then((user) => {
 });`,
   },
   {
-    id: "loop",
-    name: "loop-guard.js",
-    label: "Sandbox loop guard",
+    id: EXAMPLE_IDS.loop,
+    name: EXAMPLE_FILE_NAMES[EXAMPLE_IDS.loop],
+    labelKey: "examplesLoop",
     code: `const start = Date.now();
 let total = 0;
 
@@ -43,14 +45,17 @@ total;`,
   },
 ];
 
+type Example = (typeof EXAMPLES)[number];
+type ExampleLabelKey = Example["labelKey"] & keyof Translations;
+
 export function App() {
   const { t, locale, setLocale } = useI18n();
   const { theme, toggleTheme } = useTheme();
-  const { ratio, containerRef, handleMousedown } = useResizable();
+  const { ratio, containerRef, handlePointerDown } = useResizable();
   const { getVm, status, entries, diagnostic, loopLimit, run, reset, clearEntries, updateLoopLimit, refreshDiagnostic } = useVm(t);
 
   const [code, setCode] = useState(SAMPLE);
-  const [activeExample, setActiveExample] = useState("modules");
+  const [activeExample, setActiveExample] = useState<ExampleId>(EXAMPLE_IDS.modules);
   const [cursor, setCursor] = useState({ line: 1, column: 1 });
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
@@ -69,9 +74,9 @@ export function App() {
     setCode(next);
     compClose();
     if (diagnosticTimer.current) window.clearTimeout(diagnosticTimer.current);
-    diagnosticTimer.current = window.setTimeout(() => refreshDiagnostic(next), 240);
+    diagnosticTimer.current = window.setTimeout(() => refreshDiagnostic(next), EDITOR.diagnosticDelayMs);
     if (completionTimer.current) window.clearTimeout(completionTimer.current);
-    completionTimer.current = window.setTimeout(() => compRequest(false), 90);
+    completionTimer.current = window.setTimeout(() => compRequest(false), COMPLETION.requestDelayMs);
   }, [compClose, compRequest, refreshDiagnostic]);
 
   const handleCompletionAccept = useCallback(() => {
@@ -79,7 +84,7 @@ export function App() {
     setCode(editorRef.current?.value ?? "");
   }, [compAccept]);
 
-  const openExample = useCallback((id: string) => {
+  const openExample = useCallback((id: ExampleId) => {
     const example = EXAMPLES.find((item) => item.id === id);
     if (!example) return;
     setActiveExample(id);
@@ -108,35 +113,35 @@ export function App() {
       <div class="workspace-shell">
         <aside class="sidebar">
           <div class="sidebar-section">
-            <div class="sidebar-heading"><span>EXPLORER</span><button class="sidebar-action" title="More actions">•••</button></div>
-            <div class="workspace-root"><span class="chevron">⌄</span><span class="folder-icon">▱</span><span>PLAYGROUND</span></div>
-            <button class="file-row active"><span class="js-icon">JS</span><span>playground.js</span><span class="file-state">·</span></button>
+            <div class="sidebar-heading"><span>{t.explorer}</span><button class="sidebar-action" title={t.moreActions}>•••</button></div>
+            <div class="workspace-root"><span class="chevron">⌄</span><span class="folder-icon">▱</span><span>{t.workspace}</span></div>
+            <button class="file-row active"><span class="js-icon">JS</span><span>{t.fileName}</span><span class="file-state">·</span></button>
           </div>
 
           <div class="sidebar-section examples-section">
-            <div class="sidebar-heading"><span>EXAMPLES</span><span class="count-badge">{EXAMPLES.length}</span></div>
+            <div class="sidebar-heading"><span>{t.examples}</span><span class="count-badge">{EXAMPLES.length}</span></div>
             {EXAMPLES.map((example) => (
               <button key={example.id} class={"example-row" + (activeExample === example.id ? " selected" : "")} onClick={() => openExample(example.id)}>
-                <span class="example-icon">{example.id === "modules" ? "◈" : example.id === "async" ? "↗" : "◌"}</span>
-                <span><strong>{example.name}</strong><small>{example.label}</small></span>
+                <span class="example-icon">{EXAMPLE_ICONS[example.id]}</span>
+                <span><strong>{example.name}</strong><small>{t[example.labelKey as ExampleLabelKey]}</small></span>
               </button>
             ))}
           </div>
 
           <div class="sidebar-footer">
-            <div class="feature-note"><span class="spark">✦</span><div><strong>Language tools</strong><small>Rust-powered completion & diagnostics</small></div></div>
+            <div class="feature-note"><span class="spark">✦</span><div><strong>{t.languageTools}</strong><small>{t.languageToolsDescription}</small></div></div>
           </div>
         </aside>
 
         <main class="layout" ref={containerRef}>
-          <section class="editor-wrap editor-panel" style={{ flex: `1 1 ${ratio * 100}%` }}>
+          <section class="editor-wrap editor-panel" style={{ flex: `0 0 calc(${ratio * 100}% - ${ratio * RESIZER.dividerHeight}px)` }}>
             <div class="editor-panel-head">
-              <div class="editor-tab active"><span class="js-icon">JS</span> playground.js <span class="tab-close">×</span></div>
-              <div class="editor-head-meta"><span class="language-pill">JavaScript</span><span>UTF-8</span><span>Spaces: 2</span></div>
+              <div class="editor-tab active"><span class="js-icon">JS</span> {t.fileName} <span class="tab-close">×</span></div>
+              <div class="editor-head-meta"><span class="language-pill">{t.editorLanguage}</span><span>{t.encoding}</span><span>{t.indentation}</span></div>
             </div>
             <div class="editor-hints">
-              <span class="hint-breadcrumb"><span class="crumb-muted">playground</span><span>/</span><span>playground.js</span><span>/</span><span>global</span></span>
-              <span class="hint-actions"><span class="hint-key">⌘ Space</span> autocomplete <span class="hint-key">⌘ S</span> run</span>
+              <span class="hint-breadcrumb"><span class="crumb-muted">{UI.brandSubtitle}</span><span>/</span><span>{t.fileName}</span><span>/</span><span>{UI.editorScope}</span></span>
+              <span class="hint-actions"><span class="hint-key">⌘ Space</span> {t.autocomplete} <span class="hint-key">⌘ S</span> {t.runShortcut}</span>
             </div>
             <div class="editor-stage">
               <Editor
@@ -151,6 +156,7 @@ export function App() {
                 diagnostic={diagnostic}
                 editorRef={editorRef}
                 onCursorChange={(line, column) => setCursor({ line, column })}
+                t={t}
               />
               <CompletionPopup
                 items={compState.items}
@@ -172,14 +178,14 @@ export function App() {
               />
             </div>
             <div class="editor-statusbar">
-              <span><span class="statusbar-green" /> JavaScript</span>
+              <span><span class="statusbar-green" /> {t.editorLanguage}</span>
               <span>Ln {cursor.line}, Col {cursor.column}</span>
               <span>{code.length.toLocaleString()} chars</span>
-              <span class="statusbar-right">{diagnostic ? <span class="statusbar-error">! 1 problem</span> : <span class="statusbar-ok">✓ No problems</span>} <span>⌁ WASM</span></span>
+              <span class="statusbar-right">{diagnostic ? <span class="statusbar-error">! 1 {t.problems}</span> : <span class="statusbar-ok">✓ {t.noProblems}</span>} <span>⌁ {UI.wasmLabel}</span></span>
             </div>
           </section>
 
-          <div class="divider-resizable" onMouseDown={handleMousedown}>
+          <div class="divider-resizable" onPointerDown={handlePointerDown}>
             <span class="divider-label"><span class="console-icon">›_</span> {t.console}</span>
             <span class="divider-count">{entries.length} {entries.length === 1 ? t.entry : t.entries}</span>
           </div>

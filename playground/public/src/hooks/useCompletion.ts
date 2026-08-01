@@ -1,23 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { complete } from "../vm.ts";
 import type { CompletionItem, CompletionPosition } from "../types.ts";
+import { COMPLETION, COMPLETION_KIND_LETTERS, EDITOR } from "../constants.ts";
 
 const TEXT_ENCODER = new TextEncoder();
 const MEASURE_CANVAS = document.createElement("canvas");
 
 type WasmVm = Parameters<typeof complete>[0];
-
-const KIND_LETTER: Record<string, string> = {
-  variable: "x",
-  function: "\u0192",
-  method: "\u0192",
-  property: "\u2022",
-  class: "C",
-  module: "M",
-  keyword: "k",
-  global: "G",
-  exposed: "h",
-};
 
 export interface CompletionState {
   items: CompletionItem[];
@@ -51,7 +40,7 @@ export function useCompletion(
     const lineHeight = parseFloat(style.lineHeight) || 21;
     const paddingTop = parseFloat(style.paddingTop) || 0;
     const paddingLeft = parseFloat(style.paddingLeft) || 0;
-    const lines = before.split("\n");
+    const lines = before.split(EDITOR.lineBreak);
     const line = lines.length - 1;
     const lastLine = lines[line] || "";
     const ctx = MEASURE_CANVAS.getContext("2d");
@@ -70,18 +59,18 @@ export function useCompletion(
 
   const analyze = (before: string): { kind: "member" | "ident"; prefix: string } => {
     // @playground/<module> namespace: offer module completions.
-    if (before.includes("@playground/")) {
-      const after = afterLast(before, "@playground/");
+    if (before.includes(COMPLETION.modulePrefix)) {
+      const after = afterLast(before, COMPLETION.modulePrefix);
       // If the text after @playground/ contains a dot, it's a member
       // completion for module exports (e.g. @playground/math.floor).
-      if (after.includes(".")) {
-        const dotIdx = after.lastIndexOf(".");
+      if (after.includes(COMPLETION.memberSeparator)) {
+        const dotIdx = after.lastIndexOf(COMPLETION.memberSeparator);
         return { kind: "member", prefix: after.slice(dotIdx + 1) };
       }
       return { kind: "ident", prefix: after };
     }
     const word = (before.match(/([\w$]*)$/) || [, ""])[1]!;
-    const isMember = /[\w$)\]"']\.[\w$]*$/.test(before);
+    const isMember = new RegExp(`[\\w$)\\]"']\\${COMPLETION.memberSeparator}[\\w$]*$`).test(before);
     return { kind: isMember ? "member" : "ident", prefix: word };
   };
 
@@ -97,7 +86,7 @@ export function useCompletion(
       if (a.kind === "ident" && (!force || a.prefix.length === 0)) {
         // Keep open for @playground/ even with empty prefix so all
         // registered modules are offered as completions.
-        if (!before.includes("@playground/")) {
+        if (!before.includes(COMPLETION.modulePrefix)) {
           close();
           return;
         }
@@ -112,7 +101,7 @@ export function useCompletion(
       }
 
       setState({
-        items: list.slice(0, 50),
+        items: list.slice(0, COMPLETION.maxItems),
         sel: 0,
         prefix: a.prefix,
         open: true,
@@ -154,6 +143,6 @@ export function useCompletion(
     move,
     accept,
     isOpen: state.open,
-    kindLetter: KIND_LETTER,
+    kindLetter: COMPLETION_KIND_LETTERS,
   };
 }

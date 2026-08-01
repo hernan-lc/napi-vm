@@ -106,7 +106,7 @@
 .statusbar-ok { color: var(--success); }
 .statusbar-error { color: var(--danger); }
 
-.divider-resizable { height: 7px; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: row-resize; background: var(--bg-elev); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.divider-resizable { height: 7px; position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: row-resize; touch-action: none; background: var(--bg-elev); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .divider-resizable::before { content: ""; width: 36px; height: 3px; border-radius: 3px; background: var(--border-focus); }
 .divider-resizable:hover { background: var(--accent-soft); }
 .divider-resizable:hover::before { background: var(--accent); }

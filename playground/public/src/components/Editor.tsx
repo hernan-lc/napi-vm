@@ -1,6 +1,8 @@
 import { useMemo, useRef } from "preact/hooks";
 import type { Diagnostic } from "../types.ts";
 import { highlightToHtml } from "./editor/highlight.ts";
+import { EDITOR, EDITOR_KEYS } from "../constants.ts";
+import type { Translations } from "../i18n/translations.ts";
 
 interface EditorProps {
   value: string;
@@ -14,11 +16,12 @@ interface EditorProps {
   diagnostic: Diagnostic | null;
   editorRef: { current: HTMLTextAreaElement | null };
   onCursorChange: (line: number, column: number) => void;
+  t: Translations;
 }
 
 function cursorPosition(value: string, offset: number) {
   const before = value.slice(0, offset);
-  const lines = before.split("\n");
+  const lines = before.split(EDITOR.lineBreak);
   return { line: lines.length, column: (lines.at(-1) || "").length + 1 };
 }
 
@@ -34,6 +37,7 @@ export function Editor({
   diagnostic,
   editorRef,
   onCursorChange,
+  t,
 }: EditorProps) {
   const highlightRef = useRef<HTMLDivElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
@@ -64,33 +68,33 @@ export function Editor({
   const handleKeyDown = (e: KeyboardEvent) => {
     const mod = e.ctrlKey || e.metaKey;
 
-    if (mod && e.key === "Enter") {
+    if (mod && e.key === EDITOR_KEYS.run) {
       e.preventDefault();
       onRun();
       return;
     }
 
-    if (e.key === "Tab" && !completionOpen) {
+    if (e.key === EDITOR_KEYS.tab && !completionOpen) {
       e.preventDefault();
       const editor = editorRef.current;
       if (!editor) return;
       const start = editor.selectionStart;
       const end = editor.selectionEnd;
-      editor.setRangeText("  ", start, end, "end");
+      editor.setRangeText(EDITOR.tabIndent, start, end, "end");
       onChange(editor.value);
       reportCursor(editor);
       return;
     }
 
     if (completionOpen) {
-      if (e.key === "ArrowDown") { e.preventDefault(); onCompletionMove(1); return; }
-      if (e.key === "ArrowUp") { e.preventDefault(); onCompletionMove(-1); return; }
-      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); onCompletionAccept(); return; }
-      if (e.key === "Escape") { e.preventDefault(); onCompletionClose(); return; }
-      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) onCompletionClose();
+      if (e.key === EDITOR_KEYS.down) { e.preventDefault(); onCompletionMove(1); return; }
+      if (e.key === EDITOR_KEYS.up) { e.preventDefault(); onCompletionMove(-1); return; }
+      if (e.key === EDITOR_KEYS.run || e.key === EDITOR_KEYS.tab) { e.preventDefault(); onCompletionAccept(); return; }
+      if (e.key === EDITOR_KEYS.escape) { e.preventDefault(); onCompletionClose(); return; }
+      if ([EDITOR_KEYS.left, EDITOR_KEYS.right, EDITOR_KEYS.home, EDITOR_KEYS.end].includes(e.key as never)) onCompletionClose();
     }
 
-    if (mod && e.code === "Space") {
+    if (mod && e.code === EDITOR_KEYS.completion) {
       e.preventDefault();
       onCompletionRequest(true);
     }
@@ -119,7 +123,7 @@ export function Editor({
         spellcheck={false}
         autocapitalize="off"
         autocomplete="off"
-        aria-label="JavaScript source editor"
+        aria-label={t.editorAriaLabel}
         value={value}
         onInput={handleInput}
         onScroll={(e) => syncScroll(e.currentTarget as HTMLTextAreaElement)}

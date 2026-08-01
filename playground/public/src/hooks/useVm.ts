@@ -9,7 +9,7 @@ import {
 } from "../vm.ts";
 import type { Diagnostic, HostOptions, RunResult } from "../types.ts";
 import type { Translations } from "../i18n/translations.ts";
-import type { LogEntry, LogLevel } from "../components/logger/types.ts";
+import { LOG_LEVELS, type LogEntry, type LogLevel } from "../components/logger/types.ts";
 
 type WasmVm = ReturnType<typeof createVm>["vm"];
 
@@ -39,7 +39,7 @@ export function useVm(t: Translations) {
     (): HostOptions => ({
       loopLimit,
       onAlert: (msg: string) =>
-        addEntry("warn", msg, `<span class="tag">${t.alert}</span>${escapeHtml(msg)}`),
+        addEntry(LOG_LEVELS.warn, msg, `<span class="tag">${t.alert}</span>${escapeHtml(msg)}`),
     }),
     [loopLimit, addEntry, t]
   );
@@ -58,9 +58,9 @@ export function useVm(t: Translations) {
       }
 
       if (r.ok) {
-        addEntry("result", `${r.value}  ${ms.toFixed(1)} ms`, `<span class="arrow">&larr;</span>${escapeHtml(r.value)}<span class="ms">${ms.toFixed(1)} ms</span>`);
+        addEntry(LOG_LEVELS.result, `${r.value}  ${ms.toFixed(1)} ms`, `<span class="arrow">&larr;</span>${escapeHtml(r.value)}<span class="ms">${ms.toFixed(1)} ms</span>`);
       } else {
-        addEntry("error", `${r.error || "error"}  ${ms.toFixed(1)} ms`, `${escapeHtml(r.error || "error")}<span class="ms">${ms.toFixed(1)} ms</span>`);
+        addEntry(LOG_LEVELS.error, `${r.error || t.error}  ${ms.toFixed(1)} ms`, `${escapeHtml(r.error || t.error)}<span class="ms">${ms.toFixed(1)} ms</span>`);
       }
     },
     [addEntry]
@@ -71,8 +71,8 @@ export function useVm(t: Translations) {
     if (!vm) return;
     (vm as unknown as WasmVm).reset();
     const failed = rehost(vm as unknown as WasmVm, opts());
-    for (const f of failed) addEntry("sys", "failed to register module " + f);
-    addEntry("sys", "VM state reset");
+    for (const f of failed) addEntry(LOG_LEVELS.sys, `${t.failedModule} ${f}`);
+    addEntry(LOG_LEVELS.sys, t.vmReset);
   }, [opts, addEntry]);
 
   const updateLoopLimit = useCallback(
@@ -103,11 +103,11 @@ export function useVm(t: Translations) {
         const built = createVm(opts());
         vmRef.current = built.vm;
         setStatus("ready");
-        addEntry("sys", t.vmReady);
+        addEntry(LOG_LEVELS.sys, t.vmReady);
       } catch (e) {
         if (cancelled) return;
         setStatus("error");
-        addEntry("sys", t.vmFailed + " " + e);
+        addEntry(LOG_LEVELS.sys, t.vmFailed + " " + e);
       }
     }
     boot();

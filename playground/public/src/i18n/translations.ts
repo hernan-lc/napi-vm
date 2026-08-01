@@ -20,6 +20,33 @@ export interface Translations {
   language: string;
   alert: string;
   diagWarning: string;
+  explorer: string;
+  examples: string;
+  moreActions: string;
+  workspace: string;
+  languageTools: string;
+  languageToolsDescription: string;
+  discardVmState: string;
+  clearConsole: string;
+  fileName: string;
+  editorLanguage: string;
+  encoding: string;
+  indentation: string;
+  autocomplete: string;
+  runShortcut: string;
+  editorAriaLabel: string;
+  problems: string;
+  noProblems: string;
+  filterOutput: string;
+  copyAll: string;
+  expand: string;
+  collapse: string;
+  noMatchingEntries: string;
+  examplesModules: string;
+  examplesAsync: string;
+  examplesLoop: string;
+  failedModule: string;
+  vmReset: string;
 }
 
 const en: Translations = {
@@ -42,6 +69,33 @@ const en: Translations = {
   language: "language",
   alert: "alert",
   diagWarning: "⚠",
+  explorer: "EXPLORER",
+  examples: "EXAMPLES",
+  moreActions: "More actions",
+  workspace: "PLAYGROUND",
+  languageTools: "Language tools",
+  languageToolsDescription: "Rust-powered completion & diagnostics",
+  discardVmState: "Discard all VM state",
+  clearConsole: "Clear the console",
+  fileName: "playground.js",
+  editorLanguage: "JavaScript",
+  encoding: "UTF-8",
+  indentation: "Spaces: 2",
+  autocomplete: "autocomplete",
+  runShortcut: "run",
+  editorAriaLabel: "JavaScript source editor",
+  problems: "problem",
+  noProblems: "No problems",
+  filterOutput: "filter output…",
+  copyAll: "Copy all",
+  expand: "Expand",
+  collapse: "Collapse",
+  noMatchingEntries: "No matching entries",
+  examplesModules: "Modules & imports",
+  examplesAsync: "Promises & async",
+  examplesLoop: "Sandbox loop guard",
+  failedModule: "failed to register module",
+  vmReset: "VM state reset",
 };
 
 const es: Translations = {
@@ -64,6 +118,33 @@ const es: Translations = {
   language: "idioma",
   alert: "alerta",
   diagWarning: "⚠",
+  explorer: "EXPLORADOR",
+  examples: "EJEMPLOS",
+  moreActions: "Más acciones",
+  workspace: "PLAYGROUND",
+  languageTools: "Herramientas de lenguaje",
+  languageToolsDescription: "Completado y diagnósticos con Rust",
+  discardVmState: "Descartar todo el estado de la VM",
+  clearConsole: "Limpiar la consola",
+  fileName: "playground.js",
+  editorLanguage: "JavaScript",
+  encoding: "UTF-8",
+  indentation: "Espacios: 2",
+  autocomplete: "autocompletar",
+  runShortcut: "ejecutar",
+  editorAriaLabel: "Editor de código JavaScript",
+  problems: "problema",
+  noProblems: "Sin problemas",
+  filterOutput: "filtrar salida…",
+  copyAll: "Copiar todo",
+  expand: "Expandir",
+  collapse: "Contraer",
+  noMatchingEntries: "No hay entradas coincidentes",
+  examplesModules: "Módulos e imports",
+  examplesAsync: "Promesas y async",
+  examplesLoop: "Protección contra bucles",
+  failedModule: "no se pudo registrar el módulo",
+  vmReset: "Estado de la VM reiniciado",
 };
 
 const pt: Translations = {
@@ -86,6 +167,33 @@ const pt: Translations = {
   language: "idioma",
   alert: "alerta",
   diagWarning: "⚠",
+  explorer: "EXPLORADOR",
+  examples: "EXEMPLOS",
+  moreActions: "Mais ações",
+  workspace: "PLAYGROUND",
+  languageTools: "Ferramentas de linguagem",
+  languageToolsDescription: "Completação e diagnósticos com Rust",
+  discardVmState: "Descartar todo o estado da VM",
+  clearConsole: "Limpar o console",
+  fileName: "playground.js",
+  editorLanguage: "JavaScript",
+  encoding: "UTF-8",
+  indentation: "Espaços: 2",
+  autocomplete: "autocompletar",
+  runShortcut: "executar",
+  editorAriaLabel: "Editor de código JavaScript",
+  problems: "problema",
+  noProblems: "Sem problemas",
+  filterOutput: "filtrar saída…",
+  copyAll: "Copiar tudo",
+  expand: "Expandir",
+  collapse: "Recolher",
+  noMatchingEntries: "Nenhuma entrada correspondente",
+  examplesModules: "Módulos e imports",
+  examplesAsync: "Promessas e async",
+  examplesLoop: "Proteção contra loops",
+  failedModule: "não foi possível registrar o módulo",
+  vmReset: "Estado da VM reiniciado",
 };
 
 export const LOCALES: Record<Locale, Translations> = { en, es, pt };

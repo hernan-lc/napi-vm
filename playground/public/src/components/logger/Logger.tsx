@@ -77,17 +77,17 @@ export function Logger({ entries, t }: LoggerProps) {
           <input
             class="logger-search"
             type="text"
-            placeholder="filter output…"
+            placeholder={t.filterOutput}
             value={search}
             onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
           />
-          <button class="icon-btn" onClick={copyAll} title="Copy all">
+          <button class="icon-btn" onClick={copyAll} title={t.copyAll}>
             ⧉
           </button>
           <button
             class="icon-btn"
             onClick={() => setCollapsed(!collapsed)}
-            title={collapsed ? "Expand" : "Collapse"}
+            title={collapsed ? t.expand : t.collapse}
           >
             {collapsed ? "▸" : "▾"}
           </button>
@@ -96,7 +96,7 @@ export function Logger({ entries, t }: LoggerProps) {
 
       <div class={"logger-body" + (collapsed ? " collapsed" : "")}>
         {filtered.length === 0 ? (
-          <div class="logger-empty-filter">No matching entries</div>
+          <div class="logger-empty-filter">{t.noMatchingEntries}</div>
         ) : (
           filtered.map((entry) => (
             <div key={entry.id} class={"log-entry level-" + entry.level}>
