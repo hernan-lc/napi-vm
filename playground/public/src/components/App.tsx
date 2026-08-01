@@ -10,6 +10,7 @@ import { useResizable } from "../hooks/useResizable.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 import { useTheme } from "../hooks/useTheme.ts";
 import { ASYNC_SAMPLE, LOOP_SAMPLE, SAMPLE } from "../examples.ts";
+import { hover as hoverCode } from "../vm.ts";
 import { COMPLETION, EDITOR, RESIZER, UI, WORKSPACE } from "../constants.ts";
 import type { WorkspaceFile } from "../types.ts";
 
@@ -87,6 +88,11 @@ export function App() {
 
   const activeFile = files.find((file) => file.id === activeFileId) ?? files[0];
   const activeContent = activeFile?.content ?? "";
+
+  const getHover = useCallback((source: string, offset: number) => {
+    const vm = getVm();
+    return vm ? hoverCode(vm as Parameters<typeof hoverCode>[0], source, offset) : null;
+  }, [getVm]);
 
   const { state: compState, close: compClose, request: compRequest, move: compMove, accept: compAccept, isOpen: compOpen, kindLetter } = useCompletion(
     getVm,
@@ -320,6 +326,7 @@ export function App() {
                 onCompletionClose={compClose}
                 onCompletionMove={compMove}
                 onCompletionAccept={handleCompletionAccept}
+                onHoverAt={getHover}
                 completionOpen={compOpen}
                 diagnostic={diagnostic}
                 editorRef={editorRef}

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "preact/hooks";
 import type { Diagnostic } from "../types.ts";
 import { highlightToHtml } from "./editor/highlight.ts";
-import { hoverAt, type HoverInfo } from "./editor/hover.ts";
+import type { HoverInfo } from "../types.ts";
 import { EDITOR, EDITOR_KEYS } from "../constants.ts";
 import type { Translations } from "../i18n/translations.ts";
 import { debugLog } from "../debug.ts";
@@ -14,6 +14,7 @@ interface EditorProps {
   onCompletionClose: () => void;
   onCompletionMove: (delta: number) => void;
   onCompletionAccept: () => void;
+  onHoverAt: (source: string, offset: number) => HoverInfo | null;
   completionOpen: boolean;
   diagnostic: Diagnostic | null;
   editorRef: { current: HTMLTextAreaElement | null };
@@ -41,6 +42,7 @@ export function Editor({
   onCompletionClose,
   onCompletionMove,
   onCompletionAccept,
+  onHoverAt,
   completionOpen,
   diagnostic,
   editorRef,
@@ -108,7 +110,7 @@ export function Editor({
       setHover(null);
       return;
     }
-    const info = hoverAt(value, point.offset);
+    const info = onHoverAt(value, point.offset);
     setHover(info ? { info, top: point.top, left: point.left } : null);
   };
 

@@ -8,6 +8,11 @@
 //
 // Try completing: "math." or "Math." after a dot, "al" for the exposed
 // alert(), or Ctrl+Space on "up" / "cr" for the imported names.
+/* this is for test in playground and necesary resolve on click and serve files if exist
+import * as math from "./modules/math.js";
+import { upper, label } from "./modules/format.js";
+import createStore from "./modules/store.js";
+*/
 
 import * as math from "math";
 import { upper, label } from "format";

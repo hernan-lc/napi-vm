@@ -83,6 +83,15 @@ check("runtime object members complete", comp.some((c: any) => c.label === "read
 comp = vm.complete("store.nested.re", "store.nested.re".length);
 check("runtime nested members complete", comp.some((c: any) => c.label === "ready"), JSON.stringify(comp));
 
+const hoverSource = 'async function loadUser(id) { const response = await Promise.resolve({ id, name: "Ada" }); return response; } loadUser(42).then((user) => user.name);';
+const hoverOffset = hoverSource.lastIndexOf("user") + 1;
+const hoverInfo = vm.hover(hoverSource, hoverOffset);
+check(
+  "native hover infers callback object",
+  String(hoverInfo?.detail).includes("name: string"),
+  JSON.stringify(hoverInfo),
+);
+
 // 9. Identifier completion offers globals + scope decls.
 const src = "const counter = 1;\nfunction bump() {}\n";
 comp = vm.complete(src, src.length);

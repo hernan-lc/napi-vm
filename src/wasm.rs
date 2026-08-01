@@ -508,6 +508,18 @@ impl WasmVm {
         arr.into()
     }
 
+    /// Hover information at a UTF-8 byte offset.
+    pub fn hover(&self, source: &str, offset: usize) -> JsValue {
+        match crate::lang::Document::parse(source).hover(offset) {
+            Some(info) => {
+                let object = js_sys::Object::new();
+                set_prop(&object, "detail", &JsValue::from_str(&info.detail));
+                object.into()
+            }
+            None => JsValue::NULL,
+        }
+    }
+
     /// Diagnostics for `source`: an array of `{ line, col, message, severity }`
     /// (line/col are 1-based).
     pub fn diagnose(&self, source: &str) -> JsValue {

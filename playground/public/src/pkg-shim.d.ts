@@ -8,6 +8,7 @@ declare module "/pkg/napi_vm.js" {
     register_module(name: string, source: string): void;
     run(code: string): unknown;
     complete(source: string, offset: number): unknown;
+    hover(source: string, offset: number): unknown;
     diagnose(source: string): unknown;
   }
 }

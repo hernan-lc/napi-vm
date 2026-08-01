@@ -16,6 +16,10 @@ export interface CompletionItem {
   detail?: string;
 }
 
+export interface HoverInfo {
+  detail: string;
+}
+
 export interface CompletionPosition {
   top: number;
   left: number;

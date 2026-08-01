@@ -15,6 +15,8 @@
 pub mod catalog;
 mod complete;
 mod diagnostics;
+mod document;
+mod service;
 mod scope;
 mod symbols;
 
@@ -22,6 +24,8 @@ pub use complete::complete;
 #[cfg(feature = "wasm")]
 pub(crate) use complete::member_trigger;
 pub use diagnostics::diagnose;
+pub use document::{Document, HoverInfo, Type};
+pub use service::LanguageService;
 
 use crate::lexer::Lexer;
 use crate::parser::Parser;

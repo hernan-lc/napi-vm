@@ -1,7 +1,7 @@
 import init, { WasmVm } from "/pkg/napi_vm.js";
 import { debugLog } from "./debug.ts";
 import { MODULES, SAMPLE } from "./examples.ts";
-import type { CompletionItem, Diagnostic, HostOptions, ModuleDef, RunResult } from "./types.ts";
+import type { CompletionItem, Diagnostic, HoverInfo, HostOptions, ModuleDef, RunResult } from "./types.ts";
 
 export { SAMPLE, MODULES };
 export type { CompletionItem, Diagnostic, RunResult, ModuleDef };
@@ -47,6 +47,10 @@ export function complete(vm: WasmVm, code: string, byteOffset: number): Completi
     labels: (result || []).slice(0, 20).map((item) => item.label),
   });
   return result;
+}
+
+export function hover(vm: WasmVm, code: string, byteOffset: number): HoverInfo | null {
+  return vm.hover(code, byteOffset) as HoverInfo | null;
 }
 
 export function diagnose(vm: WasmVm, code: string): Diagnostic[] {
