@@ -11,6 +11,7 @@ Execute JavaScript in an isolated environment with no access to the host system'
 - **Sandboxed execution** — No access to `require`, `process`, or other Node.js globals
 - **Isolated VM instances** — Each `Vm()` has independent, persistent state
 - **ES Module syntax** — `import`/`export` (named, default, namespace) with exports wired through to importers, plus `import.meta`
+- **Import-aware editor analysis** — Cross-module type inference for hover and completion, including default, named, and namespace imports
 - **Functions** — Regular, arrow, expressions, closures, and recursion
 - **Control flow** — `if/else`, `while`, `do...while`, `for`, `for...in`, `for...of`, `switch/case`, `break`, `continue`
 - **Error handling** — `try/catch/finally` with `throw`, catching both `throw` and runtime errors
@@ -18,6 +19,8 @@ Execute JavaScript in an isolated environment with no access to the host system'
 - **Generators** — `function*`/`yield` with true suspension (infinite generators, `next(val)` sent values, `for...of`)
 - **Symbols & iterators** — `Symbol()`, well-known symbols, `Symbol.for`/`keyFor`, full iterator protocol (`[Symbol.iterator]`, `for...of` over custom iterables)
 - **Standard library** — `Math`, `JSON`, `Object`, `Array`/`String`/`Number` prototype methods, and global functions (`parseInt`, `isNaN`, …)
+- **Browser playground** — WASM execution with syntax highlighting, autocomplete, diagnostics, hover information, expandable console values, and an editable file explorer
+- **Typed host functions** — Optional parameter types, return types, async metadata, and documentation for exposed browser functions
 
 > **Status:** the core language, classes, a working standard library, async/`await`, generators with true mid-body suspension (`yield`/`next`/`next(val)`), module export wiring, and a full `Symbol` + iterator protocol are implemented and covered by 566 passing tests (see the [Roadmap](#roadmap--implementation-tracker) for the verified picture).
 
@@ -99,6 +102,50 @@ Sync and async exposed functions coexist: a `runAsync` call can invoke both
 `exposeFunction` and `exposeAsyncFunction` bindings. See
 [`examples/async-bridge.ts`](examples/async-bridge.ts) for a full demo.
 
+#### Browser/WASM host-function metadata
+
+The browser playground keeps runtime callbacks and editor metadata separate.
+Use `expose_function` when runtime access is enough. For typed hover and
+completion, use `expose_function_with_info` through the TypeScript helper:
+
+```typescript
+import { exposeFunction } from "./playground/public/src/vm.ts";
+
+exposeFunction(vm, "alert", (message: unknown) => {
+  console.log(String(message));
+}, {
+  params: [{ name: "message", type: "string" }],
+  returns: "void",
+  documentation: "Displays a message in the playground console.",
+});
+```
+
+The editor displays:
+
+```text
+(function) alert: (message: string) => void
+Displays a message in the playground console.
+```
+
+Metadata supports `params`, `returns`, `documentation`, and `async`. The
+untyped API remains valid and falls back to `(...args) => unknown`. JavaScript
+cannot reliably expose TypeScript annotations at runtime, so parsing
+`function.toString()` is intentionally not used for inference.
+
+### Browser playground
+
+Build and run the editor locally:
+
+```bash
+npm run playground:build
+npm run playground
+```
+
+The playground registers modules by their workspace path, so code such as
+`import createStore from "./modules/store.js"` works for execution, hover,
+autocomplete, and import navigation. Registered module source is analyzed as
+UTF-8 and shared with the Rust language service.
+
 ### Hot reload
 
 The VM exposes the primitives needed for clean hot-reload cycles without
@@ -153,6 +200,10 @@ for a complete working demo (run with `bun examples/hotreload.ts`).
 | `vm.hasGlobal(name)` | Check whether a global binding exists |
 | `vm.setImportMetaMain(bool)` | Set the value of `import.meta.main` |
 | `debugParse(code)` | Parse code and return the AST as a string |
+
+The browser/WASM binding additionally exposes `WasmVm.expose_function_with_info`
+for typed host-function metadata. The Node NAPI API continues to use
+`exposeFunction` and `exposeAsyncFunction` for runtime host access.
 
 ## Sandbox limits & crash safety
 
@@ -215,6 +266,9 @@ harness is a working template for operational isolation.
 | `npm run bench` | End-to-end JS benchmark through the NAPI binding |
 | `npm run bench:stress` | Stress tests: hot-reload cycles, listener leaks, large JSON emit, middleware pressure (`--quick` for CI) |
 | `npm run bench:rust` | Criterion microbenchmarks of the interpreter pipeline |
+| `npm run playground:build` | Build the browser WASM package |
+| `npm run playground` | Start the Vite browser playground |
+| `bun playground/smoke.ts` | Run the headless WASM/playground regression checks |
 
 ## Benchmarks
 
