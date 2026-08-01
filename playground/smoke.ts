@@ -117,6 +117,35 @@ check(
   JSON.stringify(dateHover),
 );
 
+const mathModule = readFileSync(
+  join(import.meta.dir, "public", "examples", "modules", "math.js"),
+  "utf8",
+);
+const storeModule = readFileSync(
+  join(import.meta.dir, "public", "examples", "modules", "store.js"),
+  "utf8",
+);
+vm.register_module("./modules/math.js", mathModule);
+vm.register_module("./modules/store.js", storeModule);
+const playgroundModule = readFileSync(
+  join(import.meta.dir, "public", "examples", "playground.js"),
+  "utf8",
+);
+vm.register_module(
+  "./modules/format.js",
+  readFileSync(join(import.meta.dir, "public", "examples", "modules", "format.js"), "utf8"),
+);
+vm.expose_function("alert", () => undefined);
+r = vm.run_file("./playground.js", playgroundModule);
+check("workspace imports run", r.ok === true, JSON.stringify(r));
+const importSource = 'import createStore from "./modules/store.js"; createStore;';
+const importHover = vm.hover(importSource, importSource.indexOf("createStore") + 2);
+check(
+  "import hover preserves module type",
+  String(importHover?.detail).includes("(initial) => Store"),
+  JSON.stringify(importHover),
+);
+
 // 9. Identifier completion offers globals + scope decls.
 const src = "const counter = 1;\nfunction bump() {}\n";
 comp = vm.complete(src, src.length);

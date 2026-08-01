@@ -16,6 +16,7 @@
 //! single-threaded wasm model exactly — no `Send`/`Sync` gymnastics needed.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use wasm_bindgen::JsCast;
@@ -317,6 +318,9 @@ pub struct WasmVm {
     exposed_names: Vec<String>,
     /// Registered modules and their exports; feeds completion context.
     module_infos: Vec<ModuleInfo>,
+    /// UTF-8 module snapshots used by the language service to propagate types
+    /// across imports during hover and diagnostics.
+    module_sources: HashMap<String, String>,
     /// Captured `console.*` output for the current run.
     logs: Rc<RefCell<Vec<(String, String)>>>,
     /// The `__out` JS handle, kept so [`WasmVm::reset`] can re-register it.
@@ -358,6 +362,7 @@ impl WasmVm {
             bridge,
             exposed_names: Vec::new(),
             module_infos: Vec::new(),
+            module_sources: HashMap::new(),
             logs,
             out_fn,
             _out_closure: out_closure,
@@ -448,6 +453,8 @@ impl WasmVm {
                 exports,
             });
         }
+        self.module_sources
+            .insert(name.to_string(), source.to_string());
         Ok(())
     }
 
@@ -485,6 +492,7 @@ impl WasmVm {
         self.bridge = bridge;
         self.exposed_names.clear();
         self.module_infos.clear();
+        self.module_sources.clear();
         self.logs.borrow_mut().clear();
     }
 
@@ -527,7 +535,8 @@ impl WasmVm {
 
     /// Hover information at a UTF-8 byte offset.
     pub fn hover(&self, source: &str, offset: usize) -> JsValue {
-        match crate::lang::Document::parse(source).hover(offset) {
+        match crate::lang::Document::parse_with_modules(source, &self.module_sources).hover(offset)
+        {
             Some(info) => {
                 let object = js_sys::Object::new();
                 set_prop(&object, "detail", &JsValue::from_str(&info.detail));

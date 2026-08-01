@@ -4,7 +4,7 @@
 //! while literal objects, functions, promises, arrays, and imports retain the
 //! information needed by hover and completion. It never executes guest code.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::lexer::Token;
 use crate::parser::{BinOp, ClassMember, Expr, ExprOrBlock, ObjectProp, Statement, VarKind};
@@ -147,10 +147,24 @@ pub struct Document {
     tokens: Vec<SpannedToken>,
     bindings: HashMap<String, Binding>,
     properties: HashMap<String, Type>,
+    exports: HashMap<String, Type>,
 }
 
 impl Document {
     pub fn parse(source: &str) -> Self {
+        Self::parse_with_modules(source, &HashMap::new())
+    }
+
+    pub fn parse_with_modules(source: &str, module_sources: &HashMap<String, String>) -> Self {
+        let mut module_stack = HashSet::new();
+        Self::parse_with_modules_inner(source, module_sources, &mut module_stack)
+    }
+
+    fn parse_with_modules_inner(
+        source: &str,
+        module_sources: &HashMap<String, String>,
+        module_stack: &mut HashSet<String>,
+    ) -> Self {
         let mut lexer = crate::lexer::Lexer::new(source);
         let tokens = lexer.tokenize_with_spans();
         let mut parser = crate::parser::Parser::new_with_spans(tokens.clone());
@@ -158,6 +172,9 @@ impl Document {
         let mut builder = Builder {
             bindings: HashMap::new(),
             properties: HashMap::new(),
+            exports: HashMap::new(),
+            module_sources,
+            module_stack,
         };
         builder.statements(&statements, &HashMap::new());
         Self {
@@ -165,6 +182,7 @@ impl Document {
             tokens,
             bindings: builder.bindings,
             properties: builder.properties,
+            exports: builder.exports,
         }
     }
 
@@ -183,7 +201,7 @@ impl Document {
             )
         {
             let receiver = self.receiver_name(token_index - 2);
-            let ty = self
+            let ty = receiver
                 .as_ref()
                 .and_then(|receiver| self.bindings.get(receiver))
                 .map(|binding| binding.ty.property(name))
@@ -251,12 +269,15 @@ impl Document {
     }
 }
 
-struct Builder {
+struct Builder<'a> {
     bindings: HashMap<String, Binding>,
     properties: HashMap<String, Type>,
+    exports: HashMap<String, Type>,
+    module_sources: &'a HashMap<String, String>,
+    module_stack: &'a mut HashSet<String>,
 }
 
-impl Builder {
+impl Builder<'_> {
     fn statements(&mut self, statements: &[Statement], outer: &HashMap<String, Type>) {
         let mut env = outer.clone();
         for statement in statements {
@@ -325,30 +346,44 @@ impl Builder {
                 env.insert(name.clone(), ty);
             }
             Statement::Import {
+                module,
                 default,
                 named,
                 namespace,
-                ..
             } => {
-                for name in default.iter().chain(namespace.iter()) {
+                let exports = self.module_exports(module);
+                if let Some(name) = default {
+                    let ty = exports.get("default").cloned().unwrap_or(Type::Unknown);
                     self.bindings.insert(
                         name.clone(),
                         Binding {
                             kind: "import".into(),
-                            ty: Type::Unknown,
+                            ty: ty.clone(),
                         },
                     );
-                    env.insert(name.clone(), Type::Unknown);
+                    env.insert(name.clone(), ty);
                 }
-                for (_, name) in named {
+                for (local, imported) in named {
+                    let ty = exports.get(imported).cloned().unwrap_or(Type::Unknown);
                     self.bindings.insert(
-                        name.clone(),
+                        local.clone(),
                         Binding {
                             kind: "import".into(),
-                            ty: Type::Unknown,
+                            ty: ty.clone(),
                         },
                     );
-                    env.insert(name.clone(), Type::Unknown);
+                    env.insert(local.clone(), ty);
+                }
+                if let Some(namespace) = namespace {
+                    let ty = Type::Object(exports.into_iter().collect());
+                    self.bindings.insert(
+                        namespace.clone(),
+                        Binding {
+                            kind: "import".into(),
+                            ty: ty.clone(),
+                        },
+                    );
+                    env.insert(namespace.clone(), ty);
                 }
             }
             Statement::Expr(expr) => {
@@ -406,8 +441,37 @@ impl Builder {
                     self.statements(body, env);
                 }
             }
+            Statement::ExportDefault(value) => {
+                let ty = self.expr(value, env);
+                self.exports.insert("default".into(), ty);
+            }
+            Statement::ExportNamed { specifiers, source } => {
+                let source_exports = source.as_deref().map(|module| self.module_exports(module));
+                for (local, exported) in specifiers {
+                    let ty = source_exports
+                        .as_ref()
+                        .and_then(|exports| exports.get(local))
+                        .cloned()
+                        .or_else(|| env.get(local).cloned())
+                        .unwrap_or(Type::Unknown);
+                    self.exports.insert(exported.clone(), ty);
+                }
+            }
             _ => {}
         }
+    }
+
+    fn module_exports(&mut self, module: &str) -> HashMap<String, Type> {
+        let Some(source) = self.module_sources.get(module).cloned() else {
+            return HashMap::new();
+        };
+        if !self.module_stack.insert(module.to_string()) {
+            return HashMap::new();
+        }
+        let document =
+            Document::parse_with_modules_inner(&source, self.module_sources, self.module_stack);
+        self.module_stack.remove(module);
+        document.exports
     }
 
     fn function_result(
@@ -862,6 +926,22 @@ mod tests {
         assert_eq!(
             hover(source, "toUpperCase"),
             "(property) toUpperCase: () => string"
+        );
+    }
+
+    #[test]
+    fn propagates_types_across_imported_modules() {
+        let mut modules = HashMap::new();
+        modules.insert(
+            "./modules/store.js".into(),
+            include_str!("../../playground/public/examples/modules/store.js").into(),
+        );
+        let source = "import createStore from \"./modules/store.js\"; const store = createStore({ count: 0 }); store;";
+        let document = Document::parse_with_modules(source, &modules);
+        let offset = source.find("createStore").unwrap() + 2;
+        assert_eq!(
+            document.hover(offset).unwrap().detail,
+            "(import) createStore: (initial) => Store"
         );
     }
 
