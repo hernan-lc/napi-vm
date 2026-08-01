@@ -25,7 +25,10 @@ use wasm_bindgen::prelude::*;
 use crate::error::VmErr;
 use crate::host::HostBridge;
 use crate::interpreter::Interpreter;
-use crate::lang::{AnalysisContext, Completion, CompletionKind, DiagnosticSeverity, ModuleInfo};
+use crate::lang::{
+    AnalysisContext, Completion, CompletionKind, DiagnosticSeverity, HostFunctionInfo,
+    HostFunctionParameter, ModuleInfo,
+};
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::{MAX_ARRAY_LEN, Value, limit_err};
@@ -166,6 +169,47 @@ fn read_str_prop(obj: &JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(obj, &JsValue::from_str(key))
         .ok()
         .and_then(|v| v.as_string())
+}
+
+fn host_function_info_from_js(name: &str, metadata: &JsValue) -> Result<HostFunctionInfo, JsValue> {
+    if !metadata.is_object() {
+        return Err(JsValue::from_str(
+            "host function metadata must be an object",
+        ));
+    }
+
+    let params_value = js_sys::Reflect::get(metadata, &JsValue::from_str("params"))
+        .map_err(|_| JsValue::from_str("failed to read host function params"))?;
+    let mut params = Vec::new();
+    if !params_value.is_undefined() && !params_value.is_null() {
+        let params_array = js_sys::Array::from(&params_value);
+        for index in 0..params_array.length() {
+            let parameter = params_array.get(index);
+            let parameter_name = read_str_prop(&parameter, "name")
+                .ok_or_else(|| JsValue::from_str("host function parameter needs a name"))?;
+            let type_name =
+                read_str_prop(&parameter, "type").unwrap_or_else(|| "unknown".to_string());
+            params.push(HostFunctionParameter {
+                name: parameter_name,
+                type_name,
+            });
+        }
+    }
+
+    let return_type = read_str_prop(metadata, "returns").unwrap_or_else(|| "unknown".into());
+    let documentation = read_str_prop(metadata, "documentation");
+    let async_fn = js_sys::Reflect::get(metadata, &JsValue::from_str("async"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+
+    Ok(HostFunctionInfo {
+        name: name.into(),
+        params,
+        return_type,
+        documentation,
+        async_fn,
+    })
 }
 
 /// Best-effort error message from a thrown `JsValue`.
@@ -314,8 +358,9 @@ fn make_out_closure(
 pub struct WasmVm {
     interp: Interpreter,
     bridge: Rc<WasmBridge>,
-    /// Names exposed via [`WasmVm::expose_function`]; feeds completion context.
-    exposed_names: Vec<String>,
+    /// Functions exposed via [`WasmVm::expose_function`]; feeds completion and
+    /// hover context.
+    exposed_functions: Vec<HostFunctionInfo>,
     /// Registered modules and their exports; feeds completion context.
     module_infos: Vec<ModuleInfo>,
     /// UTF-8 module snapshots used by the language service to propagate types
@@ -360,7 +405,7 @@ impl WasmVm {
         Self {
             interp,
             bridge,
-            exposed_names: Vec::new(),
+            exposed_functions: Vec::new(),
             module_infos: Vec::new(),
             module_sources: HashMap::new(),
             logs,
@@ -408,6 +453,29 @@ impl WasmVm {
     /// propagates into the VM as a catchable exception. The name also becomes a
     /// completion candidate.
     pub fn expose_function(&mut self, name: &str, func: js_sys::Function) {
+        self.register_exposed_function(name, func, HostFunctionInfo::unknown(name));
+    }
+
+    /// Expose a browser function and provide language-service metadata.
+    /// `metadata` is an object shaped like:
+    /// `{ params: [{ name, type }], returns, documentation?, async? }`.
+    pub fn expose_function_with_info(
+        &mut self,
+        name: &str,
+        func: js_sys::Function,
+        metadata: JsValue,
+    ) -> Result<(), JsValue> {
+        let info = host_function_info_from_js(name, &metadata)?;
+        self.register_exposed_function(name, func, info);
+        Ok(())
+    }
+
+    fn register_exposed_function(
+        &mut self,
+        name: &str,
+        func: js_sys::Function,
+        info: HostFunctionInfo,
+    ) {
         let id = self.bridge.register(func);
         self.interp.global.borrow_mut().set(
             name,
@@ -416,8 +484,14 @@ impl WasmVm {
                 id,
             },
         );
-        if !self.exposed_names.iter().any(|n| n == name) {
-            self.exposed_names.push(name.to_string());
+        if let Some(existing) = self
+            .exposed_functions
+            .iter_mut()
+            .find(|function| function.name == name)
+        {
+            *existing = info;
+        } else {
+            self.exposed_functions.push(info);
         }
     }
 
@@ -490,7 +564,7 @@ impl WasmVm {
 
         self.interp = interp;
         self.bridge = bridge;
-        self.exposed_names.clear();
+        self.exposed_functions.clear();
         self.module_infos.clear();
         self.module_sources.clear();
         self.logs.borrow_mut().clear();
@@ -535,11 +609,19 @@ impl WasmVm {
 
     /// Hover information at a UTF-8 byte offset.
     pub fn hover(&self, source: &str, offset: usize) -> JsValue {
-        match crate::lang::Document::parse_with_modules(source, &self.module_sources).hover(offset)
+        match crate::lang::Document::parse_with_context(
+            source,
+            &self.module_sources,
+            &self.exposed_functions,
+        )
+        .hover(offset)
         {
             Some(info) => {
                 let object = js_sys::Object::new();
                 set_prop(&object, "detail", &JsValue::from_str(&info.detail));
+                if let Some(documentation) = info.documentation {
+                    set_prop(&object, "documentation", &JsValue::from_str(&documentation));
+                }
                 object.into()
             }
             None => JsValue::NULL,
@@ -582,7 +664,7 @@ impl WasmVm {
 impl WasmVm {
     fn analysis_context(&self) -> AnalysisContext {
         AnalysisContext {
-            exposed_functions: self.exposed_names.clone(),
+            exposed_functions: self.exposed_functions.clone(),
             modules: self.module_infos.clone(),
         }
     }

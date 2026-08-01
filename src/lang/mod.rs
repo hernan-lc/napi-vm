@@ -53,13 +53,64 @@ pub struct Completion {
     pub detail: Option<String>,
 }
 
+/// A parameter description supplied by the host for a JavaScript function
+/// exposed to the VM. JavaScript does not retain TypeScript annotations at
+/// runtime, so hosts provide this metadata explicitly when they want rich
+/// hover and completion information.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostFunctionParameter {
+    pub name: String,
+    pub type_name: String,
+}
+
+/// Language-service metadata for a host-exposed function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostFunctionInfo {
+    pub name: String,
+    pub params: Vec<HostFunctionParameter>,
+    pub return_type: String,
+    pub documentation: Option<String>,
+    pub async_fn: bool,
+}
+
+impl HostFunctionInfo {
+    pub fn unknown(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            params: Vec::new(),
+            return_type: "unknown".into(),
+            documentation: None,
+            async_fn: false,
+        }
+    }
+
+    pub fn signature(&self) -> String {
+        let params = if self.params.is_empty() {
+            "...args".into()
+        } else {
+            self.params
+                .iter()
+                .map(|param| format!("{}: {}", param.name, param.type_name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let return_type = if self.async_fn && !self.return_type.starts_with("Promise<") {
+            format!("Promise<{}>", self.return_type)
+        } else {
+            self.return_type.clone()
+        };
+        format!("({}) => {}", params, return_type)
+    }
+}
+
 /// Runtime/workspace knowledge the static analyzer cannot derive from source
 /// alone. The host fills this in: the playground knows which functions it
 /// exposed and which modules it registered.
 #[derive(Debug, Clone, Default)]
 pub struct AnalysisContext {
-    /// Names exposed to the VM as callable globals.
-    pub exposed_functions: Vec<String>,
+    /// Functions exposed to the VM as callable globals, including optional
+    /// parameter, return-type, and documentation metadata.
+    pub exposed_functions: Vec<HostFunctionInfo>,
     /// Registered modules and their export names.
     pub modules: Vec<ModuleInfo>,
 }
@@ -129,12 +180,34 @@ mod tests {
     #[test]
     fn ident_offers_exposed_functions() {
         let ctx = AnalysisContext {
-            exposed_functions: vec!["add".into()],
+            exposed_functions: vec![HostFunctionInfo::unknown("add")],
             ..Default::default()
         };
         let r = complete("ad", 2, &ctx);
         let add = r.iter().find(|c| c.label == "add").expect("add offered");
         assert_eq!(add.kind, CompletionKind::ExposedFn);
+    }
+
+    #[test]
+    fn exposed_function_metadata_is_available_to_completion() {
+        let ctx = AnalysisContext {
+            exposed_functions: vec![HostFunctionInfo {
+                name: "alert".into(),
+                params: vec![HostFunctionParameter {
+                    name: "message".into(),
+                    type_name: "string".into(),
+                }],
+                return_type: "void".into(),
+                documentation: Some("Displays a message.".into()),
+                async_fn: false,
+            }],
+            ..Default::default()
+        };
+        let alert = complete("al", 2, &ctx)
+            .into_iter()
+            .find(|item| item.label == "alert")
+            .expect("alert offered");
+        assert_eq!(alert.detail.as_deref(), Some("(message: string) => void"));
     }
 
     #[test]

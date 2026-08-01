@@ -213,9 +213,10 @@ fn complete_ident(
 
     // 2. Host-exposed functions.
     let mut exposed = ctx.exposed_functions.clone();
-    exposed.sort();
-    for name in &exposed {
-        add(name, CompletionKind::ExposedFn, Some("exposed function"));
+    exposed.sort_by(|a, b| a.name.cmp(&b.name));
+    for function in &exposed {
+        let detail = function.signature();
+        add(&function.name, CompletionKind::ExposedFn, Some(&detail));
     }
 
     // 3. Modules: registered in the context, plus any imported in the source.

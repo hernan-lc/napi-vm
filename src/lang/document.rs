@@ -10,6 +10,7 @@ use crate::lexer::Token;
 use crate::parser::{BinOp, ClassMember, Expr, ExprOrBlock, ObjectProp, Statement, VarKind};
 use crate::span::SpannedToken;
 
+use super::HostFunctionInfo;
 use super::catalog::{self, BuiltinType};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,6 +140,7 @@ struct Binding {
 #[derive(Debug, Clone)]
 pub struct HoverInfo {
     pub detail: String,
+    pub documentation: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +150,7 @@ pub struct Document {
     bindings: HashMap<String, Binding>,
     properties: HashMap<String, Type>,
     exports: HashMap<String, Type>,
+    host_functions: HashMap<String, HostFunctionInfo>,
 }
 
 impl Document {
@@ -156,13 +159,22 @@ impl Document {
     }
 
     pub fn parse_with_modules(source: &str, module_sources: &HashMap<String, String>) -> Self {
-        let mut module_stack = HashSet::new();
-        Self::parse_with_modules_inner(source, module_sources, &mut module_stack)
+        Self::parse_with_context(source, module_sources, &[])
     }
 
-    fn parse_with_modules_inner(
+    pub fn parse_with_context(
         source: &str,
         module_sources: &HashMap<String, String>,
+        host_functions: &[HostFunctionInfo],
+    ) -> Self {
+        let mut module_stack = HashSet::new();
+        Self::parse_with_context_inner(source, module_sources, host_functions, &mut module_stack)
+    }
+
+    fn parse_with_context_inner(
+        source: &str,
+        module_sources: &HashMap<String, String>,
+        host_functions: &[HostFunctionInfo],
         module_stack: &mut HashSet<String>,
     ) -> Self {
         let mut lexer = crate::lexer::Lexer::new(source);
@@ -174,6 +186,7 @@ impl Document {
             properties: HashMap::new(),
             exports: HashMap::new(),
             module_sources,
+            host_functions,
             module_stack,
         };
         builder.statements(&statements, &HashMap::new());
@@ -183,6 +196,11 @@ impl Document {
             bindings: builder.bindings,
             properties: builder.properties,
             exports: builder.exports,
+            host_functions: host_functions
+                .iter()
+                .cloned()
+                .map(|function| (function.name.clone(), function))
+                .collect(),
         }
     }
 
@@ -215,6 +233,7 @@ impl Document {
                 .unwrap_or(Type::Unknown);
             return Some(HoverInfo {
                 detail: format!("(property) {}: {}", name, ty.display()),
+                documentation: None,
             });
         }
 
@@ -227,12 +246,23 @@ impl Document {
                 "class" => format!("(class) {}: {}", name, binding.ty.display()),
                 kind => format!("{} {}: {}", kind, name, binding.ty.display()),
             };
-            return Some(HoverInfo { detail });
+            return Some(HoverInfo {
+                detail,
+                documentation: None,
+            });
+        }
+
+        if let Some(function) = self.host_functions.get(name) {
+            return Some(HoverInfo {
+                detail: format!("(function) {}: {}", name, function.signature()),
+                documentation: function.documentation.clone(),
+            });
         }
 
         let builtin = catalog::builtin_global_type(name).map(Type::from_builtin)?;
         Some(HoverInfo {
             detail: format!("(global) {}: {}", name, builtin.display()),
+            documentation: None,
         })
     }
 
@@ -274,6 +304,7 @@ struct Builder<'a> {
     properties: HashMap<String, Type>,
     exports: HashMap<String, Type>,
     module_sources: &'a HashMap<String, String>,
+    host_functions: &'a [HostFunctionInfo],
     module_stack: &'a mut HashSet<String>,
 }
 
@@ -468,8 +499,12 @@ impl Builder<'_> {
         if !self.module_stack.insert(module.to_string()) {
             return HashMap::new();
         }
-        let document =
-            Document::parse_with_modules_inner(&source, self.module_sources, self.module_stack);
+        let document = Document::parse_with_context_inner(
+            &source,
+            self.module_sources,
+            self.host_functions,
+            self.module_stack,
+        );
         self.module_stack.remove(module);
         document.exports
     }
@@ -917,6 +952,33 @@ mod tests {
         let source = include_str!("../../playground/public/examples/modules/store.js");
         let detail = hover(source, "createStore");
         assert_eq!(detail, "(function) createStore: (initial) => Store");
+    }
+
+    #[test]
+    fn hovers_host_function_metadata_and_documentation() {
+        let host_functions = [HostFunctionInfo {
+            name: "alert".into(),
+            params: vec![super::super::HostFunctionParameter {
+                name: "message".into(),
+                type_name: "string".into(),
+            }],
+            return_type: "void".into(),
+            documentation: Some("Displays a message in the playground.".into()),
+            async_fn: false,
+        }];
+        let document = Document::parse_with_context(
+            "alert(\"hello\");",
+            &HashMap::new(),
+            &host_functions,
+        );
+        let info = document
+            .hover(2)
+            .expect("host function should have hover information");
+        assert_eq!(info.detail, "(function) alert: (message: string) => void");
+        assert_eq!(
+            info.documentation.as_deref(),
+            Some("Displays a message in the playground.")
+        );
     }
 
     #[test]
