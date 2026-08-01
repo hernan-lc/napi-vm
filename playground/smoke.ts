@@ -109,6 +109,13 @@ check(
   String(classHover?.detail).includes("Store"),
   JSON.stringify(classHover),
 );
+const dateSource = 'const start = Date.now(); start;';
+const dateHover = vm.hover(dateSource, dateSource.indexOf("now") + 1);
+check(
+  "native hover types Date.now",
+  String(dateHover?.detail).includes("number"),
+  JSON.stringify(dateHover),
+);
 
 // 9. Identifier completion offers globals + scope decls.
 const src = "const counter = 1;\nfunction bump() {}\n";

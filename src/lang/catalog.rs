@@ -81,6 +81,36 @@ pub const KEYWORDS: &[&str] = &[
     "static",
 ];
 
+/// Type information for native globals and their native members. This is
+/// intentionally separate from the document model so the same description can
+/// later be consumed by completion, hover, diagnostics, and an LSP adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinType {
+    Unknown,
+    Number,
+    String,
+    Boolean,
+    Function { result: &'static str },
+    NativeObject(&'static str),
+}
+
+/// Static type of a built-in global. Local declarations still take precedence
+/// over this catalog in the document analyzer.
+pub fn builtin_global_type(name: &str) -> Option<BuiltinType> {
+    match name {
+        "Date" => Some(BuiltinType::NativeObject("Date")),
+        _ => None,
+    }
+}
+
+/// Static type of a member on a native global or native object.
+pub fn builtin_member_type(receiver: &str, member: &str) -> Option<BuiltinType> {
+    match (receiver, member) {
+        ("Date", "now" | "parse" | "UTC") => Some(BuiltinType::Function { result: "number" }),
+        _ => None,
+    }
+}
+
 /// Members of a named built-in global, keyed by the receiver that precedes the
 /// dot (e.g. `Math` → `["abs", "floor", …]`).
 pub fn builtin_members(receiver: &str) -> Option<&'static [&'static str]> {

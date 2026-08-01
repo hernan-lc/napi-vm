@@ -10,6 +10,8 @@ use crate::lexer::Token;
 use crate::parser::{BinOp, ClassMember, Expr, ExprOrBlock, ObjectProp, Statement, VarKind};
 use crate::span::SpannedToken;
 
+use super::catalog::{self, BuiltinType};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Any,
@@ -29,6 +31,7 @@ pub enum Type {
         name: String,
         fields: BTreeMap<String, Type>,
     },
+    NativeObject(&'static str),
     Array(Box<Type>),
     Promise(Box<Type>),
     Function {
@@ -45,6 +48,9 @@ impl Type {
             Type::Class { fields, .. } | Type::Instance { fields, .. } => {
                 fields.get(name).cloned().unwrap_or(Type::Unknown)
             }
+            Type::NativeObject(receiver) => catalog::builtin_member_type(receiver, name)
+                .map(Type::from_builtin)
+                .unwrap_or(Type::Unknown),
             Type::Array(_) if name == "length" => Type::Number,
             Type::Promise(value) if matches!(name, "then" | "catch" | "finally") => {
                 Type::Function {
@@ -92,6 +98,27 @@ impl Type {
                 format!("{{\n{}\n}}", body)
             }
             Type::Class { name, .. } | Type::Instance { name, .. } => name.clone(),
+            Type::NativeObject(name) => (*name).into(),
+        }
+    }
+
+    fn from_builtin(builtin: BuiltinType) -> Self {
+        match builtin {
+            BuiltinType::Unknown => Type::Unknown,
+            BuiltinType::Number => Type::Number,
+            BuiltinType::String => Type::String,
+            BuiltinType::Boolean => Type::Boolean,
+            BuiltinType::Function { result } => Type::Function {
+                params: vec![],
+                result: Box::new(match result {
+                    "number" => Type::Number,
+                    "string" => Type::String,
+                    "boolean" => Type::Boolean,
+                    _ => Type::Unknown,
+                }),
+                async_fn: false,
+            },
+            BuiltinType::NativeObject(name) => Type::NativeObject(name),
         }
     }
 }
@@ -154,21 +181,29 @@ impl Document {
                 .get(&receiver)
                 .map(|binding| binding.ty.property(name))
                 .or_else(|| self.properties.get(name).cloned())
+                .or_else(|| catalog::builtin_member_type(&receiver, name).map(Type::from_builtin))
                 .unwrap_or(Type::Unknown);
             return Some(HoverInfo {
                 detail: format!("(property) {}: {}", name, ty.display()),
             });
         }
 
-        let binding = self.bindings.get(name)?;
-        let detail = match &binding.kind[..] {
-            "function" => format!("(function) {}: {}", name, binding.ty.display()),
-            "parameter" => format!("(parameter) {}: {}", name, binding.ty.display()),
-            "import" => format!("(import) {}: {}", name, binding.ty.display()),
-            "class" => format!("(class) {}: {}", name, binding.ty.display()),
-            kind => format!("{} {}: {}", kind, name, binding.ty.display()),
-        };
-        Some(HoverInfo { detail })
+        let binding = self.bindings.get(name);
+        if let Some(binding) = binding {
+            let detail = match &binding.kind[..] {
+                "function" => format!("(function) {}: {}", name, binding.ty.display()),
+                "parameter" => format!("(parameter) {}: {}", name, binding.ty.display()),
+                "import" => format!("(import) {}: {}", name, binding.ty.display()),
+                "class" => format!("(class) {}: {}", name, binding.ty.display()),
+                kind => format!("{} {}: {}", kind, name, binding.ty.display()),
+            };
+            return Some(HoverInfo { detail });
+        }
+
+        let builtin = catalog::builtin_global_type(name).map(Type::from_builtin)?;
+        Some(HoverInfo {
+            detail: format!("(global) {}: {}", name, builtin.display()),
+        })
     }
 
     pub fn source(&self) -> &str {
@@ -380,7 +415,11 @@ impl Builder {
             Expr::Bool(_) => Type::Boolean,
             Expr::Null => Type::Null,
             Expr::Undefined => Type::Undefined,
-            Expr::Identifier(name) => env.get(name).cloned().unwrap_or(Type::Unknown),
+            Expr::Identifier(name) => env
+                .get(name)
+                .cloned()
+                .or_else(|| catalog::builtin_global_type(name).map(Type::from_builtin))
+                .unwrap_or(Type::Unknown),
             Expr::Object(props) => {
                 let mut fields = BTreeMap::new();
                 for prop in props {
@@ -762,5 +801,13 @@ mod tests {
         assert_eq!(hover(source, "store"), "const store: Store");
         assert!(hover(source, "read").starts_with("(property) read:"));
         assert_eq!(hover(source, "state"), "(property) state: any");
+    }
+
+    #[test]
+    fn injects_native_date_types_from_catalog() {
+        let source = "const start = Date.now(); start; Date.parse(\"2024-01-01\");";
+        assert_eq!(hover(source, "now"), "(property) now: () => number");
+        assert_eq!(hover(source, "parse"), "(property) parse: () => number");
+        assert_eq!(hover(source, "start"), "const start: number");
     }
 }
