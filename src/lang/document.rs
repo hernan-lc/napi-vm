@@ -51,7 +51,9 @@ impl Type {
             Type::NativeObject(receiver) => catalog::builtin_member_type(receiver, name)
                 .map(Type::from_builtin)
                 .unwrap_or(Type::Unknown),
-            Type::Array(_) if name == "length" => Type::Number,
+            Type::Array(_) => catalog::prototype_member_type(catalog::ProtoKind::Array, name)
+                .map(Type::from_builtin)
+                .unwrap_or(Type::Unknown),
             Type::Promise(value) if matches!(name, "then" | "catch" | "finally") => {
                 Type::Function {
                     params: vec![],
@@ -59,7 +61,12 @@ impl Type {
                     async_fn: false,
                 }
             }
-            Type::String if name == "length" => Type::Number,
+            Type::String => catalog::prototype_member_type(catalog::ProtoKind::String, name)
+                .map(Type::from_builtin)
+                .unwrap_or(Type::Unknown),
+            Type::Number => catalog::prototype_member_type(catalog::ProtoKind::Number, name)
+                .map(Type::from_builtin)
+                .unwrap_or(Type::Unknown),
             Type::Function { .. } if name == "name" => Type::String,
             _ => Type::Unknown,
         }
@@ -175,13 +182,18 @@ impl Document {
                 Token::Dot | Token::QuestionDot
             )
         {
-            let receiver = self.receiver_name(token_index - 2)?;
+            let receiver = self.receiver_name(token_index - 2);
             let ty = self
-                .bindings
-                .get(&receiver)
+                .as_ref()
+                .and_then(|receiver| self.bindings.get(receiver))
                 .map(|binding| binding.ty.property(name))
                 .or_else(|| self.properties.get(name).cloned())
-                .or_else(|| catalog::builtin_member_type(&receiver, name).map(Type::from_builtin))
+                .or_else(|| {
+                    receiver
+                        .as_deref()
+                        .and_then(|receiver| catalog::builtin_member_type(receiver, name))
+                        .map(Type::from_builtin)
+                })
                 .unwrap_or(Type::Unknown);
             return Some(HoverInfo {
                 detail: format!("(property) {}: {}", name, ty.display()),
@@ -211,7 +223,10 @@ impl Document {
     }
 
     fn token_at(&self, offset: usize) -> Option<usize> {
-        let offset = offset.min(self.source.len());
+        let mut offset = offset.min(self.source.len());
+        while offset > 0 && !self.source.is_char_boundary(offset) {
+            offset -= 1;
+        }
         let (line, col) = position_at(&self.source, offset);
         self.tokens
             .iter()
@@ -339,7 +354,25 @@ impl Builder {
             Statement::Expr(expr) => {
                 self.expr(expr, env);
             }
-            Statement::Block(body) => self.statements(body, env),
+            Statement::Block(body) => {
+                // `export <declaration>` is represented by the parser as a
+                // block containing the declaration and a trailing
+                // `ExportNamed`. Keep that declaration in the surrounding
+                // module environment so later declarations can use it:
+                // `export class Store {}; export function createStore() {
+                // return new Store(); }`.
+                let is_export_declaration = matches!(
+                    body.last(),
+                    Some(Statement::ExportNamed { source: None, .. })
+                );
+                if is_export_declaration {
+                    for statement in body {
+                        self.statement(statement, env);
+                    }
+                } else {
+                    self.statements(body, env);
+                }
+            }
             Statement::If { then, else_, .. } => {
                 self.statements(then, env);
                 if let Some(body) = else_ {
@@ -537,7 +570,11 @@ impl Builder {
                     Expr::Identifier(name) | Expr::String(name) => name,
                     _ => return Type::Unknown,
                 };
-                object_ty.property(name)
+                let property_ty = object_ty.property(name);
+                self.properties
+                    .entry(name.clone())
+                    .or_insert_with(|| property_ty.clone());
+                property_ty
             }
             Expr::ArrowFn { params, body } => {
                 let result = match body.as_ref() {
@@ -809,5 +846,39 @@ mod tests {
         assert_eq!(hover(source, "now"), "(property) now: () => number");
         assert_eq!(hover(source, "parse"), "(property) parse: () => number");
         assert_eq!(hover(source, "start"), "const start: number");
+    }
+
+    #[test]
+    fn infers_the_real_store_module_factory() {
+        let source = include_str!("../../playground/public/examples/modules/store.js");
+        let detail = hover(source, "createStore");
+        assert_eq!(detail, "(function) createStore: (initial) => Store");
+    }
+
+    #[test]
+    fn infers_string_prototype_return_types() {
+        let source = include_str!("../../playground/public/examples/modules/format.js");
+        assert_eq!(hover(source, "upper"), "(function) upper: (s) => string");
+        assert_eq!(
+            hover(source, "toUpperCase"),
+            "(property) toUpperCase: () => string"
+        );
+    }
+
+    #[test]
+    fn infers_exported_class_factory() {
+        let source =
+            "export class Store {} export function createStore(value) { return new Store(value); }";
+        assert_eq!(
+            hover(source, "createStore"),
+            "(function) createStore: (value) => Store"
+        );
+    }
+
+    #[test]
+    fn hover_never_panics_on_non_ascii_cursor_offset() {
+        let source = "// 🦀\nconst total = 1; total;";
+        // This deliberately points into the four-byte emoji.
+        assert!(Document::parse(source).hover(4).is_none());
     }
 }

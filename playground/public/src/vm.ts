@@ -39,7 +39,8 @@ export function runCode(vm: WasmVm, code: string, moduleName?: string): RunResul
   return (moduleName ? vm.run_file(moduleName, code) : vm.run(code)) as RunResult;
 }
 
-export function complete(vm: WasmVm, code: string, byteOffset: number): CompletionItem[] {
+export function complete(vm: WasmVm, code: string, codeUnitOffset: number): CompletionItem[] {
+  const byteOffset = utf8ByteOffset(code, codeUnitOffset);
   const result = vm.complete(code, byteOffset) as CompletionItem[];
   debugLog("wasm:complete", {
     byteOffset,
@@ -49,8 +50,8 @@ export function complete(vm: WasmVm, code: string, byteOffset: number): Completi
   return result;
 }
 
-export function hover(vm: WasmVm, code: string, byteOffset: number): HoverInfo | null {
-  return vm.hover(code, byteOffset) as HoverInfo | null;
+export function hover(vm: WasmVm, code: string, codeUnitOffset: number): HoverInfo | null {
+  return vm.hover(code, utf8ByteOffset(code, codeUnitOffset)) as HoverInfo | null;
 }
 
 export function diagnose(vm: WasmVm, code: string): Diagnostic[] {
@@ -59,4 +60,18 @@ export function diagnose(vm: WasmVm, code: string): Diagnostic[] {
 
 export function setLoopLimit(vm: WasmVm, n: number): void {
   vm.set_loop_limit(n);
+}
+
+// Textarea selectionStart and mouse offsets use UTF-16 code units. Rust
+// receives UTF-8 byte offsets, so convert at the WASM boundary once rather
+// than making every editor component understand two offset models.
+function utf8ByteOffset(source: string, codeUnitOffset: number): number {
+  const end = Math.max(0, Math.min(codeUnitOffset, source.length));
+  let bytes = 0;
+  for (let index = 0; index < end;) {
+    const codePoint = source.codePointAt(index) ?? 0;
+    bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+    index += codePoint > 0xffff ? 2 : 1;
+  }
+  return bytes;
 }

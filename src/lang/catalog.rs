@@ -111,6 +111,37 @@ pub fn builtin_member_type(receiver: &str, member: &str) -> Option<BuiltinType> 
     }
 }
 
+/// Type information for native prototype members. Names remain in the same
+/// catalog as completion so hover does not report an implemented method as
+/// `unknown`.
+pub fn prototype_member_type(kind: ProtoKind, member: &str) -> Option<BuiltinType> {
+    let result = match kind {
+        ProtoKind::String => match member {
+            "length" => return Some(BuiltinType::Number),
+            "toUpperCase" | "toLowerCase" | "slice" | "substring" | "charAt" | "repeat"
+            | "trim" | "replace" => "string",
+            "includes" | "startsWith" | "endsWith" => "boolean",
+            "indexOf" => "number",
+            "split" => "unknown",
+            _ => return None,
+        },
+        ProtoKind::Number => match member {
+            "toFixed" | "toString" => "string",
+            "valueOf" => "number",
+            _ => return None,
+        },
+        ProtoKind::Array => match member {
+            "length" => return Some(BuiltinType::Number),
+            _ => "unknown",
+        },
+        ProtoKind::Promise => match member {
+            "then" | "catch" | "finally" => "unknown",
+            _ => return None,
+        },
+    };
+    Some(BuiltinType::Function { result })
+}
+
 /// Members of a named built-in global, keyed by the receiver that precedes the
 /// dot (e.g. `Math` → `["abs", "floor", …]`).
 pub fn builtin_members(receiver: &str) -> Option<&'static [&'static str]> {
