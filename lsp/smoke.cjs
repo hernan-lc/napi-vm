@@ -83,7 +83,7 @@ async function main() {
 
   notification("initialized", {});
   const uri = `file://${path.join(root, "examples", "lsp-smoke.js")}`;
-  const source = "hostNow;\nimport { add } from \"math\";\nadd;\n";
+  const source = "__ipcInvoke;\nimport { add } from \"math\";\nadd;\n";
   notification("textDocument/didOpen", {
     textDocument: { uri, languageId: "javascript", version: 1, text: source },
   });
@@ -95,7 +95,7 @@ async function main() {
     params: { textDocument: { uri }, position: { line: 0, character: 7 } },
   });
   const completion = await response(2);
-  assert.ok(completion.items.some((item) => item.label === "hostNow"));
+  assert.ok(completion.items.some((item) => item.label === "__ipcInvoke"));
   assert.ok(completion.items.some((item) => item.label === "math"));
 
   send({
@@ -105,8 +105,8 @@ async function main() {
     params: { textDocument: { uri }, position: { line: 0, character: 4 } },
   });
   const hover = await response(3);
-  assert.match(hover.contents.value, /hostNow/);
-  assert.match(hover.contents.value, /\(\) => number/);
+  assert.match(hover.contents.value, /__ipcInvoke/);
+  assert.match(hover.contents.value, /command: string/);
 
   send({ jsonrpc: "2.0", id: 4, method: "shutdown", params: null });
   await response(4);

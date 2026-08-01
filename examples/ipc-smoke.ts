@@ -32,3 +32,4 @@ assert.throws(() => vm.run('ipc.invoke("missing", {});'), /Unknown IPC command/)
 ipc.detach();
 assert.equal(vm.hasGlobal("__ipcInvoke"), false);
 console.log("VmIpc smoke test passed");
+process.exit(0);

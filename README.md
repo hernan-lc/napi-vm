@@ -198,13 +198,13 @@ not retain TypeScript parameter and return annotations at runtime:
 ```
 
 `examples/hotreload.ts` publishes its VM through `VmSession`, so the normal
-workflow is simply:
+live-LSP workflow is:
 
 ```bash
-bun examples/hotreload.ts
+NAPI_VM_SESSION=1 bun examples/hotreload.ts
 ```
 
-While it is running, it creates `.napi-vm/runtime.json` as a short-lived
+When started with `NAPI_VM_SESSION=1`, it creates `.napi-vm/runtime.json` as a short-lived
 locator and serves the live function/module metadata through a local Unix
 socket (or a Windows named pipe). The LSP watches that locator, reconnects
 after a reload, and replaces its analysis database as soon as the VM exposes a
@@ -213,10 +213,10 @@ does not contain project-specific function implementations.
 
 `.napi-vm/` is deliberately ignored by Git. It is machine- and
 process-specific, so it must not be copied between Windows, macOS, and Linux
-or committed to the repository. It is deleted when the session stops. If no
-VM is running, the LSP falls back to `.napi-vm.json` or an explicit
-`--config` manifest. The checked-in `examples/hotreload.napi-vm.json` remains
-useful for static/editor-only operation.
+or committed to the repository. It is deleted when the session stops. No
+`.napi-vm.json` file is created automatically and the LSP does not load one by
+default. Static metadata is opt-in with an explicit `--config` manifest; the
+checked-in `examples/hotreload.napi-vm.json` is only an example of that mode.
 
 Run the protocol regressions with:
 
@@ -231,11 +231,12 @@ transport, and verifies live completion and hover data.
 
 The optional `zed-extension/` directory contains a thin local Zed launcher. It
 starts the Node process using Zed's bundled Node runtime and keeps JavaScript's
-normal syntax highlighting. Install it as a local extension; when a
-`VmSession` is running in the workspace, no `hotreload.napi-vm.json` copy or
-manual registration is required. Zed uses LSP for advanced language support,
-while the shared Rust service remains the source of truth for completion and
-hover. A `.napi-vm.json` manifest can still be used when the VM is stopped.
+normal syntax highlighting. Install it as a local extension, then start the
+example with `NAPI_VM_SESSION=1 bun examples/hotreload.ts` when live VM
+metadata is needed. No manifest copy or manual registration is required. Zed
+uses LSP for advanced language support, while the shared Rust service remains
+the source of truth for completion and hover. Static metadata is available
+only when the server is started with an explicit `--config` path.
 
 ### Hot reload
 
@@ -257,11 +258,11 @@ vm.removeGlobal("hostLog");
 // 4. Rebuild: new Vm, re-register modules, bus.attach(newVm), re-expose.
 ```
 
-Host-side listeners registered via the event bus survive across reloads
-because they live on the bus, not in the VM. The VM only ever sees a single
-`emit` global that is replaced atomically on each cycle, so there is never a
-duplicate-listener window. See [`examples/hotreload.ts`](examples/hotreload.ts)
-for a complete working demo (run with `bun examples/hotreload.ts`).
+Host-side IPC listeners survive across reloads because they live on the host,
+not in the VM. The VM receives a fresh `ipc` wrapper on each cycle, while
+commands and listeners remain registered in `VmIpc`. See
+[`examples/hotreload.ts`](examples/hotreload.ts) for a complete working demo
+(run with `bun examples/hotreload.ts`).
 
 `VmSession` is the reusable bridge behind that example:
 
@@ -283,6 +284,29 @@ Call `session.attach(newVm, { modules })` after a reload. Call
 `session.detach()` before tearing down the old VM and `session.stop()` during
 process shutdown. MCP is not required for this local editor connection; an MCP
 adapter can consume the same snapshot later if an AI tool also needs access.
+
+The example also includes [`examples/lib/vm-ipc.ts`](examples/lib/vm-ipc.ts),
+a small IPC-like API for deterministic VM tests:
+
+```typescript
+const ipc = new VmIpc();
+
+ipc.handle("system.ping", (payload) => ({ ok: true, payload }), {
+  params: [{ name: "payload", typeName: "unknown" }],
+  returns: "object",
+  documentation: "Round-trip test command.",
+});
+
+ipc.on("test:response", (payload) => console.log(payload));
+ipc.attach(vm, session);
+
+vm.run('ipc.send("test:response", ipc.invoke("system.ping", { ok: true }));');
+```
+
+Use `handleAsync` with `ipc.invokeAsync` and `vm.runAsync` for asynchronous
+commands. `ipc.send` is one-way VM-to-host communication, while command
+handlers and listeners remain registered on the host across hot-reloads.
+Run the focused test with `npm run ipc:smoke`.
 
 > **Event-loop note:** `vm.run()` is synchronous — it blocks the Node event
 > loop until the computation finishes. A `setTimeout(0)` scheduled before a

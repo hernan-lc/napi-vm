@@ -23,14 +23,12 @@ function argument(name) {
 
 function manifestPath() {
   const configuredPath = argument("--config");
-  return configuredPath
-    ? path.resolve(root, configuredPath)
-    : path.join(root, ".napi-vm.json");
+  return configuredPath ? path.resolve(root, configuredPath) : null;
 }
 
 function loadManifest() {
   const file = manifestPath();
-  if (!fs.existsSync(file)) return null;
+  if (!file || !fs.existsSync(file)) return null;
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 

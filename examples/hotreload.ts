@@ -17,9 +17,7 @@ import { VmSession } from "../runtime/session.cjs";
 
 const MODULES_DIR = join(import.meta.dir, "callbacks", "modules");
 const WORKSPACE = join(import.meta.dir, "..");
-
-function bootstrap(vm: Vm): void {
-  vm.run(`
+const VM_SETUP_SOURCE = `
     import { greet, farewell, announce } from "greet";
     import { add, multiply, factorial, fib, clampValue } from "math";
     import { capitalize, reverse, repeat, slugify, wordCount } from "transform";
@@ -57,8 +55,7 @@ function bootstrap(vm: Vm): void {
     function runAsyncIpcTest() {
       return ipc.invokeAsync("system.asyncPing", { origin: "vm", data: 7 });
     }
-  `);
-}
+  `;
 
 console.log("=== napi-vm IPC System ===\n");
 
@@ -88,12 +85,21 @@ ipc.handleAsync("system.asyncPing", async (payload) => ({
 
 console.log("Commands:", ipc.listCommands().join(", "));
 
+// The runtime/LSP session is opt-in. Running this example normally keeps the
+// VM entirely in-process and does not create .napi-vm/runtime.json.
+const runtimeSession = process.env.NAPI_VM_SESSION === "1"
+  ? new VmSession({ workspace: WORKSPACE })
+  : undefined;
+console.log(runtimeSession
+  ? "Live LSP runtime session: enabled"
+  : "Live LSP runtime session: disabled (set NAPI_VM_SESSION=1 to enable)");
+
 const reloader = new HotReloader({
   modulesDir: MODULES_DIR,
-  runtime: new VmSession({ workspace: WORKSPACE }),
+  ...(runtimeSession ? { runtime: runtimeSession } : {}),
   onReload: (vm, _bus, session) => {
     ipc.attach(vm, session);
-    bootstrap(vm);
+    vm.run(VM_SETUP_SOURCE);
   },
 });
 

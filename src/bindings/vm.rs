@@ -233,7 +233,7 @@ impl VM {
     /// loop is unacceptable.
     ///
     /// The caller must not call `run`/`runAsync` concurrently on the same VM.
-    #[napi]
+    #[napi(ts_return_type = "Promise<string>")]
     pub fn run_async(&mut self, env: Env, source: String) -> napi::Result<Unknown<'_>> {
         let raw_env = env.raw();
 

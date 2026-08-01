@@ -63,7 +63,7 @@ export declare class Vm {
    *
    * The caller must not call `run`/`runAsync` concurrently on the same VM.
    */
-  runAsync(source: string): unknown
+  runAsync(source: string): Promise<string>
   /**
    * Remove a previously registered module so its exports are no longer
    * importable. Essential for hot-reload: call this before re-registering
