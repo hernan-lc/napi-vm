@@ -89,6 +89,9 @@ impl Interpreter {
                     Ok(Value::Undefined)
                 }
             }
+            (Value::Promise { .. }, Value::String(k)) => {
+                Ok(crate::builtins::promise_method(k).unwrap_or(Value::Undefined))
+            }
             (Value::String(s), Value::Number(i)) => {
                 let idx = *i as usize;
                 Ok(s.chars()

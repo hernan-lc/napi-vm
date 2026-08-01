@@ -37,3 +37,10 @@ export interface ModuleDef {
   name: string;
   source: string;
 }
+
+export interface WorkspaceFile {
+  id: string;
+  name: string;
+  content: string;
+  dirty?: boolean;
+}

@@ -9,6 +9,8 @@ mod promise;
 mod string;
 mod symbol;
 
+pub(crate) use promise::promise_method;
+
 pub use array::array_method;
 pub use number::number_method;
 pub use string::string_method;

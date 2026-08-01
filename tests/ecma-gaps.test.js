@@ -359,6 +359,25 @@ test("async function returns a promise", () => {
   expect(runCode("async function f() { return 1; } typeof f();")).toBe("object");
 });
 
+test("promise instances support then chaining", () => {
+  expect(runCode(`
+    async function loadUser(id) {
+      return await Promise.resolve({ id, name: "Ada" });
+    }
+    loadUser(42).then((user) => user.name);
+    await loadUser(42).then((user) => user.id);
+  `)).toBe("42");
+});
+
+test("promise catch and finally are eager and chainable", () => {
+  expect(runCode(`
+    Promise.reject("nope")
+      .catch((reason) => reason + " handled")
+      .finally(() => 1);
+  `)).toBe("[object Promise]");
+  expect(runCode(`await Promise.reject("nope").catch((reason) => reason + " handled");`)).toBe("nope handled");
+});
+
 test("generator function", () => {
   expect(runCode("function* g() { yield 1; } typeof g;")).toBe("function");
 });

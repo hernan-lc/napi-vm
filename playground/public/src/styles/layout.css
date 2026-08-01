@@ -51,11 +51,31 @@
 .workspace-root { display: flex; align-items: center; gap: 8px; padding: 8px; color: var(--fg); font: 10px var(--font-mono); letter-spacing: .6px; }
 .chevron { color: var(--fg-muted); font-size: 14px; }
 .folder-icon { color: var(--accent); font-size: 15px; }
-.file-row, .example-row { width: 100%; border: 0; text-align: left; background: transparent; color: var(--fg-dim); border-radius: var(--radius-md); cursor: pointer; }
-.file-row { display: flex; align-items: center; gap: 8px; padding: 8px 12px 8px 30px; font: 12px var(--font-mono); }
-.file-row.active { color: var(--fg); background: var(--sidebar-active); }
-.file-row .file-state { margin-left: auto; }
+.sidebar-actions { display: inline-flex; align-items: center; gap: 3px; }
+.files-heading { padding-top: 17px; padding-bottom: 6px; }
+.file-tree { display: flex; flex-direction: column; gap: 2px; }
+.file-row { display: flex; align-items: center; width: 100%; min-height: 31px; border: 0; text-align: left; background: transparent; color: var(--fg-dim); border-radius: var(--radius-md); font: 11px var(--font-mono); }
+.file-row:hover, .file-row.active { color: var(--fg); background: var(--sidebar-active); }
+.file-open { min-width: 0; flex: 1; justify-content: flex-start; padding: 6px 7px 6px 30px; border: 0; border-radius: var(--radius-md); background: transparent; color: inherit; font: inherit; overflow: hidden; }
+.file-open:hover { background: transparent; }
+.file-name, .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-dirty, .tab-dirty { margin-left: auto; color: var(--warning); font-size: 8px; }
+.file-actions { display: none; align-items: center; gap: 1px; padding-right: 5px; }
+.file-row:hover .file-actions, .file-row.active .file-actions { display: inline-flex; }
+.file-actions button { width: 20px; height: 21px; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--fg-muted); font-size: 12px; }
+.file-actions button:hover { color: var(--fg); background: var(--bg-hover); }
+.file-rename-input { min-width: 0; flex: 1; margin: 3px 5px 3px 30px; padding: 4px 6px; border: 1px solid var(--accent); border-radius: 3px; outline: none; color: var(--fg); background: var(--bg-input); font: 11px var(--font-mono); }
 .js-icon { display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; border-radius: 3px; background: var(--js-bg); color: var(--js-fg); font: 700 8px var(--font-mono); }
+.file-open .js-icon { margin-right: 8px; }
+.tab-strip { padding-left: 0; }
+.open-tabs { display: flex; align-items: stretch; min-width: 0; overflow-x: auto; }
+.open-tabs::-webkit-scrollbar { height: 0; }
+.editor-tab { display: flex; align-items: center; gap: 8px; min-width: 140px; max-width: 220px; padding: 0 12px; border: 0; border-right: 1px solid var(--border); border-radius: 0; color: var(--fg-dim); background: var(--bg-elev); font: 11px var(--font-mono); }
+.editor-tab.active { color: var(--fg); border-top: 2px solid var(--accent); background: var(--bg); }
+.editor-tab:hover { background: var(--bg-hover); }
+.editor-tab .tab-name { min-width: 0; }
+.editor-tab .tab-close { margin-left: auto; color: var(--fg-muted); font-size: 15px; line-height: 1; }
+.editor-tab .tab-close:hover { color: var(--fg); }
 .examples-section { margin-top: 22px; }
 .example-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; margin-bottom: 3px; }
 .example-row:hover, .example-row.selected { background: var(--sidebar-active); color: var(--fg); }

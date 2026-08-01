@@ -47,6 +47,14 @@ export interface Translations {
   examplesLoop: string;
   failedModule: string;
   vmReset: string;
+  files: string;
+  newFile: string;
+  renameFile: string;
+  deleteFile: string;
+  deleteFileConfirm: string;
+  closeTab: string;
+  untitledFile: string;
+  cannotDeleteLastFile: string;
 }
 
 const en: Translations = {
@@ -96,6 +104,14 @@ const en: Translations = {
   examplesLoop: "Sandbox loop guard",
   failedModule: "failed to register module",
   vmReset: "VM state reset",
+  files: "FILES",
+  newFile: "New file",
+  renameFile: "Rename file",
+  deleteFile: "Delete file",
+  deleteFileConfirm: "Delete this file? Its contents will be removed from this browser workspace.",
+  closeTab: "Close tab",
+  untitledFile: "untitled.js",
+  cannotDeleteLastFile: "The workspace must keep one file.",
 };
 
 const es: Translations = {
@@ -145,6 +161,14 @@ const es: Translations = {
   examplesLoop: "Protección contra bucles",
   failedModule: "no se pudo registrar el módulo",
   vmReset: "Estado de la VM reiniciado",
+  files: "ARCHIVOS",
+  newFile: "Nuevo archivo",
+  renameFile: "Renombrar archivo",
+  deleteFile: "Eliminar archivo",
+  deleteFileConfirm: "¿Eliminar este archivo? Su contenido se quitará de este espacio de trabajo del navegador.",
+  closeTab: "Cerrar pestaña",
+  untitledFile: "sin-título.js",
+  cannotDeleteLastFile: "El espacio de trabajo debe conservar un archivo.",
 };
 
 const pt: Translations = {
@@ -194,6 +218,14 @@ const pt: Translations = {
   examplesLoop: "Proteção contra loops",
   failedModule: "não foi possível registrar o módulo",
   vmReset: "Estado da VM reiniciado",
+  files: "ARQUIVOS",
+  newFile: "Novo arquivo",
+  renameFile: "Renomear arquivo",
+  deleteFile: "Excluir arquivo",
+  deleteFileConfirm: "Excluir este arquivo? O conteúdo será removido deste espaço de trabalho do navegador.",
+  closeTab: "Fechar aba",
+  untitledFile: "sem-título.js",
+  cannotDeleteLastFile: "O espaço de trabalho precisa manter um arquivo.",
 };
 
 export const LOCALES: Record<Locale, Translations> = { en, es, pt };

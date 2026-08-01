@@ -5,6 +5,13 @@ export const UI = {
   wasmLabel: "WASM",
 } as const;
 
+export const WORKSPACE = {
+  storageKey: "napi-vm-playground-files",
+  defaultFileId: "playground",
+  defaultNewFileName: "untitled.js",
+  fileExtension: ".js",
+} as const;
+
 export const EXAMPLE_IDS = {
   modules: "modules",
   async: "async",
