@@ -131,8 +131,19 @@ function preview(node: InspectNode, depth = 0): string {
   return `{${entries.join(", ")}${node.entries.length > entries.length ? ", …" : ""}}`;
 }
 
+function primitiveClass(value: string): string {
+  if (/^(?:["']|`)/.test(value)) return " inspect-string";
+  if (/^-?(?:\d|\.\d|Infinity|NaN)/.test(value)) return " inspect-number";
+  if (/^(?:true|false)$/.test(value)) return " inspect-boolean";
+  if (/^(?:null|undefined)$/.test(value)) return " inspect-null";
+  if (/^\[(?:Function|function)/.test(value)) return " inspect-function";
+  return "";
+}
+
 function InspectableNode({ node }: { node: InspectNode }) {
-  if (node.kind === "primitive") return <span class="inspect-primitive">{node.value}</span>;
+  if (node.kind === "primitive") {
+    return <span class={"inspect-primitive" + primitiveClass(node.value)}>{node.value}</span>;
+  }
 
   const [expanded, setExpanded] = useState(false);
   const entries = node.kind === "object"

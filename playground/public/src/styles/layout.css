@@ -87,6 +87,14 @@
 .editor-highlight { position: absolute; z-index: 0; inset: 0; overflow: hidden; pointer-events: none; padding: var(--editor-pad-y) var(--editor-pad-x) var(--editor-pad-y) calc(54px + var(--editor-pad-x)); font: var(--editor-font-size)/var(--editor-line-height) var(--font-mono); tab-size: 2; white-space: pre; }
 .editor-highlight pre { margin: 0; padding: 0; font: inherit; white-space: pre; }
 .editor-highlight code { color: var(--fg); font: inherit; }
+.editor-highlight .tok-keyword { color: var(--tok-keyword); font-weight: 600; }
+.editor-highlight .tok-string { color: var(--tok-string); }
+.editor-highlight .tok-comment { color: var(--tok-comment); font-style: italic; }
+.editor-highlight .tok-number { color: var(--tok-number); }
+.editor-highlight .tok-operator { color: var(--tok-operator); }
+.editor-highlight .tok-function { color: var(--tok-function); }
+.editor-highlight .tok-property { color: var(--tok-property); }
+.editor-highlight .tok-punctuation { color: var(--tok-punctuation); }
 .editor-input { position: relative; z-index: 1; width: 100%; height: 100%; resize: none; border: 0; outline: none; background: transparent; color: transparent; caret-color: var(--accent); padding: var(--editor-pad-y) var(--editor-pad-x) var(--editor-pad-y) calc(54px + var(--editor-pad-x)); font: var(--editor-font-size)/var(--editor-line-height) var(--font-mono); tab-size: 2; white-space: pre; overflow: auto; }
 .editor-input::selection { background: var(--selection); color: transparent; }
 .editor-diagnostic { position: absolute; z-index: 10; right: 16px; bottom: 13px; display: flex; align-items: center; gap: 8px; max-width: min(580px, 75%); padding: 7px 10px; color: var(--danger); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); border-radius: 6px; font: 11px var(--font-mono); }

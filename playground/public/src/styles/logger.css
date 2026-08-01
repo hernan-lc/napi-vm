@@ -171,6 +171,14 @@
   word-break: break-word;
 }
 
+.log-entry.level-info .log-content { color: var(--info); }
+.log-entry.level-warn .log-content { color: var(--warning); }
+.log-entry.level-error .log-content { color: var(--danger); }
+.log-entry.level-debug .log-content,
+.log-entry.level-dir .log-content { color: var(--purple); }
+.log-entry.level-result .log-content { color: var(--success); }
+.log-entry.level-sys .log-content { color: var(--fg-dim); }
+
 .inspectable-text { white-space: pre-wrap; }
 .inspect-node { display: inline; }
 .inspect-toggle { display: inline-flex; align-items: baseline; gap: 3px; min-width: 0; padding: 0; border: 0; border-radius: 2px; color: var(--fg); background: transparent; font: inherit; vertical-align: baseline; }
@@ -182,6 +190,11 @@
 .inspect-entry { display: block; white-space: pre-wrap; }
 .inspect-key { margin-right: 5px; color: var(--info); }
 .inspect-primitive { color: var(--fg); }
+.inspect-string { color: var(--tok-string); }
+.inspect-number { color: var(--tok-number); }
+.inspect-boolean { color: var(--tok-keyword); }
+.inspect-null { color: var(--fg-muted); font-style: italic; }
+.inspect-function { color: var(--tok-function); }
 .inspect-comma { color: var(--fg-muted); }
 .inspect-closing { display: block; color: var(--fg-muted); }
 
