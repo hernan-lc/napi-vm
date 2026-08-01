@@ -17,19 +17,38 @@ import { join } from "node:path";
 import { HotReloader } from "./lib/hot-reload";
 import { VmEventBus } from "./lib/vm-event-bus";
 import { VmWorkerPool } from "./lib/vm-worker-pool";
+import { VmSession } from "../runtime/session.cjs";
 
 const MODULES_DIR = join(import.meta.dir, "callbacks", "modules");
 
 // ── Bootstrap: wire host functions + dispatch into a fresh VM ────────
 
-function bootstrap(vm: Vm, bus: VmEventBus): void {
+function bootstrap(vm: Vm, bus: VmEventBus, session?: VmSession): void {
+  const expose = session
+    ? (name: string, fn: (...args: unknown[]) => unknown, info: any) =>
+      session.exposeFunction(name, fn, info)
+    : (name: string, fn: (...args: unknown[]) => unknown, _info: any) =>
+      vm.exposeFunction(name, fn);
+
   // Expose host helpers (removeGlobal first to avoid duplicates on reload).
   for (const name of ["hostLog", "hostNow", "hostJson"]) {
-    if (vm.hasGlobal(name)) vm.removeGlobal(name);
+    if (vm.hasGlobal(name)) session ? session.removeGlobal(name) : vm.removeGlobal(name);
   }
-  vm.exposeFunction("hostLog", (...args: unknown[]) => console.log("[host]", ...args));
-  vm.exposeFunction("hostNow", () => Date.now());
-  vm.exposeFunction("hostJson", (v: unknown) => JSON.stringify(v));
+  expose("hostLog", (...args: unknown[]) => console.log("[host]", ...args), {
+    params: [{ name: "value", typeName: "unknown" }],
+    returns: "void",
+    documentation: "Writes a value to the Node host console.",
+  });
+  expose("hostNow", () => Date.now(), {
+    params: [],
+    returns: "number",
+    documentation: "Returns the current timestamp.",
+  });
+  expose("hostJson", (v: unknown) => JSON.stringify(v), {
+    params: [{ name: "value", typeName: "unknown" }],
+    returns: "string",
+    documentation: "Serializes a value using the Node host.",
+  });
 
   // The dispatch + emit bootstrap code.
   vm.run(`
@@ -72,151 +91,13 @@ function bootstrap(vm: Vm, bus: VmEventBus): void {
   `);
 }
 
-// ── Demo runners ─────────────────────────────────────────────────────
-
-const ALL_CALLS = [
-  { name: "greet", args: ["Alice"] },
-  { name: "farewell", args: ["Bob"] },
-  { name: "announce", args: ["Server is starting", "system"] },
-  { name: "add", args: [10, 20] },
-  { name: "multiply", args: [6, 7] },
-  { name: "factorial", args: [5] },
-  { name: "fib", args: [10] },
-  { name: "clampValue", args: [150, 0, 100] },
-  { name: "capitalize", args: ["hello world"] },
-  { name: "reverse", args: ["abcdef"] },
-  { name: "repeat", args: ["ha", 3] },
-  { name: "slugify", args: ["Hello World!  --  Foo Bar"] },
-  { name: "wordCount", args: ["  the quick  brown fox  "] },
-];
-
-function runAllCallbacks(vm: Vm): void {
-  console.log("--- Running All Callbacks ---\n");
-  for (const call of ALL_CALLS) {
-    const argsStr = JSON.stringify(call.args);
-    const result = vm.run(`dispatchToJson("${call.name}", ${argsStr})`);
-    console.log(`  ${call.name}(${call.args.join(", ")}) => ${result}`);
-  }
-  console.log("");
-}
-
-function printRegistry(reloader: HotReloader): void {
-  console.log("--- Callback Registry ---\n");
-  for (const [name, entry] of reloader.registry) {
-    const status = entry.status === "active" ? "+" : "x";
-    const err = entry.error ? ` (${entry.error})` : "";
-    console.log(`  [${status}] ${name} => ${entry.file}${err}`);
-  }
-  console.log("");
-}
-
-// ── Event-loop blocking demo ─────────────────────────────────────────
-// The VM interpreter is synchronous: vm.run() blocks the Node event loop
-// until the computation finishes. This demo schedules a setTimeout tick
-// *before* a heavy VM call, then shows the tick only fires after the VM
-// returns — proving the VM work starves the event loop.
-
-function demoEventLoopBlocking(vm: Vm): void {
-  console.log("--- Event-Loop Blocking Demo ---\n");
-
-  let tickFired = false;
-  const t0 = Date.now();
-
-  // Schedule a macrotask *before* the heavy VM call.
-  setTimeout(() => {
-    tickFired = true;
-    console.log(`  [event-loop] setTimeout tick fired at +${Date.now() - t0}ms`);
-  }, 0);
-
-  console.log("  [main] setTimeout(0) scheduled, starting heavy VM work...");
-
-  // heavyFib(32) is ~O(2^32) tree-recursive calls in the interpreter —
-  // enough to block for a visible duration.
-  const result = vm.run(`dispatchToJson("heavyFib", [32])`);
-  const elapsed = Date.now() - t0;
-
-  console.log(`  [main] heavyFib(32) => ${result}  (took ${elapsed}ms)`);
-  console.log(`  [main] tickFired after VM returned? ${tickFired}`);
-  console.log(
-    tickFired
-      ? "  => tick fired during VM work (unexpected in a sync VM)"
-      : "  => tick was STARVED until vm.run() returned — the VM blocks the event loop\n"
-  );
-
-  // Let the tick actually fire now that we yield.
-  setTimeout(() => {
-    console.log("  [event-loop] tick confirmed after yield — event loop resumed\n");
-  }, 10);
-}
-
-// ── Listener dedup demo ──────────────────────────────────────────────
-// Shows that bus.on/off prevents duplicate listeners across hot reloads.
-
-function demoListenerDedup(bus: VmEventBus): void {
-  console.log("--- Listener Dedup Demo ---\n");
-
-  let callCount = 0;
-  const counter = () => { callCount++; };
-
-  // Simulate two "reload cycles" on a dedicated event — each time we
-  // off() then on(), so the count never exceeds 1.
-  for (let cycle = 1; cycle <= 2; cycle++) {
-    bus.off("dedup-test", counter); // remove first (idempotent)
-    bus.on("dedup-test", counter);  // then re-add
-    console.log(`  cycle ${cycle}: listenerCount("dedup-test") = ${bus.listenerCount("dedup-test")}`);
-  }
-
-  console.log(`  => always exactly 1 listener, never duplicated\n`);
-  bus.off("dedup-test"); // clean up
-}
-
-// ── Non-blocking worker demo ─────────────────────────────────────────
-// Runs heavy VM work inside a Worker thread so the main event loop
-// stays free. Demonstrates that setTimeout ticks fire DURING VM work
-// when using workers — unlike the sync demo above.
-
-async function demoNonBlockingWorker(): Promise<void> {
-  console.log("--- Non-Blocking Worker Demo ---\n");
-
-  const pool = new VmWorkerPool({ modulesDir: MODULES_DIR });
-
-  let tickCount = 0;
-  const t0 = Date.now();
-
-  // Schedule multiple macrotasks — they should fire DURING VM work.
-  for (let i = 0; i < 5; i++) {
-    setTimeout(() => {
-      tickCount++;
-      console.log(`  [event-loop] tick #${tickCount} fired at +${Date.now() - t0}ms`);
-    }, 50);
-  }
-
-  console.log("  [main] 5 setTimeout(50) scheduled, starting heavy VM work in worker...");
-
-  // heavyFib(32) in the worker — the main event loop stays free.
-  const result = await pool.run(`dispatchToJson("heavyFib", [32])`);
-  const elapsed = Date.now() - t0;
-
-  console.log(`  [main] worker returned: ${result}  (took ${elapsed}ms)`);
-  console.log(`  [main] ticks fired during VM work: ${tickCount}`);
-  console.log(
-    tickCount > 0
-      ? "  => ticks fired DURING VM work — the event loop was NOT blocked\n"
-      : "  => no ticks fired (unexpected with worker)\n"
-  );
-
-  // Wait for any remaining ticks.
-  await new Promise(r => setTimeout(r, 200));
-  pool.terminate();
-}
-
-// ── Main ─────────────────────────────────────────────────────────────
 
 console.log("=== napi-vm Callback System ===\n");
 
 const reloader = new HotReloader({
   modulesDir: MODULES_DIR,
-  onReload: (vm, bus) => bootstrap(vm, bus),
+  runtime: new VmSession({ workspace: join(import.meta.dir, "..") }),
+  onReload: (vm, bus, session) => bootstrap(vm, bus, session),
 });
 
 const vm = reloader.start();
@@ -228,31 +109,6 @@ const unsub = bus.on("callback", (name, result) => {
   // console.log(`  [bus] ${name} =>`, result);
 });
 
-runAllCallbacks(vm);
-printRegistry(reloader);
-demoListenerDedup(bus);
-//demoEventLoopBlocking(vm);
-
-// Run async worker demo after sync demos complete.
-demoNonBlockingWorker().then(() => {
-  // ── Hot-reload watcher ───────────────────────────────────────────────
-
-  console.log("--- Hot Reload Watcher ---\n");
-  console.log(`Watching: ${MODULES_DIR}\n`);
-
-  reloader.watch();
-
-  // Re-run the demo suite after each reload.
-  const origOnReload = reloader["opts"].onReload;
-  reloader["opts"].onReload = (newVm: Vm, newBus: VmEventBus) => {
-    origOnReload(newVm, newBus);
-    runAllCallbacks(newVm);
-    printRegistry(reloader);
-    console.log("Waiting for changes...\n");
-  };
-
-  console.log("Hot reload active. Edit a module file to see changes.");
-});
 
 console.log("Press Ctrl+C to stop.\n");
 // Clean shutdown.

@@ -1,6 +1,7 @@
 import { readFileSync, watch, readdirSync, type FSWatcher } from "node:fs";
 import { join, basename } from "node:path";
 import { Vm } from "../../index";
+import { VmSession } from "../../runtime/session.cjs";
 import { VmEventBus } from "./vm-event-bus";
 
 export interface ModuleEntry {
@@ -13,7 +14,9 @@ export interface ModuleEntry {
 export interface HotReloadOptions {
   modulesDir: string;
   /** Called after every successful reload with the fresh VM + bus. */
-  onReload?: (vm: Vm, bus: VmEventBus) => void;
+  onReload?: (vm: Vm, bus: VmEventBus, session?: VmSession) => void;
+  /** Optional live runtime channel consumed by the workspace LSP. */
+  runtime?: VmSession;
   /** Debounce window in ms (default 100). */
   debounceMs?: number;
 }
@@ -40,9 +43,15 @@ export class HotReloader {
   private vm: Vm | null = null;
   private watcher: FSWatcher | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private opts: Required<HotReloadOptions>;
+  private moduleSources = new Map<string, string>();
+  private runtime: VmSession | null;
+  private opts: Omit<HotReloadOptions, "onReload" | "debounceMs"> & {
+    onReload: NonNullable<HotReloadOptions["onReload"]>;
+    debounceMs: number;
+  };
 
   constructor(opts: HotReloadOptions) {
+    this.runtime = opts.runtime || null;
     this.opts = {
       onReload: () => {},
       debounceMs: 100,
@@ -60,8 +69,12 @@ export class HotReloader {
   start(): Vm {
     const vm = this.buildVm();
     this.vm = vm;
+    this.runtime?.start();
+    this.runtime?.attach(vm, {
+      modules: [...this.moduleSources.entries()].map(([name, source]) => ({ name, source })),
+    });
     this.bus.attach(vm);
-    this.opts.onReload(vm, this.bus);
+    this.opts.onReload(vm, this.bus, this.runtime || undefined);
     return vm;
   }
 
@@ -71,6 +84,7 @@ export class HotReloader {
     this.watcher?.close();
     this.watcher = null;
     this.teardown();
+    this.runtime?.stop();
   }
 
   /** Begin watching the modules directory for changes. */
@@ -94,8 +108,11 @@ export class HotReloader {
     this.teardown();
     const vm = this.buildVm();
     this.vm = vm;
+    this.runtime?.attach(vm, {
+      modules: [...this.moduleSources.entries()].map(([name, source]) => ({ name, source })),
+    });
     this.bus.attach(vm);
-    this.opts.onReload(vm, this.bus);
+    this.opts.onReload(vm, this.bus, this.runtime || undefined);
     console.log("[hot-reload] rebuild complete\n");
   }
 
@@ -103,6 +120,7 @@ export class HotReloader {
   private teardown(): void {
     const vm = this.vm;
     if (!vm) return;
+    this.runtime?.detach();
     this.bus.detach();
     for (const name of vm.listModules()) {
       vm.removeModule(name);
@@ -114,6 +132,7 @@ export class HotReloader {
   private buildVm(): Vm {
     const vm = new Vm();
     const sources = this.readModules();
+    this.moduleSources = sources;
 
     // Deterministic load order: utils first (other modules import it).
     const sorted = [...sources.entries()].sort(([a], [b]) => {

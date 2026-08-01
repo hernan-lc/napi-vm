@@ -329,6 +329,7 @@ harness is a working template for operational isolation.
 | `npm run bench:rust` | Criterion microbenchmarks of the interpreter pipeline |
 | `npm run lsp` | Start the Node stdio language server |
 | `npm run lsp:smoke` | Verify initialize, completion, hover, and shutdown over LSP framing |
+| `npm run zed:build` | Build the Zed extension component for `wasm32-wasip2` |
 | `npm run playground:build` | Build the browser WASM package |
 | `npm run playground` | Start the Vite browser playground |
 | `bun playground/smoke.ts` | Run the headless WASM/playground regression checks |

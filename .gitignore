@@ -1,6 +1,9 @@
 /target
 /node_modules
 **/**.node
+**/target
+**.wasm
+.napi-vm/
 artifacts/
 .node-libs/
 **/**/dist

@@ -6,6 +6,10 @@ authors = ["napi-vm"]
 description = "NAPI-backed language intelligence for napi-vm playground projects."
 repository = "https://github.com/nglmercer/napi-vm"
 
+[lib]
+kind = "Rust"
+version = "0.7.0"
+
 [language_servers.napi-vm]
 name = "napi-vm LSP"
 languages = ["JavaScript"]

@@ -6,27 +6,39 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { fileURLToPath } = require("node:url");
 const { LanguageService } = require("../index.js");
+const { RuntimeClient } = require("./runtime-client.cjs");
 
-const service = new LanguageService();
+let service = new LanguageService();
 const documents = new Map();
 let root = process.cwd();
 let shutdown = false;
+let staticManifest = null;
+let runtimeSnapshot = null;
+let runtimeClient = null;
 
 function argument(name) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
 }
 
-function loadManifest() {
+function manifestPath() {
   const configuredPath = argument("--config");
-  const manifestPath = configuredPath
+  return configuredPath
     ? path.resolve(root, configuredPath)
     : path.join(root, ".napi-vm.json");
-  if (!fs.existsSync(manifestPath)) return;
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+}
+
+function loadManifest() {
+  const file = manifestPath();
+  if (!fs.existsSync(file)) return null;
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function registerManifest(target, manifest) {
+  if (!manifest) return;
 
   for (const host of manifest.hostFunctions || []) {
-    service.registerHostFunction(
+    target.registerHostFunction(
       host.name,
       host.params || [],
       host.returns || "unknown",
@@ -38,12 +50,53 @@ function loadManifest() {
   for (const module of manifest.modules || []) {
     const modulePath = path.resolve(root, module.path);
     if (fs.existsSync(modulePath)) {
-      service.registerModule(
+      target.registerModule(
         module.name,
         fs.readFileSync(modulePath, "utf8"),
       );
     }
   }
+}
+
+function registerRuntime(target, snapshot) {
+  if (!snapshot) return;
+  for (const host of snapshot.functions || []) {
+    target.registerHostFunction(
+      host.name,
+      host.params || [],
+      host.returns || "unknown",
+      host.documentation,
+      host.async || false,
+    );
+  }
+  for (const module of snapshot.modules || []) {
+    if (typeof module.source === "string") {
+      target.registerModule(module.name, module.source);
+    }
+  }
+}
+
+function rebuildService() {
+  const next = new LanguageService();
+  registerManifest(next, staticManifest);
+  registerRuntime(next, runtimeSnapshot);
+  for (const [uri, text] of documents) next.open(uri, text);
+  service = next;
+  for (const uri of documents.keys()) publishDiagnostics(uri);
+}
+
+function connectRuntime() {
+  runtimeClient?.stop();
+  runtimeClient = new RuntimeClient(root, {
+    onSnapshot(snapshot) {
+      runtimeSnapshot = snapshot;
+      rebuildService();
+    },
+    onError(error) {
+      process.stderr.write(`[napi-vm-lsp/runtime] ${error.message || error}\n`);
+    },
+  });
+  runtimeClient.start();
 }
 
 function uriPath(uri) {
@@ -117,7 +170,9 @@ function handle(message) {
   if (method === "initialize") {
     const workspace = params.rootUri || params.workspaceFolders?.[0]?.uri;
     if (workspace) root = uriPath(workspace);
-    loadManifest();
+    staticManifest = loadManifest();
+    rebuildService();
+    connectRuntime();
     return response(id, {
       capabilities: {
         textDocumentSync: 1,
@@ -131,6 +186,7 @@ function handle(message) {
   if (method === "initialized") return;
   if (method === "shutdown") {
     shutdown = true;
+    runtimeClient?.stop();
     return response(id, null);
   }
   if (method === "exit") process.exit(shutdown ? 0 : 1);
