@@ -45,6 +45,15 @@
 .sidebar-actions { display: inline-flex; align-items: center; gap: 3px; }
 .files-heading { padding-top: 17px; padding-bottom: 6px; }
 .file-tree { display: flex; flex-direction: column; gap: 2px; }
+.tree-folder { display: flex; flex-direction: column; }
+.tree-folder-row { display: flex; align-items: center; width: 100%; min-height: 29px; gap: 6px; border: 0; border-radius: var(--radius-md); color: var(--fg-dim); background: transparent; font: 11px var(--font-mono); text-align: left; }
+.tree-folder-row:hover { color: var(--fg); background: var(--sidebar-active); }
+.tree-chevron { width: 10px; color: var(--fg-muted); font-size: 14px; line-height: 1; }
+.tree-folder-row .folder-icon { font-size: 14px; }
+.tree-folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-folder-children { display: flex; flex-direction: column; }
+.tree-file .file-open { padding-top: 5px; padding-bottom: 5px; }
+.tree-file .file-name { flex: 1; }
 .file-row { display: flex; align-items: center; width: 100%; min-height: 31px; border: 0; text-align: left; background: transparent; color: var(--fg-dim); border-radius: var(--radius-md); font: 11px var(--font-mono); }
 .file-row:hover, .file-row.active { color: var(--fg); background: var(--sidebar-active); }
 .file-open { min-width: 0; flex: 1; justify-content: flex-start; padding: 6px 7px 6px 30px; border: 0; border-radius: var(--radius-md); background: transparent; color: inherit; font: inherit; overflow: hidden; }

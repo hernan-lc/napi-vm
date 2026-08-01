@@ -48,6 +48,10 @@ export interface Translations {
   closeTab: string;
   untitledFile: string;
   cannotDeleteLastFile: string;
+  resetWorkspace: string;
+  resetWorkspaceConfirm: string;
+  restoreFile: string;
+  restoreFileConfirm: string;
   readOnlyFile: string;
   openImportHint: string;
   cancel: string;
@@ -102,6 +106,10 @@ const en: Translations = {
   closeTab: "Close tab",
   untitledFile: "untitled.js",
   cannotDeleteLastFile: "The workspace must keep one file.",
+  resetWorkspace: "Reset workspace",
+  resetWorkspaceConfirm: "Restore the example files and remove user-created files from this browser workspace?",
+  restoreFile: "Restore file",
+  restoreFileConfirm: "Restore this file to its original example content?",
   readOnlyFile: "Read-only example module",
   openImportHint: "Ctrl/⌘+click an import to open it",
   cancel: "Cancel",
@@ -156,6 +164,10 @@ const es: Translations = {
   closeTab: "Cerrar pestaña",
   untitledFile: "sin-título.js",
   cannotDeleteLastFile: "El espacio de trabajo debe conservar un archivo.",
+  resetWorkspace: "Restablecer espacio de trabajo",
+  resetWorkspaceConfirm: "¿Restaurar los ejemplos y eliminar los archivos creados por el usuario de este espacio de trabajo del navegador?",
+  restoreFile: "Restaurar archivo",
+  restoreFileConfirm: "¿Restaurar este archivo a su contenido original de ejemplo?",
   readOnlyFile: "Módulo de ejemplo de solo lectura",
   openImportHint: "Ctrl/⌘+clic en un import para abrirlo",
   cancel: "Cancelar",
@@ -210,6 +222,10 @@ const pt: Translations = {
   closeTab: "Fechar aba",
   untitledFile: "sem-título.js",
   cannotDeleteLastFile: "O espaço de trabalho precisa manter um arquivo.",
+  resetWorkspace: "Redefinir espaço de trabalho",
+  resetWorkspaceConfirm: "Restaurar os exemplos e remover os arquivos criados pelo usuário deste espaço de trabalho do navegador?",
+  restoreFile: "Restaurar arquivo",
+  restoreFileConfirm: "Restaurar este arquivo ao conteúdo original de exemplo?",
   readOnlyFile: "Módulo de exemplo somente leitura",
   openImportHint: "Ctrl/⌘+clique em um import para abrir",
   cancel: "Cancelar",

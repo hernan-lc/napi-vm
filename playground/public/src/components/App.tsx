@@ -4,6 +4,7 @@ import { Editor } from "./Editor.tsx";
 import { CompletionPopup } from "./CompletionPopup.tsx";
 import { Logger } from "./logger/Logger.tsx";
 import { Dialog } from "./Dialog.tsx";
+import { Explorer } from "./Explorer.tsx";
 import { useVm } from "../hooks/useVm.ts";
 import { useCompletion } from "../hooks/useCompletion.ts";
 import { useResizable } from "../hooks/useResizable.ts";
@@ -84,7 +85,7 @@ export function App() {
   const { t, locale, setLocale } = useI18n();
   const { theme, toggleTheme } = useTheme();
   const { ratio, containerRef, handlePointerDown } = useResizable();
-  const { getVm, status, entries, diagnostic, loopLimit, run, reset, clearEntries, updateLoopLimit, refreshDiagnostic } = useVm(t);
+  const { getVm, status, entries, diagnostic, loopLimit, run, reset: resetVm, clearEntries, updateLoopLimit, refreshDiagnostic } = useVm(t);
 
   const [files, setFiles] = useState<WorkspaceFile[]>(loadWorkspace);
   const [activeFileId, setActiveFileId] = useState<string>(WORKSPACE.defaultFileId);
@@ -211,6 +212,41 @@ export function App() {
     compClose();
   }, [activeFileId, compClose, files]);
 
+  const restoreFile = useCallback((file: WorkspaceFile, event: Event) => {
+    event.stopPropagation();
+    const original = DEFAULT_FILES.find((item) => item.id === file.id);
+    if (!original || file.readonly) return;
+    setDialog({
+      title: t.restoreFile,
+      message: t.restoreFileConfirm,
+      confirmLabel: t.restoreFile,
+      cancelLabel: t.cancel,
+      onConfirm: () => {
+        setFiles((current) => current.map((item) => item.id === file.id ? { ...original, dirty: false } : item));
+        setDialog(null);
+      },
+    });
+  }, [t.cancel, t.restoreFile, t.restoreFileConfirm]);
+
+  const resetWorkspace = useCallback(() => {
+    setDialog({
+      title: t.resetWorkspace,
+      message: t.resetWorkspaceConfirm,
+      confirmLabel: t.resetWorkspace,
+      cancelLabel: t.cancel,
+      danger: true,
+      onConfirm: () => {
+        setFiles(DEFAULT_FILES.map((file) => ({ ...file })));
+        setActiveFileId(WORKSPACE.defaultFileId);
+        setOpenTabs([WORKSPACE.defaultFileId]);
+        setRenamingId(null);
+        setCursor({ line: 1, column: 1 });
+        compClose();
+        setDialog(null);
+      },
+    });
+  }, [compClose, t.cancel, t.resetWorkspace, t.resetWorkspaceConfirm]);
+
   const openImport = useCallback((specifier: string) => {
     if (!activeFile) return;
     const resolved = resolveWorkspaceImport(activeFile.name, specifier);
@@ -270,7 +306,7 @@ export function App() {
         locale={locale}
         t={t}
         onRun={handleRun}
-        onReset={reset}
+        onReset={resetVm}
         onClear={clearEntries}
         onLoopLimitChange={updateLoopLimit}
         onToggleTheme={toggleTheme}
@@ -279,46 +315,23 @@ export function App() {
 
       <div class="workspace-shell">
         <aside class="sidebar">
-          <div class="sidebar-section files-section">
-            <div class="sidebar-heading">
-              <span>{t.explorer}</span>
-              <span class="sidebar-actions">
-                <button class="sidebar-action" onClick={createFile} title={t.newFile} aria-label={t.newFile}>＋</button>
-              </span>
-            </div>
-            <div class="workspace-root"><span class="chevron">⌄</span><span class="folder-icon">▱</span><span>{t.workspace}</span></div>
-            <div class="sidebar-heading files-heading"><span>{t.files}</span><span class="count-badge">{files.length}</span></div>
-            <div class="file-tree">
-              {files.map((file) => (
-                <div key={file.id} class={"file-row" + (activeFile?.id === file.id ? " active" : "")}>
-                  {renamingId === file.id ? (
-                    <input
-                      ref={renameRef}
-                      class="file-rename-input"
-                      value={renameValue}
-                      aria-label={t.renameFile}
-                      onInput={(event) => setRenameValue((event.target as HTMLInputElement).value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") commitRename();
-                        if (event.key === "Escape") setRenamingId(null);
-                      }}
-                      onBlur={commitRename}
-                    />
-                  ) : (
-                    <button class="file-open" onClick={() => openFile(file.id)}>
-                      <span class="js-icon">JS</span><span class="file-name">{file.name}</span>{file.readonly && <span class="file-readonly" title={t.readOnlyFile}>•</span>}{file.dirty && <span class="file-dirty">●</span>}
-                    </button>
-                  )}
-                  {renamingId !== file.id && !file.readonly && (
-                    <span class="file-actions">
-                      <button onClick={(event) => beginRename(file, event)} title={t.renameFile} aria-label={t.renameFile}>✎</button>
-                      <button onClick={(event) => deleteFile(file, event)} title={t.deleteFile} aria-label={t.deleteFile}>×</button>
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
+          <Explorer
+            files={files}
+            activeFileId={activeFile?.id ?? ""}
+            renamingId={renamingId}
+            renameValue={renameValue}
+            renameRef={renameRef}
+            t={t}
+            onCreateFile={createFile}
+            onOpenFile={openFile}
+            onBeginRename={beginRename}
+            onDeleteFile={deleteFile}
+            onResetFile={restoreFile}
+            onCommitRename={commitRename}
+            onRenameValueChange={setRenameValue}
+            onCancelRename={() => setRenamingId(null)}
+            onResetWorkspace={resetWorkspace}
+          />
 
         </aside>
 
