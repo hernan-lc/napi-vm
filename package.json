@@ -21,6 +21,8 @@
     "bench:rust": "cargo bench",
     "lsp": "node lsp/server.cjs",
     "lsp:smoke": "node lsp/smoke.cjs",
+    "lsp:runtime-smoke": "node lsp/runtime-smoke.cjs",
+    "ipc:smoke": "bun examples/ipc-smoke.ts",
     "runtime:smoke": "node runtime/smoke.cjs",
     "zed:build": "cargo build --manifest-path zed-extension/Cargo.toml --target wasm32-wasip2 --release",
     "playground:build": "wasm-pack build --target web --out-dir playground/pkg --release -- --no-default-features --features wasm",

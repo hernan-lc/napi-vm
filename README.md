@@ -170,17 +170,18 @@ console.log(service.hover("file:///main.js", 3));
 ```
 
 For editor clients, `lsp/server.cjs` is a small stdio JSON-RPC adapter around
-that class. It loads host functions and registered module exports from a JSON
-manifest; it never executes the example file just to produce autocomplete.
-This keeps runtime callbacks and static editor metadata separate:
+that class. It can use a checked-in JSON manifest as a static fallback, but it
+also discovers a live `VmSession` automatically from the workspace. This lets
+autocomplete and hover describe the VM that is actually running, without
+executing the editor file just to infer types:
 
 ```bash
 npm run build
 node lsp/server.cjs --config examples/hotreload.napi-vm.json
 ```
 
-The manifest is intentionally explicit because JavaScript functions do not
-retain TypeScript parameter and return annotations at runtime:
+The static manifest is intentionally explicit because JavaScript functions do
+not retain TypeScript parameter and return annotations at runtime:
 
 ```json
 {
@@ -196,16 +197,45 @@ retain TypeScript parameter and return annotations at runtime:
 }
 ```
 
-`examples/hotreload.ts` remains an execution and hot-reload demo. The companion
-`examples/hotreload.napi-vm.json` is the editor contract used by the LSP.
-Run the protocol regression test with `npm run lsp:smoke`.
+`examples/hotreload.ts` publishes its VM through `VmSession`, so the normal
+workflow is simply:
+
+```bash
+bun examples/hotreload.ts
+```
+
+While it is running, it creates `.napi-vm/runtime.json` as a short-lived
+locator and serves the live function/module metadata through a local Unix
+socket (or a Windows named pipe). The LSP watches that locator, reconnects
+after a reload, and replaces its analysis database as soon as the VM exposes a
+new function or module. The socket carries the actual metadata; the JSON file
+does not contain project-specific function implementations.
+
+`.napi-vm/` is deliberately ignored by Git. It is machine- and
+process-specific, so it must not be copied between Windows, macOS, and Linux
+or committed to the repository. It is deleted when the session stops. If no
+VM is running, the LSP falls back to `.napi-vm.json` or an explicit
+`--config` manifest. The checked-in `examples/hotreload.napi-vm.json` remains
+useful for static/editor-only operation.
+
+Run the protocol regressions with:
+
+```bash
+npm run lsp:smoke
+npm run runtime:smoke
+npm run lsp:runtime-smoke
+```
+
+`lsp:runtime-smoke` starts a real `VmSession`, connects the LSP over the local
+transport, and verifies live completion and hover data.
 
 The optional `zed-extension/` directory contains a thin local Zed launcher. It
 starts the Node process using Zed's bundled Node runtime and keeps JavaScript's
-normal syntax highlighting. Install it as a local extension, then put a
-`.napi-vm.json` manifest in the workspace root. Zed uses LSP for advanced
-language support, while the shared Rust service remains the source of truth for
-completion and hover.
+normal syntax highlighting. Install it as a local extension; when a
+`VmSession` is running in the workspace, no `hotreload.napi-vm.json` copy or
+manual registration is required. Zed uses LSP for advanced language support,
+while the shared Rust service remains the source of truth for completion and
+hover. A `.napi-vm.json` manifest can still be used when the VM is stopped.
 
 ### Hot reload
 
@@ -232,6 +262,27 @@ because they live on the bus, not in the VM. The VM only ever sees a single
 `emit` global that is replaced atomically on each cycle, so there is never a
 duplicate-listener window. See [`examples/hotreload.ts`](examples/hotreload.ts)
 for a complete working demo (run with `bun examples/hotreload.ts`).
+
+`VmSession` is the reusable bridge behind that example:
+
+```javascript
+const { Vm } = require("./index.js");
+const { VmSession } = require("./runtime/session.cjs");
+
+const vm = new Vm();
+const session = new VmSession({ workspace: process.cwd(), vm });
+session.start();
+session.exposeFunction("alert", (message) => console.log(message), {
+  params: [{ name: "message", typeName: "string" }],
+  returns: "void",
+  documentation: "Writes a message to the host console.",
+});
+```
+
+Call `session.attach(newVm, { modules })` after a reload. Call
+`session.detach()` before tearing down the old VM and `session.stop()` during
+process shutdown. MCP is not required for this local editor connection; an MCP
+adapter can consume the same snapshot later if an AI tool also needs access.
 
 > **Event-loop note:** `vm.run()` is synchronous — it blocks the Node event
 > loop until the computation finishes. A `setTimeout(0)` scheduled before a
