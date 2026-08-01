@@ -9,30 +9,9 @@ import { useCompletion } from "../hooks/useCompletion.ts";
 import { useResizable } from "../hooks/useResizable.ts";
 import { useI18n } from "../i18n/useI18n.ts";
 import { useTheme } from "../hooks/useTheme.ts";
-import { SAMPLE } from "../examples.ts";
+import { ASYNC_SAMPLE, LOOP_SAMPLE, SAMPLE } from "../examples.ts";
 import { COMPLETION, EDITOR, RESIZER, UI, WORKSPACE } from "../constants.ts";
 import type { WorkspaceFile } from "../types.ts";
-
-const ASYNC_SAMPLE = `async function loadUser(id) {
-  const response = await Promise.resolve({ id, name: "Ada" });
-  return response;
-}
-
-loadUser(42).then((user) => {
-  console.log("loaded", user.name);
-  user;
-});`;
-
-const LOOP_SAMPLE = `const start = Date.now();
-let total = 0;
-
-for (let i = 0; i < 1000; i++) {
-  total += i;
-}
-
-console.log("sum", total);
-console.log("elapsed", Date.now() - start, "ms");
-total;`;
 
 const SEED_FILES: WorkspaceFile[] = [
   { id: "playground", name: "playground.js", content: SAMPLE },
