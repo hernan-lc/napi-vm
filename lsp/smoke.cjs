@@ -3,14 +3,30 @@
 // Protocol-level regression test for the Node LSP adapter. It exercises the
 // same stdio framing used by an editor instead of calling the service directly.
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
+const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "napi-vm-lsp-config-"));
+const configPath = path.join(configDir, "manifest.json");
+fs.writeFileSync(configPath, JSON.stringify({
+  hostFunctions: [{
+    name: "__ipcInvoke",
+    params: [
+      { name: "command", typeName: "string" },
+      { name: "payload", typeName: "unknown" },
+    ],
+    returns: "unknown",
+    documentation: "Invokes a registered host command.",
+  }],
+  modules: [{ name: "math", path: "examples/callbacks/modules/math.js" }],
+}), "utf8");
 const server = spawn(process.execPath, [
   path.join(__dirname, "server.cjs"),
   "--config",
-  path.join(root, "examples", "hotreload.napi-vm.json"),
+  configPath,
 ], { cwd: root, stdio: ["pipe", "pipe", "pipe"] });
 
 let input = Buffer.alloc(0);
@@ -116,11 +132,13 @@ async function main() {
       ? resolve()
       : reject(new Error(`LSP exited with ${code}. stderr: ${stderr}`)));
   });
+  fs.rmSync(configDir, { recursive: true, force: true });
   console.log("LSP smoke test passed");
 }
 
 main().catch((error) => {
   server.kill();
+  fs.rmSync(configDir, { recursive: true, force: true });
   console.error(error.stack || error);
   process.exitCode = 1;
 });

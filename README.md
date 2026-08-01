@@ -177,7 +177,7 @@ executing the editor file just to infer types:
 
 ```bash
 npm run build
-node lsp/server.cjs --config examples/hotreload.napi-vm.json
+node lsp/server.cjs --config ./path/to/manifest.json
 ```
 
 The static manifest is intentionally explicit because JavaScript functions do
@@ -197,7 +197,7 @@ not retain TypeScript parameter and return annotations at runtime:
 }
 ```
 
-`examples/hotreload.ts` publishes its VM through `VmSession`, so the normal
+`examples/hotreload.ts` can publish its VM through `VmSession`, so the
 live-LSP workflow is:
 
 ```bash
@@ -215,8 +215,8 @@ does not contain project-specific function implementations.
 process-specific, so it must not be copied between Windows, macOS, and Linux
 or committed to the repository. It is deleted when the session stops. No
 `.napi-vm.json` file is created automatically and the LSP does not load one by
-default. Static metadata is opt-in with an explicit `--config` manifest; the
-checked-in `examples/hotreload.napi-vm.json` is only an example of that mode.
+default. Static metadata is opt-in with an explicit `--config` manifest
+provided by the embedding application.
 
 Run the protocol regressions with:
 
