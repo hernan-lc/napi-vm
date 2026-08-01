@@ -6,7 +6,6 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 button.primary { color: #fff; border-color: var(--accent); background: var(--accent); font-weight: 650; }
 button.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); color: #fff; }
 .run-button { padding-left: 11px; }
-.button-play { font-size: 9px; }
 kbd { margin-left: 6px; padding: 2px 4px; border: 1px solid rgba(255,255,255,.3); border-radius: 3px; color: rgba(255,255,255,.72); font: 9px var(--font-mono); }
 .toolbar-button { background: transparent; border-color: transparent; }
 .toolbar-button:hover:not(:disabled) { background: var(--bg-hover); }
@@ -34,3 +33,11 @@ select:hover { border-color: var(--border-focus); }
 .kind.class { color: var(--warning); }
 .kind.module { color: var(--accent); }
 .kind.exposed { color: var(--success); }
+
+.dialog-backdrop { position: fixed; z-index: 200; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(0, 0, 0, .48); }
+.dialog { width: min(360px, 100%); padding: 20px; border: 1px solid var(--border-focus); border-radius: 8px; background: var(--bg-elev-2); box-shadow: var(--popup-shadow); }
+.dialog h2 { margin: 0; color: var(--fg); font-size: 14px; font-weight: 650; }
+.dialog p { margin: 10px 0 20px; color: var(--fg-dim); font-size: 12px; line-height: 1.55; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.dialog-actions button.danger { color: #fff; border-color: var(--danger); background: var(--danger); }
+.dialog-actions button.danger:hover:not(:disabled) { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 85%, #000); }

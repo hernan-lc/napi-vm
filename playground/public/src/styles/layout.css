@@ -19,17 +19,8 @@
 }
 
 .brand { display: flex; align-items: center; gap: 9px; font-size: 14px; white-space: nowrap; }
-.brand-mark { display: inline-flex; align-items: flex-end; gap: 2px; height: 18px; width: 18px; }
-.brand-mark span { display: block; width: 4px; border-radius: 2px; background: var(--accent); }
-.brand-mark span:nth-child(1) { height: 9px; opacity: .55; }
-.brand-mark span:nth-child(2) { height: 14px; opacity: .8; }
-.brand-mark span:nth-child(3) { height: 18px; }
 .brand-name { color: var(--fg); font-weight: 700; letter-spacing: -.3px; }
 .brand-sub { color: var(--fg-muted); font-family: var(--font-mono); font-size: 12px; }
-.toolbar-separator { width: 1px; height: 24px; background: var(--border); margin: 0 4px; }
-.toolbar-file { display: flex; align-items: center; gap: 8px; color: var(--fg-dim); font: 12px var(--font-mono); }
-.file-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
-.file-state { color: var(--warning); font-size: 17px; line-height: 0; }
 .controls { display: flex; align-items: center; gap: 6px; margin-left: 8px; }
 .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 
@@ -76,28 +67,10 @@
 .editor-tab .tab-name { min-width: 0; }
 .editor-tab .tab-close { margin-left: auto; color: var(--fg-muted); font-size: 15px; line-height: 1; }
 .editor-tab .tab-close:hover { color: var(--fg); }
-.examples-section { margin-top: 22px; }
-.example-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; margin-bottom: 3px; }
-.example-row:hover, .example-row.selected { background: var(--sidebar-active); color: var(--fg); }
-.example-icon { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 6px; color: var(--purple); background: var(--bg-elev); font-size: 12px; }
-.example-row:nth-child(3) .example-icon { color: var(--orange); }
-.example-row:nth-child(4) .example-icon { color: var(--success); }
-.example-row strong, .example-row small { display: block; }
-.example-row strong { color: inherit; font: 11px var(--font-mono); }
-.example-row small { margin-top: 2px; color: var(--fg-muted); font-size: 10px; }
-.sidebar-footer { margin-top: auto; padding: 16px 14px; border-top: 1px solid var(--border); }
-.feature-note { display: flex; gap: 9px; padding: 10px; border: 1px solid var(--border); background: var(--bg-elev); border-radius: 7px; }
-.feature-note strong, .feature-note small { display: block; }
-.feature-note strong { color: var(--fg-dim); font-size: 10.5px; }
-.feature-note small { margin-top: 3px; color: var(--fg-muted); font-size: 9.5px; line-height: 1.35; }
-.spark { color: var(--accent); font-size: 14px; }
 
 .layout { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .editor-panel { position: relative; min-height: 0; display: flex; flex-direction: column; }
 .editor-panel-head { height: 42px; display: flex; align-items: stretch; justify-content: space-between; border-bottom: 1px solid var(--border); background: var(--bg-elev); flex-shrink: 0; }
-.editor-tab { display: flex; align-items: center; gap: 8px; min-width: 150px; padding: 0 16px; border-right: 1px solid var(--border); color: var(--fg-dim); font: 11px var(--font-mono); }
-.editor-tab.active { color: var(--fg); border-top: 2px solid var(--accent); background: var(--bg); }
-.tab-close { margin-left: auto; color: var(--fg-muted); font-size: 15px; }
 .editor-head-meta { display: flex; align-items: center; gap: 14px; padding: 0 16px; color: var(--fg-muted); font: 10px var(--font-mono); }
 .language-pill { color: var(--accent); }
 .editor-hints { display: flex; align-items: center; justify-content: space-between; height: 31px; padding: 0 18px 0 16px; border-bottom: 1px solid var(--border); color: var(--fg-muted); background: color-mix(in srgb, var(--bg) 88%, var(--accent-soft)); font: 10.5px var(--font-mono); flex-shrink: 0; }
@@ -133,12 +106,10 @@
 .divider-label, .divider-count { position: absolute; color: var(--fg-muted); font: 10px var(--font-mono); text-transform: uppercase; letter-spacing: .8px; pointer-events: none; }
 .divider-label { left: 16px; }
 .divider-count { right: 16px; text-transform: none; letter-spacing: 0; }
-.console-icon { color: var(--accent); font-weight: 700; }
 
 @media (max-width: 820px) {
   .sidebar { width: 190px; }
-  .toolbar-file, .editor-head-meta, .hint-actions, .button-label { display: none; }
-  .toolbar-separator { display: none; }
+  .editor-head-meta, .hint-actions { display: none; }
 }
 @media (max-width: 620px) {
   .sidebar { display: none; }

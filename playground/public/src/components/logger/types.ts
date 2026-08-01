@@ -17,6 +17,8 @@ export interface LogEntry {
   text: string;
   timestamp: number;
   html?: string;
+  structuredText?: string;
+  durationMs?: string;
 }
 
 export interface LoggerFilter {

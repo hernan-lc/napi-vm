@@ -3,6 +3,7 @@ import { Toolbar } from "./Toolbar.tsx";
 import { Editor } from "./Editor.tsx";
 import { CompletionPopup } from "./CompletionPopup.tsx";
 import { Logger } from "./logger/Logger.tsx";
+import { Dialog } from "./Dialog.tsx";
 import { useVm } from "../hooks/useVm.ts";
 import { useCompletion } from "../hooks/useCompletion.ts";
 import { useResizable } from "../hooks/useResizable.ts";
@@ -10,7 +11,6 @@ import { useI18n } from "../i18n/useI18n.ts";
 import { useTheme } from "../hooks/useTheme.ts";
 import { SAMPLE } from "../examples.ts";
 import { COMPLETION, EDITOR, RESIZER, UI, WORKSPACE } from "../constants.ts";
-import type { Translations } from "../i18n/translations.ts";
 import type { WorkspaceFile } from "../types.ts";
 
 const ASYNC_SAMPLE = `async function loadUser(id) {
@@ -78,6 +78,15 @@ function nextFileId(files: WorkspaceFile[]): string {
   return `file-${index}`;
 }
 
+interface DialogState {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel?: string;
+  danger?: boolean;
+  onConfirm: () => void;
+}
+
 export function App() {
   const { t, locale, setLocale } = useI18n();
   const { theme, toggleTheme } = useTheme();
@@ -90,6 +99,7 @@ export function App() {
   const [cursor, setCursor] = useState({ line: 1, column: 1 });
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [dialog, setDialog] = useState<DialogState | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const renameRef = useRef<HTMLInputElement>(null);
@@ -184,17 +194,11 @@ export function App() {
     setRenamingId(null);
   }, [renameValue, renamingId]);
 
-  const deleteFile = useCallback((file: WorkspaceFile, event: Event) => {
-    event.stopPropagation();
-    if (files.length <= 1) {
-      window.alert(t.cannotDeleteLastFile);
-      return;
-    }
-    if (!window.confirm(t.deleteFileConfirm)) return;
-    const nextFiles = files.filter((item) => item.id !== file.id);
+  const removeFile = useCallback((id: string) => {
+    const nextFiles = files.filter((item) => item.id !== id);
     setFiles(nextFiles);
-    setOpenTabs((tabs) => tabs.filter((id) => id !== file.id));
-    if (activeFileId === file.id) {
+    setOpenTabs((tabs) => tabs.filter((tabId) => tabId !== id));
+    if (activeFileId === id) {
       const next = nextFiles[0];
       if (next) {
         setActiveFileId(next.id);
@@ -203,7 +207,31 @@ export function App() {
     }
     setRenamingId(null);
     compClose();
-  }, [activeFileId, compClose, files, t.cannotDeleteLastFile, t.deleteFileConfirm]);
+  }, [activeFileId, compClose, files]);
+
+  const deleteFile = useCallback((file: WorkspaceFile, event: Event) => {
+    event.stopPropagation();
+    if (files.length <= 1) {
+      setDialog({
+        title: t.cannotDeleteLastFile,
+        message: t.cannotDeleteLastFile,
+        confirmLabel: t.ok,
+        onConfirm: () => setDialog(null),
+      });
+      return;
+    }
+    setDialog({
+      title: t.deleteFile,
+      message: t.deleteFileConfirm,
+      confirmLabel: t.deleteFile,
+      cancelLabel: t.cancel,
+      danger: true,
+      onConfirm: () => {
+        removeFile(file.id);
+        setDialog(null);
+      },
+    });
+  }, [files.length, removeFile, t.cancel, t.cannotDeleteLastFile, t.deleteFile, t.deleteFileConfirm, t.ok]);
 
   const closeTab = useCallback((id: string, event: Event) => {
     event.stopPropagation();
@@ -245,7 +273,6 @@ export function App() {
               <span>{t.explorer}</span>
               <span class="sidebar-actions">
                 <button class="sidebar-action" onClick={createFile} title={t.newFile} aria-label={t.newFile}>＋</button>
-                <button class="sidebar-action" title={t.moreActions} aria-label={t.moreActions}>•••</button>
               </span>
             </div>
             <div class="workspace-root"><span class="chevron">⌄</span><span class="folder-icon">▱</span><span>{t.workspace}</span></div>
@@ -282,9 +309,6 @@ export function App() {
             </div>
           </div>
 
-          <div class="sidebar-footer">
-            <div class="feature-note"><span class="spark">✦</span><div><strong>{t.languageTools}</strong><small>{t.languageToolsDescription}</small></div></div>
-          </div>
         </aside>
 
         <main class="layout" ref={containerRef}>
@@ -351,12 +375,23 @@ export function App() {
           </section>
 
           <div class="divider-resizable" onPointerDown={handlePointerDown}>
-            <span class="divider-label"><span class="console-icon">›_</span> {t.console}</span>
+            <span class="divider-label">{t.console}</span>
             <span class="divider-count">{entries.length} {entries.length === 1 ? t.entry : t.entries}</span>
           </div>
           <Logger entries={entries} t={t} />
         </main>
       </div>
+      {dialog && (
+        <Dialog
+          title={dialog.title}
+          message={dialog.message}
+          confirmLabel={dialog.confirmLabel}
+          cancelLabel={dialog.cancelLabel}
+          danger={dialog.danger}
+          onConfirm={dialog.onConfirm}
+          onCancel={() => setDialog(null)}
+        />
+      )}
     </div>
   );
 }

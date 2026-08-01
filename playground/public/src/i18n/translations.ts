@@ -21,11 +21,7 @@ export interface Translations {
   alert: string;
   diagWarning: string;
   explorer: string;
-  examples: string;
-  moreActions: string;
   workspace: string;
-  languageTools: string;
-  languageToolsDescription: string;
   discardVmState: string;
   clearConsole: string;
   fileName: string;
@@ -42,9 +38,6 @@ export interface Translations {
   expand: string;
   collapse: string;
   noMatchingEntries: string;
-  examplesModules: string;
-  examplesAsync: string;
-  examplesLoop: string;
   failedModule: string;
   vmReset: string;
   files: string;
@@ -55,6 +48,8 @@ export interface Translations {
   closeTab: string;
   untitledFile: string;
   cannotDeleteLastFile: string;
+  cancel: string;
+  ok: string;
 }
 
 const en: Translations = {
@@ -78,11 +73,7 @@ const en: Translations = {
   alert: "alert",
   diagWarning: "⚠",
   explorer: "EXPLORER",
-  examples: "EXAMPLES",
-  moreActions: "More actions",
   workspace: "PLAYGROUND",
-  languageTools: "Language tools",
-  languageToolsDescription: "Rust-powered completion & diagnostics",
   discardVmState: "Discard all VM state",
   clearConsole: "Clear the console",
   fileName: "playground.js",
@@ -99,9 +90,6 @@ const en: Translations = {
   expand: "Expand",
   collapse: "Collapse",
   noMatchingEntries: "No matching entries",
-  examplesModules: "Modules & imports",
-  examplesAsync: "Promises & async",
-  examplesLoop: "Sandbox loop guard",
   failedModule: "failed to register module",
   vmReset: "VM state reset",
   files: "FILES",
@@ -112,6 +100,8 @@ const en: Translations = {
   closeTab: "Close tab",
   untitledFile: "untitled.js",
   cannotDeleteLastFile: "The workspace must keep one file.",
+  cancel: "Cancel",
+  ok: "OK",
 };
 
 const es: Translations = {
@@ -135,11 +125,7 @@ const es: Translations = {
   alert: "alerta",
   diagWarning: "⚠",
   explorer: "EXPLORADOR",
-  examples: "EJEMPLOS",
-  moreActions: "Más acciones",
   workspace: "PLAYGROUND",
-  languageTools: "Herramientas de lenguaje",
-  languageToolsDescription: "Completado y diagnósticos con Rust",
   discardVmState: "Descartar todo el estado de la VM",
   clearConsole: "Limpiar la consola",
   fileName: "playground.js",
@@ -156,9 +142,6 @@ const es: Translations = {
   expand: "Expandir",
   collapse: "Contraer",
   noMatchingEntries: "No hay entradas coincidentes",
-  examplesModules: "Módulos e imports",
-  examplesAsync: "Promesas y async",
-  examplesLoop: "Protección contra bucles",
   failedModule: "no se pudo registrar el módulo",
   vmReset: "Estado de la VM reiniciado",
   files: "ARCHIVOS",
@@ -169,6 +152,8 @@ const es: Translations = {
   closeTab: "Cerrar pestaña",
   untitledFile: "sin-título.js",
   cannotDeleteLastFile: "El espacio de trabajo debe conservar un archivo.",
+  cancel: "Cancelar",
+  ok: "Aceptar",
 };
 
 const pt: Translations = {
@@ -192,11 +177,7 @@ const pt: Translations = {
   alert: "alerta",
   diagWarning: "⚠",
   explorer: "EXPLORADOR",
-  examples: "EXEMPLOS",
-  moreActions: "Mais ações",
   workspace: "PLAYGROUND",
-  languageTools: "Ferramentas de linguagem",
-  languageToolsDescription: "Completação e diagnósticos com Rust",
   discardVmState: "Descartar todo o estado da VM",
   clearConsole: "Limpar o console",
   fileName: "playground.js",
@@ -213,9 +194,6 @@ const pt: Translations = {
   expand: "Expandir",
   collapse: "Recolher",
   noMatchingEntries: "Nenhuma entrada correspondente",
-  examplesModules: "Módulos e imports",
-  examplesAsync: "Promessas e async",
-  examplesLoop: "Proteção contra loops",
   failedModule: "não foi possível registrar o módulo",
   vmReset: "Estado da VM reiniciado",
   files: "ARQUIVOS",
@@ -226,6 +204,8 @@ const pt: Translations = {
   closeTab: "Fechar aba",
   untitledFile: "sem-título.js",
   cannotDeleteLastFile: "O espaço de trabalho precisa manter um arquivo.",
+  cancel: "Cancelar",
+  ok: "OK",
 };
 
 export const LOCALES: Record<Locale, Translations> = { en, es, pt };

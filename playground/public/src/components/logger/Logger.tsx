@@ -2,6 +2,7 @@ import { useMemo, useState } from "preact/hooks";
 import type { Translations } from "../../i18n/translations.ts";
 import type { LogEntry, LoggerFilter } from "./types.ts";
 import { DEFAULT_FILTER, LEVEL_ICONS, LEVEL_LABELS } from "./types.ts";
+import { InspectableText } from "./InspectableText.tsx";
 
 interface LoggerProps {
   entries: LogEntry[];
@@ -103,10 +104,16 @@ export function Logger({ entries, t }: LoggerProps) {
               <span class="log-time">{formatTime(entry.timestamp)}</span>
               <span class={"log-icon icon-" + entry.level}>{LEVEL_ICONS[entry.level]}</span>
               <span class="log-content">
-                {entry.html ? (
+                {entry.structuredText ? (
+                  <>
+                    {entry.level === "result" && <span class="arrow">←</span>}
+                    <InspectableText text={entry.structuredText} />
+                    {entry.durationMs && <span class="ms">{entry.durationMs} ms</span>}
+                  </>
+                ) : entry.html ? (
                   <span dangerouslySetInnerHTML={{ __html: entry.html }} />
                 ) : (
-                  entry.text
+                  <InspectableText text={entry.text} />
                 )}
               </span>
             </div>

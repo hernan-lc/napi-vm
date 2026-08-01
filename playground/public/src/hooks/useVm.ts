@@ -24,10 +24,10 @@ export function useVm(t: Translations) {
   const [diagnostic, setDiagnostic] = useState<Diagnostic | null>(null);
   const entryId = useRef(0);
 
-  const addEntry = useCallback((level: LogLevel, text: string, html?: string) => {
+  const addEntry = useCallback((level: LogLevel, text: string, html?: string, details?: Pick<LogEntry, "structuredText" | "durationMs">) => {
     const id = ++entryId.current;
     const timestamp = Date.now();
-    setEntries((prev) => [...prev, { id, level, text, timestamp, html }]);
+    setEntries((prev) => [...prev, { id, level, text, timestamp, html, ...details }]);
   }, []);
 
   const clearEntries = useCallback(() => {
@@ -58,9 +58,16 @@ export function useVm(t: Translations) {
       }
 
       if (r.ok) {
-        addEntry(LOG_LEVELS.result, `${r.value}  ${ms.toFixed(1)} ms`, `<span class="arrow">&larr;</span>${escapeHtml(r.value)}<span class="ms">${ms.toFixed(1)} ms</span>`);
+        addEntry(LOG_LEVELS.result, `${r.value}  ${ms.toFixed(1)} ms`, undefined, {
+          structuredText: r.value,
+          durationMs: ms.toFixed(1),
+        });
       } else {
-        addEntry(LOG_LEVELS.error, `${r.error || t.error}  ${ms.toFixed(1)} ms`, `${escapeHtml(r.error || t.error)}<span class="ms">${ms.toFixed(1)} ms</span>`);
+        const error = r.error || t.error;
+        addEntry(LOG_LEVELS.error, `${error}  ${ms.toFixed(1)} ms`, undefined, {
+          structuredText: error,
+          durationMs: ms.toFixed(1),
+        });
       }
     },
     [addEntry]

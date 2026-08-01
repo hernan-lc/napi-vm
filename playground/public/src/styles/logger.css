@@ -171,6 +171,20 @@
   word-break: break-word;
 }
 
+.inspectable-text { white-space: pre-wrap; }
+.inspect-node { display: inline; }
+.inspect-toggle { display: inline-flex; align-items: baseline; gap: 3px; min-width: 0; padding: 0; border: 0; border-radius: 2px; color: var(--fg); background: transparent; font: inherit; vertical-align: baseline; }
+.inspect-toggle:hover { color: var(--accent); border-color: transparent; background: var(--accent-soft); }
+.inspect-caret { width: 10px; color: var(--fg-muted); font-size: 10px; }
+.inspect-preview { color: var(--info); }
+.inspect-node.array .inspect-preview { color: var(--purple); }
+.inspect-children { display: block; margin: 2px 0 2px 12px; padding-left: 10px; border-left: 1px solid var(--border); }
+.inspect-entry { display: block; white-space: pre-wrap; }
+.inspect-key { margin-right: 5px; color: var(--info); }
+.inspect-primitive { color: var(--fg); }
+.inspect-comma { color: var(--fg-muted); }
+.inspect-closing { display: block; color: var(--fg-muted); }
+
 .log-content .tag {
   color: var(--fg-dim);
   margin-right: var(--space-2);

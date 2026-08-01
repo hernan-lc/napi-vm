@@ -8,29 +8,8 @@ export const UI = {
 export const WORKSPACE = {
   storageKey: "napi-vm-playground-files",
   defaultFileId: "playground",
-  defaultNewFileName: "untitled.js",
   fileExtension: ".js",
 } as const;
-
-export const EXAMPLE_IDS = {
-  modules: "modules",
-  async: "async",
-  loop: "loop",
-} as const;
-
-export type ExampleId = typeof EXAMPLE_IDS[keyof typeof EXAMPLE_IDS];
-
-export const EXAMPLE_ICONS: Record<ExampleId, string> = {
-  [EXAMPLE_IDS.modules]: "◈",
-  [EXAMPLE_IDS.async]: "↗",
-  [EXAMPLE_IDS.loop]: "◌",
-};
-
-export const EXAMPLE_FILE_NAMES: Record<ExampleId, string> = {
-  [EXAMPLE_IDS.modules]: "modules.js",
-  [EXAMPLE_IDS.async]: "async.js",
-  [EXAMPLE_IDS.loop]: "loop-guard.js",
-};
 
 export const EDITOR_KEYS = {
   run: "Enter",

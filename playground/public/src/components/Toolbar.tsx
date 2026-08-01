@@ -41,25 +41,20 @@ export function Toolbar({
   return (
     <header class="toolbar">
       <div class="brand">
-        <span class="brand-mark"><span></span><span></span><span></span></span>
         <span class="brand-name">{UI.productName}</span>
         <span class="brand-sub">/ {UI.brandSubtitle}</span>
       </div>
 
-      <div class="toolbar-separator" />
-
-      <div class="toolbar-file"><span class="file-dot" /> {t.fileName} <span class="file-state">·</span></div>
-
       <div class="controls">
         <button class="primary run-button" onClick={onRun} disabled={status !== "ready"} title={t.runHint}>
-          <span class="button-play">▶</span> {t.run}
+          {t.run}
           <kbd>⌘ ↵</kbd>
         </button>
         <button class="toolbar-button" onClick={onReset} disabled={status !== "ready"} title={t.discardVmState}>
-          ↻ <span class="button-label">{t.reset}</span>
+          {t.reset}
         </button>
         <button class="toolbar-button" onClick={onClear} title={t.clearConsole}>
-          ◌ <span class="button-label">{t.clear}</span>
+          {t.clear}
         </button>
       </div>
 
