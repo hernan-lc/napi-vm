@@ -210,9 +210,9 @@ class VmSession {
   }
 
   /**
-   * Save the observed JSON shape delivered to a VM event handler. Values are
-   * reduced to metadata only, then merged so fields from different payload
-   * variants remain available to editor completion.
+   * Save the observed JSON shape and a bounded snapshot of the latest value
+   * delivered to a VM event handler. Shapes are merged so fields from
+   * different payload variants remain available to editor completion.
    */
   observeHandler(name, value) {
     if (!name) return false;

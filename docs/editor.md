@@ -64,10 +64,11 @@ npm run zed:build
 
 Install the `zed-extension/` directory using Zed's local development-extension
 flow. Start a configured `VmSession` in the workspace to provide live host
-functions, module metadata, and observed JSON event shapes. When a host calls
-`session.observeHandler("handleChat", event)`, the editor can complete nested
-properties such as `event.data.nickname` without executing the guest script.
-No manifest copy is required.
+functions, module metadata, observed JSON event shapes, and the latest bounded
+event value. When a host calls `session.observeHandler("handleChat", event)`,
+the editor can complete nested properties such as `event.data.nickname` and
+show the latest payload when hovering the handler parameter, without executing
+the guest script. No manifest copy is required.
 
 ## IPC-style VM commands
 

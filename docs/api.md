@@ -50,8 +50,10 @@ another operation on the same VM.
 - `attach(vm, { modules })` / `detach()`
 - `exposeFunction` / `exposeAsyncFunction`
 - `registerModule` / `removeModule`
-- `observeHandler(name, value)` — publish a JSON-derived property shape for
-  the handler's first parameter so the live LSP can offer completion.
+- `observeHandler(name, value)` — publish a JSON-derived property shape and a
+  bounded snapshot of the latest value for the handler's first parameter. The
+  live LSP uses the shape for nested completion and shows the latest value in
+  parameter hover information.
 - `snapshot()`
 
 The session is opt-in. Constructing or starting no session means no runtime
