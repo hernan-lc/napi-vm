@@ -95,6 +95,11 @@ impl LanguageService {
         });
     }
 
+    #[napi(js_name = "registerRuntimeShape")]
+    pub fn register_runtime_shape(&mut self, name: String, shape_json: String) -> bool {
+        self.inner.register_runtime_shape(name, &shape_json)
+    }
+
     #[napi]
     pub fn complete(&self, uri: String, offset: u32) -> Vec<NapiCompletion> {
         let context = self.inner.context();

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use super::{
     AnalysisContext, Completion, Diagnostic, Document, HostFunctionInfo, HoverInfo, ModuleInfo,
-    Symbol, complete, diagnose, symbols,
+    Symbol, Type, complete, diagnose, symbols,
 };
 
 #[derive(Debug, Default)]
@@ -17,6 +17,7 @@ pub struct LanguageService {
     modules: HashMap<String, ModuleInfo>,
     module_sources: HashMap<String, String>,
     host_functions: HashMap<String, HostFunctionInfo>,
+    runtime_handlers: HashMap<String, Type>,
 }
 
 impl LanguageService {
@@ -58,6 +59,19 @@ impl LanguageService {
         self.rebuild_documents();
     }
 
+    /// Register a JSON shape observed for a VM event handler. The shape is
+    /// intentionally metadata-only: it is never executed and only improves
+    /// completion/hover for the handler's first parameter.
+    pub fn register_runtime_shape(&mut self, name: impl Into<String>, shape_json: &str) -> bool {
+        let Ok(shape) = serde_json::from_str::<serde_json::Value>(shape_json) else {
+            return false;
+        };
+        self.runtime_handlers
+            .insert(name.into(), Type::from_runtime_shape(&shape));
+        self.rebuild_documents();
+        true
+    }
+
     /// Close and release a document, equivalent to LSP `didClose`.
     pub fn close(&mut self, uri: &str) -> bool {
         self.documents.remove(uri).is_some()
@@ -92,6 +106,7 @@ impl LanguageService {
         AnalysisContext {
             exposed_functions: self.hosts(),
             modules: self.modules.values().cloned().collect(),
+            runtime_handlers: self.runtime_handlers.clone(),
         }
     }
 
@@ -102,7 +117,12 @@ impl LanguageService {
     }
 
     fn parse(&self, source: &str) -> Document {
-        Document::parse_with_context(source, &self.module_sources, &self.hosts())
+        Document::parse_with_context_and_runtime(
+            source,
+            &self.module_sources,
+            &self.hosts(),
+            &self.runtime_handlers,
+        )
     }
 
     fn rebuild_documents(&mut self) {
@@ -192,5 +212,37 @@ mod tests {
         let hover = service.hover("file:///main.js", offset).unwrap();
         assert!(hover.detail.contains("double"));
         assert!(hover.detail.contains("=> number"));
+    }
+
+    #[test]
+    fn runtime_json_shape_feeds_handler_completion() {
+        let mut service = LanguageService::new();
+        service.register_runtime_shape(
+            "handleChat",
+            r#"{
+                "kind":"object",
+                "properties":{
+                    "platform":{"kind":"string"},
+                    "data":{"kind":"object","properties":{
+                        "nickname":{"kind":"string"},
+                        "comment":{"kind":"string"}
+                    }}
+                }
+            }"#,
+        );
+        let source = "function handleChat(event) { event.data.";
+        service.open("file:///chat.js", source);
+
+        let completions = service
+            .complete("file:///chat.js", source.len(), &service.context())
+            .unwrap();
+        let labels: Vec<_> = completions.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"nickname"));
+        assert!(labels.contains(&"comment"));
+
+        let event_offset = source.find("event").unwrap() + 2;
+        let hover = service.hover("file:///chat.js", event_offset).unwrap();
+        assert!(hover.detail.contains("parameter"));
+        assert!(hover.detail.contains("platform"));
     }
 }

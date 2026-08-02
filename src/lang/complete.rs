@@ -29,7 +29,7 @@ pub fn complete(source: &str, offset: usize, ctx: &AnalysisContext) -> Vec<Compl
     let before = &source[..offset];
 
     let stmts = parse_lenient(source);
-    let scope = scope::collect(&stmts);
+    let scope = scope::collect(&stmts, &ctx.runtime_handlers);
 
     match analyze_trigger(before) {
         Trigger::Member { receiver, prefix } => complete_member(&receiver, &prefix, &scope, ctx),
@@ -336,6 +336,10 @@ fn complete_member(
     }
 
     // Variable with a known literal shape.
+    if let Some(ty) = runtime_receiver_type(receiver, &scope.runtime_bindings) {
+        add_runtime_members(&ty, &mut add);
+    }
+
     if let Some(decl) = scope.find(head) {
         match &decl.shape {
             Some(InitShape::Array) => {
@@ -355,6 +359,44 @@ fn complete_member(
     }
 
     filter_sorted(out)
+}
+
+fn runtime_receiver_type(
+    receiver: &str,
+    bindings: &std::collections::HashMap<String, super::Type>,
+) -> Option<super::Type> {
+    let mut segments = receiver.split('.');
+    let mut ty = bindings.get(segments.next()?)?.clone();
+    for segment in segments {
+        ty = ty.property(segment);
+    }
+    Some(ty)
+}
+
+fn add_runtime_members(ty: &super::Type, add: &mut impl FnMut(&str, CompletionKind)) {
+    match ty {
+        super::Type::Object(fields) => {
+            for name in fields.keys() {
+                add(name, CompletionKind::Property);
+            }
+        }
+        super::Type::Array(_) => {
+            for name in catalog::prototype_members(ProtoKind::Array) {
+                add(name, CompletionKind::Method);
+            }
+        }
+        super::Type::String => {
+            for name in catalog::prototype_members(ProtoKind::String) {
+                add(name, CompletionKind::Method);
+            }
+        }
+        super::Type::Number => {
+            for name in catalog::prototype_members(ProtoKind::Number) {
+                add(name, CompletionKind::Method);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn is_member_name(label: &str) -> bool {

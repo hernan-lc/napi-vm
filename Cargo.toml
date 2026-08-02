@@ -1,6 +1,6 @@
 [package]
 name = "napi-vm"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 
 [lib]
@@ -23,6 +23,7 @@ wasm = ["dep:wasm-bindgen"]
 napi = { version = "3.12.0", features = ["napi8"], optional = true }
 napi-derive = { version = "3.6.1", optional = true }
 smallvec = "1"
+serde_json = "1"
 # Browser ↔ Rust bindings for the `wasm` feature. `js-sys` (below, target-scoped)
 # provides the typed wrappers over JS built-ins used by the marshalling layer.
 wasm-bindgen = { version = "0.2", optional = true }

@@ -416,12 +416,13 @@ dependencies = [
 
 [[package]]
 name = "napi-vm"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "criterion",
  "js-sys",
  "napi",
  "napi-derive",
+ "serde_json",
  "smallvec",
  "wasm-bindgen",
 ]

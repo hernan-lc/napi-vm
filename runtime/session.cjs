@@ -8,6 +8,8 @@ const { Vm } = require("../index.js");
 const PROTOCOL_VERSION = 1;
 const RUNTIME_DIR = ".napi-vm";
 const RUNTIME_FILE = "runtime.json";
+const MAX_SHAPE_DEPTH = 8;
+const MAX_SHAPE_PROPERTIES = 256;
 
 function workspaceId(workspace) {
   const resolved = fs.realpathSync(workspace);
@@ -20,6 +22,58 @@ function runtimePath(workspace) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function inferJsonShape(value, depth = 0) {
+  if (depth >= MAX_SHAPE_DEPTH) return { kind: "unknown" };
+  if (value === null) return { kind: "null" };
+  if (Array.isArray(value)) {
+    let items = { kind: "unknown" };
+    for (const item of value.slice(0, MAX_SHAPE_PROPERTIES)) {
+      items = mergeShapes(items, inferJsonShape(item, depth + 1));
+    }
+    return { kind: "array", items };
+  }
+  switch (typeof value) {
+    case "string": return { kind: "string" };
+    case "number": return { kind: "number" };
+    case "boolean": return { kind: "boolean" };
+    case "undefined": return { kind: "undefined" };
+    case "object": {
+      const properties = {};
+      for (const name of Object.keys(value).sort().slice(0, MAX_SHAPE_PROPERTIES)) {
+        properties[name] = inferJsonShape(value[name], depth + 1);
+      }
+      return { kind: "object", properties };
+    }
+    default: return { kind: "unknown" };
+  }
+}
+
+function mergeShapes(left, right) {
+  if (!left || left.kind === "unknown") return clone(right);
+  if (!right || right.kind === "unknown") return clone(left);
+  if (left.kind !== right.kind) return { kind: "unknown" };
+
+  if (left.kind === "object") {
+    const properties = {};
+    const names = new Set([
+      ...Object.keys(left.properties || {}),
+      ...Object.keys(right.properties || {}),
+    ]);
+    for (const name of [...names].sort().slice(0, MAX_SHAPE_PROPERTIES)) {
+      if (left.properties?.[name] && right.properties?.[name]) {
+        properties[name] = mergeShapes(left.properties[name], right.properties[name]);
+      } else {
+        properties[name] = { kind: "unknown" };
+      }
+    }
+    return { kind: "object", properties };
+  }
+  if (left.kind === "array") {
+    return { kind: "array", items: mergeShapes(left.items, right.items) };
+  }
+  return clone(left);
 }
 
 /**
@@ -39,6 +93,7 @@ class VmSession {
     this.clients = new Set();
     this.hostFunctions = new Map();
     this.modules = new Map();
+    this.handlerShapes = new Map();
     this.generation = 0;
     this.startedAt = new Date().toISOString();
     this.stopped = false;
@@ -50,6 +105,7 @@ class VmSession {
     this.vm = vm;
     this.hostFunctions.clear();
     this.modules.clear();
+    this.handlerShapes.clear();
     for (const module of options.modules || []) {
       this.modules.set(module.name, {
         name: module.name,
@@ -64,6 +120,7 @@ class VmSession {
     this.vm = null;
     this.hostFunctions.clear();
     this.modules.clear();
+    this.handlerShapes.clear();
     this.publish("replace");
   }
 
@@ -115,6 +172,22 @@ class VmSession {
     return removed;
   }
 
+  /**
+   * Save the observed JSON shape delivered to a VM event handler. Values are
+   * reduced to metadata only, then merged so fields from different payload
+   * variants remain available to editor completion.
+   */
+  observeHandler(name, value) {
+    if (!name) return false;
+    const next = inferJsonShape(value);
+    const previous = this.handlerShapes.get(name);
+    const merged = previous ? mergeShapes(previous, next) : next;
+    if (JSON.stringify(previous) === JSON.stringify(merged)) return false;
+    this.handlerShapes.set(name, merged);
+    this.publish("shape");
+    return true;
+  }
+
   run(source) {
     return this.requireVm().run(source);
   }
@@ -156,6 +229,10 @@ class VmSession {
       startedAt: this.startedAt,
       functions: [...this.hostFunctions.values()].map(clone),
       modules: [...this.modules.values()].map(clone),
+      handlers: [...this.handlerShapes.entries()].map(([name, shape]) => ({
+        name,
+        shape: clone(shape),
+      })),
     };
   }
 

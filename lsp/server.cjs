@@ -72,6 +72,11 @@ function registerRuntime(target, snapshot) {
       target.registerModule(module.name, module.source);
     }
   }
+  for (const handler of snapshot.handlers || []) {
+    if (handler?.name && handler.shape) {
+      target.registerRuntimeShape(handler.name, JSON.stringify(handler.shape));
+    }
+  }
 }
 
 function rebuildService() {

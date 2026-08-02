@@ -8,8 +8,10 @@
 //! tightened to true lexical scoping once the AST is span-annotated.
 
 use crate::parser::{Expr, ForInit, ObjectProp, Pattern, Statement};
+use std::collections::HashMap;
 
 use super::CompletionKind;
+use super::Type;
 
 /// The inferred shape of a variable's initializer, when it is a literal.
 #[derive(Debug, Clone)]
@@ -36,6 +38,8 @@ pub struct Scope {
     pub namespace_to_module: Vec<(String, String)>,
     /// Module specifiers referenced by any `import`.
     pub modules: Vec<String>,
+    /// Runtime-observed types assigned to handler parameters.
+    pub runtime_bindings: HashMap<String, Type>,
 }
 
 impl Scope {
@@ -53,15 +57,15 @@ impl Scope {
 }
 
 /// Collect all declarations reachable from a program.
-pub fn collect(stmts: &[Statement]) -> Scope {
+pub fn collect(stmts: &[Statement], runtime_handlers: &HashMap<String, Type>) -> Scope {
     let mut scope = Scope::default();
-    walk_stmts(stmts, &mut scope);
+    walk_stmts(stmts, &mut scope, runtime_handlers);
     scope
 }
 
-fn walk_stmts(stmts: &[Statement], scope: &mut Scope) {
+fn walk_stmts(stmts: &[Statement], scope: &mut Scope, runtime_handlers: &HashMap<String, Type>) {
     for s in stmts {
-        walk_stmt(s, scope);
+        walk_stmt(s, scope, runtime_handlers);
     }
 }
 
@@ -78,7 +82,7 @@ fn push(scope: &mut Scope, name: &str, kind: CompletionKind, shape: Option<InitS
     }
 }
 
-fn walk_stmt(s: &Statement, scope: &mut Scope) {
+fn walk_stmt(s: &Statement, scope: &mut Scope, runtime_handlers: &HashMap<String, Type>) {
     match s {
         Statement::VarDecl {
             name,
@@ -102,10 +106,17 @@ fn walk_stmt(s: &Statement, scope: &mut Scope) {
             name, params, body, ..
         } => {
             push(scope, name, CompletionKind::Function, None);
+            if let Some(shape) = runtime_handlers.get(name)
+                && let Some(parameter) = params.first()
+            {
+                scope
+                    .runtime_bindings
+                    .insert(parameter.clone(), shape.clone());
+            }
             for p in params {
                 push(scope, p, CompletionKind::Variable, None);
             }
-            walk_stmts(body, scope);
+            walk_stmts(body, scope, runtime_handlers);
         }
         Statement::ClassDecl {
             name,
@@ -122,13 +133,13 @@ fn walk_stmt(s: &Statement, scope: &mut Scope) {
             then,
             else_,
         } => {
-            walk_stmts(then, scope);
+            walk_stmts(then, scope, runtime_handlers);
             if let Some(e) = else_ {
-                walk_stmts(e, scope);
+                walk_stmts(e, scope, runtime_handlers);
             }
         }
         Statement::While { body, .. } | Statement::DoWhile { body, .. } => {
-            walk_stmts(body, scope);
+            walk_stmts(body, scope, runtime_handlers);
         }
         Statement::For { init, body, .. } => {
             if let Some(fi) = init
@@ -138,31 +149,31 @@ fn walk_stmt(s: &Statement, scope: &mut Scope) {
                     push(scope, n, CompletionKind::Variable, init_shape(e.as_ref()));
                 }
             }
-            walk_stmts(body, scope);
+            walk_stmts(body, scope, runtime_handlers);
         }
         Statement::ForIn { name, body, .. } | Statement::ForOf { name, body, .. } => {
             push(scope, name, CompletionKind::Variable, None);
-            walk_stmts(body, scope);
+            walk_stmts(body, scope, runtime_handlers);
         }
-        Statement::Block(b) => walk_stmts(b, scope),
-        Statement::Labeled { body, .. } => walk_stmt(body, scope),
+        Statement::Block(b) => walk_stmts(b, scope, runtime_handlers),
+        Statement::Labeled { body, .. } => walk_stmt(body, scope, runtime_handlers),
         Statement::Try {
             body,
             catch,
             finally,
         } => {
-            walk_stmts(body, scope);
+            walk_stmts(body, scope, runtime_handlers);
             if let Some((param, block)) = catch {
                 push(scope, param, CompletionKind::Variable, None);
-                walk_stmts(block, scope);
+                walk_stmts(block, scope, runtime_handlers);
             }
             if let Some(f) = finally {
-                walk_stmts(f, scope);
+                walk_stmts(f, scope, runtime_handlers);
             }
         }
         Statement::Switch { cases, .. } => {
             for c in cases {
-                walk_stmts(&c.body, scope);
+                walk_stmts(&c.body, scope, runtime_handlers);
             }
         }
         Statement::Import {

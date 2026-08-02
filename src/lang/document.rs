@@ -43,7 +43,7 @@ pub enum Type {
 }
 
 impl Type {
-    fn property(&self, name: &str) -> Type {
+    pub(crate) fn property(&self, name: &str) -> Type {
         match self {
             Type::Object(fields) => fields.get(name).cloned().unwrap_or(Type::Unknown),
             Type::Class { fields, .. } | Type::Instance { fields, .. } => {
@@ -129,6 +129,39 @@ impl Type {
             BuiltinType::NativeObject(name) => Type::NativeObject(name),
         }
     }
+
+    pub(crate) fn from_runtime_shape(value: &serde_json::Value) -> Self {
+        let Some(kind) = value.get("kind").and_then(serde_json::Value::as_str) else {
+            return Type::Unknown;
+        };
+
+        match kind {
+            "object" => {
+                let mut fields = BTreeMap::new();
+                if let Some(properties) = value
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object)
+                {
+                    for (name, property) in properties {
+                        fields.insert(name.clone(), Self::from_runtime_shape(property));
+                    }
+                }
+                Type::Object(fields)
+            }
+            "array" => Type::Array(Box::new(
+                value
+                    .get("items")
+                    .map(Self::from_runtime_shape)
+                    .unwrap_or(Type::Unknown),
+            )),
+            "number" => Type::Number,
+            "string" => Type::String,
+            "boolean" => Type::Boolean,
+            "null" => Type::Null,
+            "undefined" => Type::Undefined,
+            _ => Type::Unknown,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -167,14 +200,35 @@ impl Document {
         module_sources: &HashMap<String, String>,
         host_functions: &[HostFunctionInfo],
     ) -> Self {
+        Self::parse_with_context_and_runtime(
+            source,
+            module_sources,
+            host_functions,
+            &HashMap::new(),
+        )
+    }
+
+    pub fn parse_with_context_and_runtime(
+        source: &str,
+        module_sources: &HashMap<String, String>,
+        host_functions: &[HostFunctionInfo],
+        runtime_handlers: &HashMap<String, Type>,
+    ) -> Self {
         let mut module_stack = HashSet::new();
-        Self::parse_with_context_inner(source, module_sources, host_functions, &mut module_stack)
+        Self::parse_with_context_inner(
+            source,
+            module_sources,
+            host_functions,
+            runtime_handlers,
+            &mut module_stack,
+        )
     }
 
     fn parse_with_context_inner(
         source: &str,
         module_sources: &HashMap<String, String>,
         host_functions: &[HostFunctionInfo],
+        runtime_handlers: &HashMap<String, Type>,
         module_stack: &mut HashSet<String>,
     ) -> Self {
         let mut lexer = crate::lexer::Lexer::new(source);
@@ -187,6 +241,7 @@ impl Document {
             exports: HashMap::new(),
             module_sources,
             host_functions,
+            runtime_handlers,
             module_stack,
         };
         builder.statements(&statements, &HashMap::new());
@@ -311,6 +366,7 @@ struct Builder<'a> {
     exports: HashMap<String, Type>,
     module_sources: &'a HashMap<String, String>,
     host_functions: &'a [HostFunctionInfo],
+    runtime_handlers: &'a HashMap<String, Type>,
     module_stack: &'a mut HashSet<String>,
 }
 
@@ -352,7 +408,7 @@ impl Builder<'_> {
                 is_async,
                 ..
             } => {
-                let result = self.function_result(params, body, env);
+                let result = self.function_result_named(Some(name), params, body, env);
                 let ty = Type::Function {
                     params: params.clone(),
                     result: Box::new(if *is_async {
@@ -509,6 +565,7 @@ impl Builder<'_> {
             &source,
             self.module_sources,
             self.host_functions,
+            self.runtime_handlers,
             self.module_stack,
         );
         self.module_stack.remove(module);
@@ -521,16 +578,32 @@ impl Builder<'_> {
         body: &[Statement],
         outer: &HashMap<String, Type>,
     ) -> Type {
+        self.function_result_named(None, params, body, outer)
+    }
+
+    fn function_result_named(
+        &mut self,
+        function_name: Option<&str>,
+        params: &[String],
+        body: &[Statement],
+        outer: &HashMap<String, Type>,
+    ) -> Type {
         let mut env = outer.clone();
-        for param in params {
+        for (index, param) in params.iter().enumerate() {
+            let runtime_type = (index == 0)
+                .then(|| function_name.and_then(|name| self.runtime_handlers.get(name)))
+                .flatten()
+                .cloned()
+                .unwrap_or(Type::Any);
             env.insert(param.clone(), Type::Any);
             self.bindings.insert(
                 param.clone(),
                 Binding {
                     kind: "parameter".into(),
-                    ty: Type::Any,
+                    ty: runtime_type.clone(),
                 },
             );
+            env.insert(param.clone(), runtime_type);
         }
         let mut result = Type::Unknown;
         for statement in body {

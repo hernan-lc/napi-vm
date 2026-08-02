@@ -29,6 +29,7 @@ pub use service::LanguageService;
 
 use crate::lexer::Lexer;
 use crate::parser::Parser;
+use std::collections::HashMap;
 
 /// Virtual module namespace used by playground completion.
 ///
@@ -147,6 +148,9 @@ pub struct AnalysisContext {
     pub exposed_functions: Vec<HostFunctionInfo>,
     /// Registered modules and their export names.
     pub modules: Vec<ModuleInfo>,
+    /// Shapes observed for VM event handlers. The key is the handler function
+    /// name and the value is assigned to its first parameter for completion.
+    pub runtime_handlers: HashMap<String, Type>,
 }
 
 /// A registered module: its specifier and the names it exports.

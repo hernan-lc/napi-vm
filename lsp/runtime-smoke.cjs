@@ -87,6 +87,22 @@ async function waitForRuntimeCompletion(uri) {
   throw new Error("LSP never received the live VmSession snapshot");
 }
 
+async function waitForEventCompletion(uri, character) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const id = 200 + attempt;
+    send({
+      jsonrpc: "2.0",
+      id,
+      method: "textDocument/completion",
+      params: { textDocument: { uri }, position: { line: 0, character } },
+    });
+    const result = await response(id);
+    if (result.items.some((item) => item.label === "nickname")) return result;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("LSP never received the live event JSON shape");
+}
+
 async function main() {
   try {
     session.start();
@@ -115,6 +131,23 @@ async function main() {
     });
     const completion = await waitForRuntimeCompletion(uri);
     assert.ok(completion.items.some((item) => item.label === "math"));
+
+    const eventSource = "function handleChat(event) { event.data.";
+    const eventUri = `file://${path.join(root, "chat.js")}`;
+    session.observeHandler("handleChat", {
+      platform: "tiktok",
+      data: { nickname: "Ada", comment: "hello" },
+    });
+    notification("textDocument/didOpen", {
+      textDocument: {
+        uri: eventUri,
+        languageId: "javascript",
+        version: 1,
+        text: eventSource,
+      },
+    });
+    const eventCompletion = await waitForEventCompletion(eventUri, eventSource.length);
+    assert.ok(eventCompletion.items.some((item) => item.label === "comment"));
 
     send({
       jsonrpc: "2.0",

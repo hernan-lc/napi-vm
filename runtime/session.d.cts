@@ -16,6 +16,11 @@ export interface VmSessionModule {
   source: string;
 }
 
+export interface VmSessionHandlerShape {
+  name: string;
+  shape: unknown;
+}
+
 export declare class VmSession {
   constructor(options?: VmSessionOptions);
   readonly vm: any;
@@ -28,6 +33,7 @@ export declare class VmSession {
   removeGlobal(name: string): boolean;
   registerModule(name: string, source: string): void;
   removeModule(name: string): boolean;
+  observeHandler(name: string, value: unknown): boolean;
   run(source: string): string;
   runAsync(source: string): Promise<string>;
   start(): this;

@@ -7,6 +7,7 @@ export declare class LanguageService {
   close(uri: string): boolean
   registerModule(name: string, source: string): void
   registerHostFunction(name: string, params: Array<NapiHostFunctionParameter>, returns: string, documentation?: string | undefined | null, asyncFn?: boolean | undefined | null): void
+  registerRuntimeShape(name: string, shapeJson: string): boolean
   complete(uri: string, offset: number): Array<NapiCompletion>
   hover(uri: string, offset: number): NapiHover | null
   diagnostics(uri: string): Array<NapiDiagnostic>

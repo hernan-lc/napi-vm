@@ -83,6 +83,14 @@ async function main() {
     assert.equal(second.payload.generation > first.payload.generation, true);
     assert.ok(second.payload.functions.some((item) => item.name === "hostJson"));
 
+    session.observeHandler("handleChat", {
+      platform: "tiktok",
+      data: { nickname: "Ada", comment: "hello" },
+    });
+    const third = await nextMessage(socket);
+    assert.equal(third.payload.handlers[0].name, "handleChat");
+    assert.equal(third.payload.handlers[0].shape.properties.data.properties.nickname.kind, "string");
+
     socket.destroy();
     session.stop();
     assert.equal(fs.existsSync(runtimePath(workspace)), false);
