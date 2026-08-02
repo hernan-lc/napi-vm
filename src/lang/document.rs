@@ -110,6 +110,44 @@ impl Type {
         }
     }
 
+    fn display_compact(&self) -> String {
+        self.display_compact_depth(0)
+    }
+
+    fn display_compact_depth(&self, depth: usize) -> String {
+        if depth >= 3 {
+            return match self {
+                Type::Object(_) => "object".into(),
+                Type::Array(_) => "unknown[]".into(),
+                _ => self.display(),
+            };
+        }
+        match self {
+            Type::Object(fields) if fields.is_empty() => "object".into(),
+            Type::Object(fields) => {
+                let mut parts: Vec<String> = fields
+                    .iter()
+                    .take(12)
+                    .map(|(name, ty)| format!("{}: {}", name, ty.display_compact_depth(depth + 1)))
+                    .collect();
+                if fields.len() > parts.len() {
+                    parts.push("…".into());
+                }
+                format!("{{ {} }}", parts.join("; "))
+            }
+            Type::Array(item) => format!("{}[]", item.display_compact_depth(depth + 1)),
+            Type::Promise(value) => {
+                format!("Promise<{}>", value.display_compact_depth(depth + 1))
+            }
+            Type::Function { params, result, .. } => format!(
+                "({}) => {}",
+                params.join(", "),
+                result.display_compact_depth(depth + 1)
+            ),
+            _ => self.display(),
+        }
+    }
+
     fn from_builtin(builtin: BuiltinType) -> Self {
         match builtin {
             BuiltinType::Unknown => Type::Unknown,
@@ -184,6 +222,7 @@ pub struct Document {
     properties: HashMap<String, Type>,
     exports: HashMap<String, Type>,
     host_functions: HashMap<String, HostFunctionInfo>,
+    parameter_values: HashMap<String, String>,
 }
 
 impl Document {
@@ -205,6 +244,7 @@ impl Document {
             module_sources,
             host_functions,
             &HashMap::new(),
+            &HashMap::new(),
         )
     }
 
@@ -213,6 +253,7 @@ impl Document {
         module_sources: &HashMap<String, String>,
         host_functions: &[HostFunctionInfo],
         runtime_handlers: &HashMap<String, Type>,
+        runtime_values: &HashMap<String, String>,
     ) -> Self {
         let mut module_stack = HashSet::new();
         Self::parse_with_context_inner(
@@ -220,6 +261,7 @@ impl Document {
             module_sources,
             host_functions,
             runtime_handlers,
+            runtime_values,
             &mut module_stack,
         )
     }
@@ -229,6 +271,7 @@ impl Document {
         module_sources: &HashMap<String, String>,
         host_functions: &[HostFunctionInfo],
         runtime_handlers: &HashMap<String, Type>,
+        runtime_values: &HashMap<String, String>,
         module_stack: &mut HashSet<String>,
     ) -> Self {
         let mut lexer = crate::lexer::Lexer::new(source);
@@ -242,6 +285,8 @@ impl Document {
             module_sources,
             host_functions,
             runtime_handlers,
+            runtime_values,
+            parameter_values: HashMap::new(),
             module_stack,
         };
         builder.statements(&statements, &HashMap::new());
@@ -256,6 +301,7 @@ impl Document {
                 .cloned()
                 .map(|function| (function.name.clone(), function))
                 .collect(),
+            parameter_values: builder.parameter_values,
         }
     }
 
@@ -287,7 +333,7 @@ impl Document {
                 })
                 .unwrap_or(Type::Unknown);
             return Some(HoverInfo {
-                detail: format!("(property) {}: {}", name, ty.display()),
+                detail: format!("(property) {}: {}", name, ty.display_compact()),
                 documentation: None,
             });
         }
@@ -295,15 +341,18 @@ impl Document {
         let binding = self.bindings.get(name);
         if let Some(binding) = binding {
             let detail = match &binding.kind[..] {
-                "function" => format!("(function) {}: {}", name, binding.ty.display()),
-                "parameter" => format!("(parameter) {}: {}", name, binding.ty.display()),
-                "import" => format!("(import) {}: {}", name, binding.ty.display()),
-                "class" => format!("(class) {}: {}", name, binding.ty.display()),
-                kind => format!("{} {}: {}", kind, name, binding.ty.display()),
+                "function" => format!("(function) {}: {}", name, binding.ty.display_compact()),
+                "parameter" => format!("(parameter) {}: {}", name, binding.ty.display_compact()),
+                "import" => format!("(import) {}: {}", name, binding.ty.display_compact()),
+                "class" => format!("(class) {}: {}", name, binding.ty.display_compact()),
+                kind => format!("{} {}: {}", kind, name, binding.ty.display_compact()),
             };
             return Some(HoverInfo {
                 detail,
-                documentation: None,
+                documentation: self
+                    .parameter_values
+                    .get(name)
+                    .map(|value| format!("Last value:\n```json\n{}\n```", value)),
             });
         }
 
@@ -367,6 +416,8 @@ struct Builder<'a> {
     module_sources: &'a HashMap<String, String>,
     host_functions: &'a [HostFunctionInfo],
     runtime_handlers: &'a HashMap<String, Type>,
+    runtime_values: &'a HashMap<String, String>,
+    parameter_values: HashMap<String, String>,
     module_stack: &'a mut HashSet<String>,
 }
 
@@ -566,6 +617,7 @@ impl Builder<'_> {
             self.module_sources,
             self.host_functions,
             self.runtime_handlers,
+            self.runtime_values,
             self.module_stack,
         );
         self.module_stack.remove(module);
@@ -596,6 +648,12 @@ impl Builder<'_> {
                 .cloned()
                 .unwrap_or(Type::Any);
             env.insert(param.clone(), Type::Any);
+            if index == 0
+                && let Some(name) = function_name
+                && let Some(value) = self.runtime_values.get(name)
+            {
+                self.parameter_values.insert(param.clone(), value.clone());
+            }
             self.bindings.insert(
                 param.clone(),
                 Binding {

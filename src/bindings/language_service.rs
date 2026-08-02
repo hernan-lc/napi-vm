@@ -96,8 +96,14 @@ impl LanguageService {
     }
 
     #[napi(js_name = "registerRuntimeShape")]
-    pub fn register_runtime_shape(&mut self, name: String, shape_json: String) -> bool {
-        self.inner.register_runtime_shape(name, &shape_json)
+    pub fn register_runtime_shape(
+        &mut self,
+        name: String,
+        shape_json: String,
+        last_value_json: Option<String>,
+    ) -> bool {
+        self.inner
+            .register_runtime_shape(name, &shape_json, last_value_json.as_deref())
     }
 
     #[napi]

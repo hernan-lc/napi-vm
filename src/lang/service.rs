@@ -18,6 +18,7 @@ pub struct LanguageService {
     module_sources: HashMap<String, String>,
     host_functions: HashMap<String, HostFunctionInfo>,
     runtime_handlers: HashMap<String, Type>,
+    runtime_values: HashMap<String, String>,
 }
 
 impl LanguageService {
@@ -62,12 +63,24 @@ impl LanguageService {
     /// Register a JSON shape observed for a VM event handler. The shape is
     /// intentionally metadata-only: it is never executed and only improves
     /// completion/hover for the handler's first parameter.
-    pub fn register_runtime_shape(&mut self, name: impl Into<String>, shape_json: &str) -> bool {
+    pub fn register_runtime_shape(
+        &mut self,
+        name: impl Into<String>,
+        shape_json: &str,
+        last_value_json: Option<&str>,
+    ) -> bool {
         let Ok(shape) = serde_json::from_str::<serde_json::Value>(shape_json) else {
             return false;
         };
+        let name = name.into();
         self.runtime_handlers
-            .insert(name.into(), Type::from_runtime_shape(&shape));
+            .insert(name.clone(), Type::from_runtime_shape(&shape));
+        if let Some(value_json) = last_value_json
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(value_json)
+            && let Ok(pretty) = serde_json::to_string_pretty(&value)
+        {
+            self.runtime_values.insert(name, pretty);
+        }
         self.rebuild_documents();
         true
     }
@@ -122,6 +135,7 @@ impl LanguageService {
             &self.module_sources,
             &self.hosts(),
             &self.runtime_handlers,
+            &self.runtime_values,
         )
     }
 
@@ -229,6 +243,7 @@ mod tests {
                     }}
                 }
             }"#,
+            Some(r#"{"platform":"tiktok","eventName":"chat","data":{"nickname":"Ada","comment":"hello"}}"#),
         );
         let source = "function handleChat(event) { event.data.";
         service.open("file:///chat.js", source);
@@ -244,5 +259,6 @@ mod tests {
         let hover = service.hover("file:///chat.js", event_offset).unwrap();
         assert!(hover.detail.contains("parameter"));
         assert!(hover.detail.contains("platform"));
+        assert!(hover.documentation.as_deref().unwrap().contains("Ada"));
     }
 }

@@ -90,6 +90,7 @@ async function main() {
     const third = await nextMessage(socket);
     assert.equal(third.payload.handlers[0].name, "handleChat");
     assert.equal(third.payload.handlers[0].shape.properties.data.properties.nickname.kind, "string");
+    assert.equal(third.payload.handlers[0].lastValue.data.nickname, "Ada");
 
     socket.destroy();
     session.stop();

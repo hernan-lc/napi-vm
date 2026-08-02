@@ -10,6 +10,10 @@ const RUNTIME_DIR = ".napi-vm";
 const RUNTIME_FILE = "runtime.json";
 const MAX_SHAPE_DEPTH = 8;
 const MAX_SHAPE_PROPERTIES = 256;
+const MAX_LAST_VALUE_DEPTH = 6;
+const MAX_LAST_VALUE_PROPERTIES = 64;
+const MAX_LAST_VALUE_STRING = 512;
+const LAST_VALUE_PUBLISH_DELAY = 150;
 
 function workspaceId(workspace) {
   const resolved = fs.realpathSync(workspace);
@@ -76,6 +80,33 @@ function mergeShapes(left, right) {
   return clone(left);
 }
 
+function snapshotJsonValue(value, depth = 0) {
+  if (depth >= MAX_LAST_VALUE_DEPTH) return "[depth truncated]";
+  if (typeof value === "string") {
+    return value.length > MAX_LAST_VALUE_STRING
+      ? `${value.slice(0, MAX_LAST_VALUE_STRING)}…`
+      : value;
+  }
+  if (Array.isArray(value)) {
+    const items = value.slice(0, MAX_LAST_VALUE_PROPERTIES)
+      .map((item) => snapshotJsonValue(item, depth + 1));
+    if (value.length > items.length) items.push(`[${value.length - items.length} more items]`);
+    return items;
+  }
+  if (value && typeof value === "object") {
+    const result = {};
+    const names = Object.keys(value).sort();
+    for (const name of names.slice(0, MAX_LAST_VALUE_PROPERTIES)) {
+      result[name] = snapshotJsonValue(value[name], depth + 1);
+    }
+    if (names.length > MAX_LAST_VALUE_PROPERTIES) {
+      result.__truncated = `${names.length - MAX_LAST_VALUE_PROPERTIES} more properties`;
+    }
+    return result;
+  }
+  return value;
+}
+
 /**
  * Owns the live VM metadata channel used by the LSP. The runtime.json file is
  * only a locator; module sources and host metadata are sent over the local
@@ -94,6 +125,8 @@ class VmSession {
     this.hostFunctions = new Map();
     this.modules = new Map();
     this.handlerShapes = new Map();
+    this.lastValues = new Map();
+    this.lastValueTimers = new Map();
     this.generation = 0;
     this.startedAt = new Date().toISOString();
     this.stopped = false;
@@ -106,6 +139,8 @@ class VmSession {
     this.hostFunctions.clear();
     this.modules.clear();
     this.handlerShapes.clear();
+    this.lastValues.clear();
+    this.clearLastValueTimers();
     for (const module of options.modules || []) {
       this.modules.set(module.name, {
         name: module.name,
@@ -121,6 +156,8 @@ class VmSession {
     this.hostFunctions.clear();
     this.modules.clear();
     this.handlerShapes.clear();
+    this.lastValues.clear();
+    this.clearLastValueTimers();
     this.publish("replace");
   }
 
@@ -182,10 +219,23 @@ class VmSession {
     const next = inferJsonShape(value);
     const previous = this.handlerShapes.get(name);
     const merged = previous ? mergeShapes(previous, next) : next;
-    if (JSON.stringify(previous) === JSON.stringify(merged)) return false;
+    const shapeChanged = JSON.stringify(previous) !== JSON.stringify(merged);
+    const lastValue = snapshotJsonValue(value);
+    const previousValue = this.lastValues.get(name);
+    const valueChanged = JSON.stringify(previousValue) !== JSON.stringify(lastValue);
     this.handlerShapes.set(name, merged);
-    this.publish("shape");
-    return true;
+    this.lastValues.set(name, lastValue);
+
+    if (shapeChanged) {
+      this.publish("shape");
+    } else if (valueChanged && this.server && !this.lastValueTimers.has(name)) {
+      const timer = setTimeout(() => {
+        this.lastValueTimers.delete(name);
+        this.publish("value");
+      }, LAST_VALUE_PUBLISH_DELAY);
+      this.lastValueTimers.set(name, timer);
+    }
+    return shapeChanged || valueChanged;
   }
 
   run(source) {
@@ -216,6 +266,7 @@ class VmSession {
     this.clients.clear();
     this.server?.close();
     this.server = null;
+    this.clearLastValueTimers();
     this.cleanup();
   }
 
@@ -232,6 +283,7 @@ class VmSession {
       handlers: [...this.handlerShapes.entries()].map(([name, shape]) => ({
         name,
         shape: clone(shape),
+        lastValue: clone(this.lastValues.get(name)),
       })),
     };
   }
@@ -239,6 +291,11 @@ class VmSession {
   requireVm() {
     if (!this.vm) throw new Error("VmSession has no attached VM");
     return this.vm;
+  }
+
+  clearLastValueTimers() {
+    for (const timer of this.lastValueTimers.values()) clearTimeout(timer);
+    this.lastValueTimers.clear();
   }
 
   accept(socket) {

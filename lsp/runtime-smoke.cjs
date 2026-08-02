@@ -151,6 +151,19 @@ async function main() {
 
     send({
       jsonrpc: "2.0",
+      id: 500,
+      method: "textDocument/hover",
+      params: {
+        textDocument: { uri: eventUri },
+        position: { line: 0, character: eventSource.indexOf("event") + 2 },
+      },
+    });
+    const eventHover = await response(500);
+    assert.match(eventHover.contents.value, /Last value/);
+    assert.match(eventHover.contents.value, /Ada/);
+
+    send({
+      jsonrpc: "2.0",
       id: 300,
       method: "textDocument/hover",
       params: { textDocument: { uri }, position: { line: 0, character: 4 } },

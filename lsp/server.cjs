@@ -74,7 +74,11 @@ function registerRuntime(target, snapshot) {
   }
   for (const handler of snapshot.handlers || []) {
     if (handler?.name && handler.shape) {
-      target.registerRuntimeShape(handler.name, JSON.stringify(handler.shape));
+      target.registerRuntimeShape(
+        handler.name,
+        JSON.stringify(handler.shape),
+        handler.lastValue === undefined ? undefined : JSON.stringify(handler.lastValue),
+      );
     }
   }
 }
