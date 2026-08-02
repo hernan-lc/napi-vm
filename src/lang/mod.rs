@@ -30,6 +30,32 @@ pub use service::LanguageService;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 
+/// Virtual module namespace used by playground completion.
+///
+/// This is a language-level specifier, not a filesystem path. Keeping it in
+/// the language module prevents completion code from coupling itself to the
+/// playground's current directory layout.
+pub const MODULE_NAMESPACE_PREFIX: &str = "@playground/";
+
+/// Extract a module name from a virtual playground module specifier.
+pub fn playground_module_name(specifier: &str) -> Option<&str> {
+    specifier
+        .strip_prefix(MODULE_NAMESPACE_PREFIX)
+        .filter(|name| !name.is_empty())
+}
+
+/// Build the virtual specifier used by completion for a playground module.
+pub fn playground_module_specifier(module_name: &str) -> String {
+    format!("{MODULE_NAMESPACE_PREFIX}{module_name}")
+}
+
+/// Return the text being typed after the last playground namespace prefix.
+pub fn playground_completion_module_prefix(source: &str) -> Option<&str> {
+    source
+        .rsplit_once(MODULE_NAMESPACE_PREFIX)
+        .map(|(_, rest)| rest)
+}
+
 /// The kind of a completion candidate or symbol, for icon/badge rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionKind {
@@ -321,9 +347,11 @@ mod tests {
             ],
             ..Default::default()
         };
-        let r = complete("@playground/u", "@playground/u".len(), &ctx);
+        let source = format!("{MODULE_NAMESPACE_PREFIX}u");
+        let r = complete(&source, source.len(), &ctx);
         let labels: Vec<&str> = r.iter().map(|c| c.label.as_str()).collect();
-        assert!(labels.contains(&"@playground/utils"));
+        let expected = format!("{MODULE_NAMESPACE_PREFIX}utils");
+        assert!(labels.contains(&expected.as_str()));
     }
 
     #[test]
@@ -335,7 +363,8 @@ mod tests {
             }],
             ..Default::default()
         };
-        let r = complete("@playground/utils.", "@playground/utils.".len(), &ctx);
+        let source = format!("{MODULE_NAMESPACE_PREFIX}utils.");
+        let r = complete(&source, source.len(), &ctx);
         let labels: Vec<&str> = r.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"format") && labels.contains(&"parse"));
     }

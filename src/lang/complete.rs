@@ -17,7 +17,10 @@ use crate::parser::{Parser, Statement};
 
 use super::catalog::{self, ProtoKind};
 use super::scope::{self, InitShape, Scope};
-use super::{AnalysisContext, Completion, CompletionKind};
+use super::{
+    AnalysisContext, Completion, CompletionKind, playground_completion_module_prefix,
+    playground_module_name, playground_module_specifier,
+};
 
 /// Compute completion candidates at a byte offset in the source.
 pub fn complete(source: &str, offset: usize, ctx: &AnalysisContext) -> Vec<Completion> {
@@ -83,9 +86,9 @@ fn analyze_trigger(before: &str) -> Trigger {
 
 /// Match `receiver.prefix` at the end of `before`, covering dotted chains,
 /// string-literal receivers, simple array-literal receivers, and
-/// `@playground/<module>.` namespace receivers.
+/// `<module namespace prefix><module>.` namespace receivers.
 fn match_member(before: &str) -> Option<(String, String)> {
-    // @playground/<module>.<prefix> namespace receiver first,
+    // Playground namespace receiver first,
     // before generic dotted chains.
     if let Some((recv, prefix)) = playground_member(before) {
         return Some((recv, prefix));
@@ -165,12 +168,12 @@ fn literal_receiver(before: &str, quote: char) -> Option<(String, String)> {
     Some((recv, prefix))
 }
 
-/// Match a trailing `@playground/<module>.<prefix>` pattern.
+/// Match a trailing playground-namespace module member pattern.
 fn playground_member(before: &str) -> Option<(String, String)> {
     let dot_pos = before.rfind('.')?;
     let recv = &before[..dot_pos];
     let prefix = &before[dot_pos + 1..];
-    if recv.starts_with("@playground/") && !recv["@playground/".len()..].is_empty() {
+    if playground_module_name(recv).is_some() {
         Some((recv.to_string(), prefix.to_string()))
     } else {
         None
@@ -240,16 +243,16 @@ fn complete_ident(
         add(k, CompletionKind::Keyword, None);
     }
 
-    // 6. @playground/ namespace: offer @playground/<module> when the
-    //    user is typing in a @playground/ import specifier.
-    if let Some(module_prefix) = before.rsplit_once("@playground/").map(|(_, rest)| rest) {
+    // 6. Playground namespace: offer names when the user is typing a module
+    //    specifier with the configured namespace prefix.
+    if let Some(module_prefix) = playground_completion_module_prefix(before) {
         let mut playgrounds: Vec<Completion> = Vec::new();
         for ctx_mod in &ctx.modules {
             if ctx_mod.name.starts_with(module_prefix) {
                 playgrounds.push(Completion {
-                    label: format!("@playground/{}", ctx_mod.name),
+                    label: playground_module_specifier(&ctx_mod.name),
                     kind: CompletionKind::Module,
-                    detail: Some("@playground module".to_string()),
+                    detail: Some("playground module".to_string()),
                 });
             }
         }
@@ -286,8 +289,8 @@ fn complete_member(
 
     let head = receiver.split('.').next().unwrap_or(receiver);
 
-    // @playground/<module> → the module's exports.
-    if let Some(module_name) = head.strip_prefix("@playground/")
+    // Configured playground namespace → the module's exports.
+    if let Some(module_name) = playground_module_name(head)
         && let Some(info) = ctx.modules.iter().find(|m| m.name == module_name)
     {
         let mut exports = info.exports.clone();
