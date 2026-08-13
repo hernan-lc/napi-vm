@@ -1,8 +1,8 @@
 use std::fs;
 
 use zed_extension_api::{
-    self as zed, settings::LspSettings, Architecture, DownloadedFileType, Extension,
-    GithubReleaseOptions, LanguageServerId, LanguageServerInstallationStatus, Os, Worktree,
+    self as zed, Architecture, DownloadedFileType, Extension, GithubReleaseOptions,
+    LanguageServerId, LanguageServerInstallationStatus, Os, Worktree, settings::LspSettings,
 };
 
 const GITHUB_REPO: &str = "nglmercer/napi-vm";

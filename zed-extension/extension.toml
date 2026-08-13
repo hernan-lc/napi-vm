@@ -1,8 +1,8 @@
 id = "napi-vm"
 name = "napi-vm"
-version = "0.1.1"
+version = "0.1.2"
 schema_version = 1
-authors = ["napi-vm"]
+authors = ["hernan-lc"]
 description = "NAPI-backed language intelligence for napi-vm playground projects."
 repository = "https://github.com/nglmercer/napi-vm"
 
