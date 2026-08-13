@@ -16,7 +16,7 @@ jobs:
     name: Linux x86_64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -24,7 +24,7 @@ jobs:
           targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -34,7 +34,7 @@ jobs:
           key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -53,9 +53,6 @@ jobs:
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
-      # A real LSP exchange: `Content-Length` framing, an `initialize`
-      # response, then `shutdown` + `exit` with the mandated exit codes. No
-      # `|| true` — a crash or a wrong answer must fail the job.
       - name: Verify LSP binary speaks LSP
         run: |
           set -euo pipefail
@@ -101,20 +98,110 @@ jobs:
           name: napi-vm-lsp-linux-x64
           path: target/release/napi-vm-lsp
 
-  # ── Windows x86_64 ────────────────────────────────────────────────────
-  win-x64:
-    name: Windows x86_64
-    runs-on: windows-latest
+  # ── Linux aarch64 ─────────────────────────────────────────────────────
+  linux-arm64:
+    name: Linux aarch64
+    runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: aarch64-unknown-linux-gnu
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build native module
+        run: npx napi build --platform --release
+
+      - name: Run Rust tests (core only, no NAPI)
+        run: cargo test --release --no-default-features
+
+      - name: Build napi-vm-lsp (no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp
+
+      - name: Upload .node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-linux-arm64
+          path: "*.node"
+
+  # ── macOS aarch64 (Apple Silicon) ─────────────────────────────────────
+  darwin-arm64:
+    name: macOS aarch64
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build native module
+        run: npx napi build --platform --release
+
+      - name: Run Rust tests (core only, no NAPI)
+        run: cargo test --release --no-default-features
+
+      - name: Build napi-vm-lsp (no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp
+
+      - name: Upload .node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-darwin-arm64
+          path: "*.node"
+
+  # ── macOS x86_64 ──────────────────────────────────────────────────────
+  darwin-x64:
+    name: macOS x86_64
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -124,7 +211,52 @@ jobs:
           key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build native module
+        run: npx napi build --platform --release
+
+      - name: Run Rust tests (core only, no NAPI)
+        run: cargo test --release --no-default-features
+
+      - name: Build napi-vm-lsp (no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp
+
+      - name: Upload .node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-darwin-x64
+          path: "*.node"
+
+  # ── Windows x86_64 ────────────────────────────────────────────────────
+  win-x64:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -154,3 +286,46 @@ jobs:
         with:
           name: napi-vm-lsp-win-x64
           path: target/release/napi-vm-lsp.exe
+
+  # ── Windows aarch64 ───────────────────────────────────────────────────
+  win-arm64:
+    name: Windows aarch64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build native module (cross-compile to arm64)
+        run: npx napi build --platform --release --target aarch64-pc-windows-msvc
+
+      - name: Build napi-vm-lsp (cross-compile, no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp --target aarch64-pc-windows-msvc
+
+      - name: Upload .node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-win-arm64
+          path: "*.node"
+

@@ -111,6 +111,17 @@ jobs:
             target/
           key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build native module
+        run: npx napi build --platform --release
+
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
@@ -129,6 +140,12 @@ jobs:
           tar czf napi-vm-lsp-linux-arm64.tar.gz -C lsp-dist napi-vm-lsp
           cp target/aarch64-unknown-linux-musl/release/napi-vm-lsp lsp-dist/napi-vm-lsp
           tar czf napi-vm-lsp-linux-arm64-musl.tar.gz -C lsp-dist napi-vm-lsp
+
+      - name: Upload .node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-linux-arm64
+          path: "*.node"
 
       - name: Upload LSP archive
         uses: actions/upload-artifact@v4
@@ -158,6 +175,17 @@ jobs:
             target/
           key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build native module
+        run: npx napi build --platform --release
+
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
@@ -167,6 +195,12 @@ jobs:
           cp target/release/napi-vm-lsp lsp-dist/napi-vm-lsp
           cd lsp-dist
           tar czf ../napi-vm-lsp-darwin-arm64.tar.gz napi-vm-lsp
+
+      - name: Upload .node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-darwin-arm64
+          path: "*.node"
 
       - name: Upload LSP archive
         uses: actions/upload-artifact@v4
@@ -196,6 +230,17 @@ jobs:
             target/
           key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build native module
+        run: npx napi build --platform --release
+
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
@@ -205,6 +250,12 @@ jobs:
           cp target/release/napi-vm-lsp lsp-dist/napi-vm-lsp
           cd lsp-dist
           tar czf ../napi-vm-lsp-darwin-x64.tar.gz napi-vm-lsp
+
+      - name: Upload .node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-darwin-x64
+          path: "*.node"
 
       - name: Upload LSP archive
         uses: actions/upload-artifact@v4
@@ -289,6 +340,17 @@ jobs:
             target/
           key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build native module (cross-compile to arm64)
+        run: npx napi build --platform --release --target aarch64-pc-windows-msvc
+
       - name: Build napi-vm-lsp (cross-compile, no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp --target aarch64-pc-windows-msvc
 
@@ -298,6 +360,12 @@ jobs:
           New-Item -ItemType Directory -Force lsp-dist
           Copy-Item target/aarch64-pc-windows-msvc/release/napi-vm-lsp.exe lsp-dist/napi-vm-lsp.exe
           Compress-Archive -Path lsp-dist/napi-vm-lsp.exe -DestinationPath napi-vm-lsp-windows-arm64.zip
+
+      - name: Upload .node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-win-arm64
+          path: "*.node"
 
       - name: Upload LSP archive
         uses: actions/upload-artifact@v4
