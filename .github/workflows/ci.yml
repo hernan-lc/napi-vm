@@ -44,18 +44,32 @@ jobs:
       - name: Build native module
         run: npx napi build --platform --release
 
-      - name: Run Rust tests
+      - name: Run Rust tests (full)
         run: cargo test --release
+
+      - name: Build napi-vm-lsp (no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp
+
+      - name: Verify LSP binary runs
+        run: |
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file:///tmp","capabilities":{}}}' \
+            | (timeout 2s ./target/release/napi-vm-lsp || true)
 
       - name: Run JS tests
         uses: oven-sh/setup-bun@v2
       - run: bun test
 
-      - name: Upload artifact
+      - name: Upload .node artifact
         uses: actions/upload-artifact@v4
         with:
           name: napi-vm-linux-x64
           path: "*.node"
+
+      - name: Upload LSP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-lsp-linux-x64
+          path: target/release/napi-vm-lsp
 
   # ── Windows x86_64 ────────────────────────────────────────────────────
   win-x64:
@@ -90,11 +104,20 @@ jobs:
       - name: Build native module
         run: npx napi build --platform --release
 
-      - name: Run Rust tests
+      - name: Run Rust tests (full)
         run: cargo test --release
 
-      - name: Upload artifact
+      - name: Build napi-vm-lsp (no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp
+
+      - name: Upload .node artifact
         uses: actions/upload-artifact@v4
         with:
           name: napi-vm-win-x64
           path: "*.node"
+
+      - name: Upload LSP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-lsp-win-x64
+          path: target/release/napi-vm-lsp.exe

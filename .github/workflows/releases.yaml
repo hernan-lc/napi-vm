@@ -44,11 +44,141 @@ jobs:
       - name: Build native module
         run: npx napi build --platform --release
 
-      - name: Upload artifact
+      - name: Build napi-vm-lsp (no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp
+
+      - name: Package LSP binary
+        run: |
+          mkdir -p lsp-dist
+          cp target/release/napi-vm-lsp lsp-dist/napi-vm-lsp
+          cd lsp-dist
+          tar czf ../napi-vm-lsp-linux-x64.tar.gz napi-vm-lsp
+
+      - name: Upload .node artifact
         uses: actions/upload-artifact@v4
         with:
           name: napi-vm-linux-x64
           path: "*.node"
+
+      - name: Upload LSP archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-lsp-linux-x64
+          path: napi-vm-lsp-linux-x64.tar.gz
+
+  # ── Linux aarch64 ─────────────────────────────────────────────────────
+  linux-arm64:
+    name: Linux aarch64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build napi-vm-lsp (no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp
+
+      - name: Package LSP binary
+        run: |
+          mkdir -p lsp-dist
+          cp target/release/napi-vm-lsp lsp-dist/napi-vm-lsp
+          cd lsp-dist
+          tar czf ../napi-vm-lsp-linux-arm64.tar.gz napi-vm-lsp
+
+      - name: Upload LSP archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-lsp-linux-arm64
+          path: napi-vm-lsp-linux-arm64.tar.gz
+
+  # ── macOS aarch64 (Apple Silicon) ─────────────────────────────────────
+  darwin-arm64:
+    name: macOS aarch64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build napi-vm-lsp (no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp
+
+      - name: Package LSP binary
+        run: |
+          mkdir -p lsp-dist
+          cp target/release/napi-vm-lsp lsp-dist/napi-vm-lsp
+          cd lsp-dist
+          tar czf ../napi-vm-lsp-darwin-arm64.tar.gz napi-vm-lsp
+
+      - name: Upload LSP archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-lsp-darwin-arm64
+          path: napi-vm-lsp-darwin-arm64.tar.gz
+
+  # ── macOS x86_64 ──────────────────────────────────────────────────────
+  darwin-x64:
+    name: macOS x86_64
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build napi-vm-lsp (no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp
+
+      - name: Package LSP binary
+        run: |
+          mkdir -p lsp-dist
+          cp target/release/napi-vm-lsp lsp-dist/napi-vm-lsp
+          cd lsp-dist
+          tar czf ../napi-vm-lsp-darwin-x64.tar.gz napi-vm-lsp
+
+      - name: Upload LSP archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-lsp-darwin-x64
+          path: napi-vm-lsp-darwin-x64.tar.gz
 
   # ── Windows x86_64 ────────────────────────────────────────────────────
   win-x64:
@@ -83,17 +213,71 @@ jobs:
       - name: Build native module
         run: npx napi build --platform --release
 
-      - name: Upload artifact
+      - name: Build napi-vm-lsp (no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp
+
+      - name: Package LSP binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force lsp-dist
+          Copy-Item target/release/napi-vm-lsp.exe lsp-dist/napi-vm-lsp.exe
+          Compress-Archive -Path lsp-dist/napi-vm-lsp.exe -DestinationPath napi-vm-lsp-windows-x64.zip
+
+      - name: Upload .node artifact
         uses: actions/upload-artifact@v4
         with:
           name: napi-vm-win-x64
           path: "*.node"
 
+      - name: Upload LSP archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-lsp-windows-x64
+          path: napi-vm-lsp-windows-x64.zip
+
+  # ── Windows aarch64 ───────────────────────────────────────────────────
+  win-arm64:
+    name: Windows aarch64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build napi-vm-lsp (cross-compile, no-default-features)
+        run: cargo build --release --no-default-features --bin napi-vm-lsp --target aarch64-pc-windows-msvc
+
+      - name: Package LSP binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force lsp-dist
+          Copy-Item target/aarch64-pc-windows-msvc/release/napi-vm-lsp.exe lsp-dist/napi-vm-lsp.exe
+          Compress-Archive -Path lsp-dist/napi-vm-lsp.exe -DestinationPath napi-vm-lsp-windows-arm64.zip
+
+      - name: Upload LSP archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-lsp-windows-arm64
+          path: napi-vm-lsp-windows-arm64.zip
+
   # ── Create Release ────────────────────────────────────────────────────
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [linux-x64, win-x64]
+    needs: [linux-x64, linux-arm64, darwin-arm64, darwin-x64, win-x64, win-arm64]
     steps:
       - uses: actions/checkout@v4
 
@@ -106,9 +290,13 @@ jobs:
       - name: Collect release files
         run: |
           mkdir -p release
+          # .node files for the Node/Electron N-API layer
           find artifacts -name '*.node' -exec cp {} release/ \;
           cp index.js release/
           cp index.d.ts release/
+          # napi-vm-lsp native LSP binaries for all platforms
+          find artifacts -name '*.tar.gz' -exec cp {} release/ \;
+          find artifacts -name '*.zip' -exec cp {} release/ \;
           echo "=== Release files ==="
           ls -lh release/
 

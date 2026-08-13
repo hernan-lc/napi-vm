@@ -20,26 +20,73 @@ service.open("file:///main.js", 'alert("hello");');
 console.log(service.hover("file:///main.js", 3));
 ```
 
-The browser playground, Node LSP, and future native desktop editors all call
-this same service instead of implementing separate inference engines.
+The browser playground, native LSP server, and future native desktop editors
+all call this same service instead of implementing separate inference engines.
 
-## LSP
+## Native LSP server
 
-The stdio adapter is `lsp/server.cjs`. Static metadata is opt-in:
+`napi-vm-lsp` is a standalone native Rust binary that implements the
+[Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
+over stdio. It does **not** depend on Node.js, `node_modules`, or any
+application-level package layout.
+
+### Build
 
 ```bash
-node lsp/server.cjs --config ./path/to/manifest.json
+cargo build --release --no-default-features --bin napi-vm-lsp
 ```
 
-The server does not create or load `.napi-vm.json` by default. A manifest is
-only used when the embedding editor explicitly passes `--config`.
+The binary in `target/release/napi-vm-lsp` is fully self-contained.
 
-## Live VM metadata
+### Capabilities
 
-`VmSession` is an optional local runtime bridge. It writes only a temporary
-`.napi-vm/runtime.json` locator and sends the actual metadata through a local
-Unix socket or Windows named pipe. The locator is ignored by Git, regenerated
-for every process/machine, and removed when the session stops.
+| LSP method                        | Behaviour                                      |
+|-----------------------------------|------------------------------------------------|
+| `initialize`                      | Discovers workspace root and connects runtime. |
+| `textDocument/didOpen`            | Parses and indexes the document.               |
+| `textDocument/didChange`          | Re-parses and publishes fresh diagnostics.     |
+| `textDocument/didClose`           | Releases the document and clears diagnostics.  |
+| `textDocument/completion`         | Returns context-aware completions.             |
+| `textDocument/hover`              | Returns type and documentation on hover.       |
+| `textDocument/publishDiagnostics` | Pushed automatically on every change.          |
+
+### Optional static manifest
+
+Pass `--config` to pre-register host functions and modules without a running
+application:
+
+```bash
+napi-vm-lsp --config ./napi-vm-manifest.json
+```
+
+Manifest format:
+
+```json
+{
+  "hostFunctions": [
+    {
+      "name": "alert",
+      "params": [{ "name": "message", "typeName": "string" }],
+      "returns": "void",
+      "documentation": "Displays a message."
+    }
+  ],
+  "modules": [
+    { "name": "utils", "path": "./src/utils.js" }
+  ]
+}
+```
+
+## Live VM metadata via Runtime Protocol
+
+`VmSession` is an optional local runtime bridge. When active, the LSP
+receives live host-function registrations, module sources, and observed event
+shapes through the [Runtime Protocol v1](./runtime-protocol.md).
+
+The application writes a temporary `.napi-vm/runtime.json` locator and streams
+the actual metadata through a local Unix socket (Linux/macOS) or Windows named
+pipe. The locator is ignored by Git, regenerated for every process restart,
+and removed when the session stops.
 
 The hot-reload example enables this bridge explicitly:
 
@@ -48,27 +95,35 @@ NAPI_VM_SESSION=1 bun examples/hotreload.ts
 ```
 
 Without `NAPI_VM_SESSION=1`, the example runs entirely in-process and creates
-no runtime locator. The LSP reconnects when the session restarts and rebuilds
-its analysis context when functions or modules change.
+no runtime locator. The LSP reconnects automatically when the session restarts
+and rebuilds its analysis context when functions or modules change.
 
 ## Zed
 
-The optional `zed-extension/` launcher starts the Node LSP with Zed's bundled
-Node runtime and preserves normal JavaScript Tree-sitter highlighting.
+The `zed-extension/` directory contains a Zed extension that downloads
+`napi-vm-lsp` from GitHub Releases and launches it as a native process:
 
-Build it with:
+```
+Zed → napi-vm-lsp (native binary) → LanguageService (Rust core)
+```
+
+There is **no dependency on Node.js** or `node_modules` in the editor path.
+The binary works regardless of how the consumer application is packaged
+(Electron, Tauri, ASAR, Bun compiled, etc.).
+
+Build the extension WASM:
 
 ```bash
 npm run zed:build
 ```
 
 Install the `zed-extension/` directory using Zed's local development-extension
-flow. Start a configured `VmSession` in the workspace to provide live host
-functions, module metadata, observed JSON event shapes, and the latest bounded
-event value. When a host calls `session.observeHandler("handleChat", event)`,
-the editor can complete nested properties such as `event.data.nickname` and
-show the latest payload when hovering the handler parameter, without executing
-the guest script. No manifest copy is required.
+flow. If a `VmSession` is running in the workspace, the editor automatically
+receives live host functions, module metadata, observed JSON event shapes, and
+the latest bounded event value. When a host calls
+`session.observeHandler("handleChat", event)`, the editor can complete nested
+properties such as `event.data.nickname` and show the latest payload when
+hovering the handler parameter, without executing the guest script.
 
 ## IPC-style VM commands
 
