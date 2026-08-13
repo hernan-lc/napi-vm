@@ -47,13 +47,43 @@ jobs:
       - name: Run Rust tests (full)
         run: cargo test --release
 
+      - name: Run Rust tests (core only, no NAPI)
+        run: cargo test --release --no-default-features
+
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
-      - name: Verify LSP binary runs
+      # A real LSP exchange: `Content-Length` framing, an `initialize`
+      # response, then `shutdown` + `exit` with the mandated exit codes. No
+      # `|| true` — a crash or a wrong answer must fail the job.
+      - name: Verify LSP binary speaks LSP
         run: |
-          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file:///tmp","capabilities":{}}}' \
-            | (timeout 2s ./target/release/napi-vm-lsp || true)
+          set -euo pipefail
+          frame() {
+            printf 'Content-Length: %s\r\n\r\n%s' "$(printf '%s' "$1" | wc -c)" "$1"
+          }
+          INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":"file:///tmp","capabilities":{}}}'
+          SHUTDOWN='{"jsonrpc":"2.0","id":2,"method":"shutdown","params":{}}'
+          EXIT='{"jsonrpc":"2.0","method":"exit","params":{}}'
+
+          OUTPUT="$( { frame "$INIT"; frame "$SHUTDOWN"; frame "$EXIT"; } \
+            | ./target/release/napi-vm-lsp )"
+          echo "$OUTPUT" | grep -q '"name":"napi-vm-lsp"'
+          echo "$OUTPUT" | grep -q 'Content-Length:'
+
+          # exit after shutdown -> 0
+          { frame "$INIT"; frame "$SHUTDOWN"; frame "$EXIT"; } | ./target/release/napi-vm-lsp > /dev/null
+          # exit without shutdown -> 1
+          set +e
+          { frame "$INIT"; frame "$EXIT"; } | ./target/release/napi-vm-lsp > /dev/null
+          code=$?
+          set -e
+          test "$code" -eq 1
+
+      - name: Build Zed extension (wasm32-wasip2)
+        run: |
+          rustup target add wasm32-wasip2
+          cargo build --manifest-path zed-extension/Cargo.toml --target wasm32-wasip2 --release
 
       - name: Run JS tests
         uses: oven-sh/setup-bun@v2
@@ -106,6 +136,9 @@ jobs:
 
       - name: Run Rust tests (full)
         run: cargo test --release
+
+      - name: Run Rust tests (core only, no NAPI)
+        run: cargo test --release --no-default-features
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp

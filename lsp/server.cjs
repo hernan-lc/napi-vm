@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
-// Minimal stdio LSP adapter for Zed. The language intelligence lives in the
-// Rust core and is exposed to this process through the napi-vm addon.
+// DEPRECATED. The supported language server is the standalone native binary
+// `napi-vm-lsp` (`src/bin/napi-vm-lsp.rs`), which no editor integration routes
+// through Node.js or `node_modules`. This Node adapter is kept only for
+// embedders that already load the addon in-process, is exercised by
+// `npm run lsp:legacy-smoke`, and will be removed once nothing depends on it.
+//
+// Minimal stdio LSP adapter. The language intelligence lives in the Rust core
+// and is exposed to this process through the napi-vm addon.
 const fs = require("node:fs");
 const path = require("node:path");
 const { fileURLToPath } = require("node:url");

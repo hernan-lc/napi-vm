@@ -6,9 +6,8 @@
 mod protocol;
 mod runtime_client;
 mod server;
+mod text;
 
-pub use protocol::{
-    PROTOCOL_VERSION, RuntimeLocator, TransportKind, locator_path, workspace_id,
-};
+pub use protocol::{PROTOCOL_VERSION, RuntimeLocator, TransportKind, locator_path, workspace_id};
 pub use runtime_client::RuntimeClient;
 pub use server::run;

@@ -10,9 +10,9 @@ pub mod format;
 pub mod host;
 pub mod interpreter;
 pub mod lang;
+pub mod lexer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lsp;
-pub mod lexer;
 pub mod parser;
 pub mod span;
 pub mod value;

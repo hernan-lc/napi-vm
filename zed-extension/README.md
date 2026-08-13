@@ -1,17 +1,81 @@
-# napi-vm Zed launcher
+# napi-vm Zed extension
 
-This is intentionally a thin Zed extension. It starts the Node stdio server;
-the server loads the native `napi-vm` addon and watches the workspace's live
-`.napi-vm/runtime.json` locator only when a `VmSession` is running. No
-`.napi-vm.json` file is created or loaded by default.
+A thin launcher for the standalone native language server:
 
-For local development, open this directory as a Zed extension project or use
-Zed's local extension installation flow. In a workspace checkout the launcher
-uses `lsp/server.cjs`; in a consumer project it falls back to
-`node_modules/napi-vm/lsp/server.cjs`.
+```
+Zed extension
+  ↓ locate (settings → $PATH) or download the platform binary
+napi-vm-lsp
+  ↓
+napi_vm::lang::LanguageService (Rust core)
+```
 
-The JavaScript language remains Zed's normal JavaScript language, so its
-Tree-sitter highlighting is preserved. This extension only contributes the
-napi-vm language server. Start `NAPI_VM_SESSION=1 bun examples/hotreload.ts`
-from the workspace to publish live host functions and module exports for
-completion and hover.
+Node.js is never involved. Nothing is resolved out of the consumer project's
+`node_modules`, so the extension behaves identically for npm, pnpm, Electron,
+Electron ASAR, Bun-compiled applications, and projects with no `node_modules`
+at all.
+
+## How the binary is resolved
+
+1. **Explicitly configured path** — `lsp.napi-vm.binary.path` in Zed settings,
+   or the `NAPI_VM_LSP_PATH` environment variable:
+
+   ```json
+   {
+     "lsp": {
+       "napi-vm": {
+         "binary": { "path": "/absolute/path/to/napi-vm-lsp" }
+       }
+     }
+   }
+   ```
+
+2. **`$PATH`** — a `napi-vm-lsp` visible to the worktree's shell environment.
+
+3. **GitHub Releases** — the platform archive for the latest release
+   (`napi-vm-lsp-<os>-<arch>.tar.gz` / `.zip`), extracted into the extension's
+   working directory and marked executable. Older versions are pruned.
+
+The executable is never inspected with a text-reading API; it is located by
+path or by `which`, and then executed.
+
+## Local development
+
+```bash
+cargo build --release --no-default-features --bin napi-vm-lsp
+export PATH="$PWD/target/release:$PATH"
+```
+
+Then install the `zed-extension/` directory through Zed's dev-extension flow.
+Rebuild the extension itself with:
+
+```bash
+npm run zed:build   # cargo build --target wasm32-wasip2 --release
+```
+
+## Runtime metadata
+
+The language server owns editor intelligence; the application owns runtime
+metadata. They meet only at `<workspace>/.napi-vm/runtime.json` plus a Unix
+domain socket (Windows: named pipe) — Runtime Protocol v1 — so neither side
+depends on the other's filesystem layout.
+
+Start a session to publish live host functions, module exports and observed
+event shapes:
+
+```bash
+NAPI_VM_SESSION=1 bun examples/hotreload.ts
+```
+
+Without a running session no locator exists and the server simply serves
+static analysis. No `.napi-vm.json` file is created or read by default.
+
+## Linux compatibility
+
+Releases ship both a glibc build (`napi-vm-lsp-linux-<arch>.tar.gz`) and a
+statically linked musl build (`napi-vm-lsp-linux-<arch>-musl.tar.gz`). If the
+glibc build reports `GLIBC_x.xx not found` on an older distribution, download
+the musl archive and point `lsp.napi-vm.binary.path` at it.
+
+JavaScript keeps Zed's built-in language (and its Tree-sitter highlighting);
+this extension only contributes the napi-vm language server.
