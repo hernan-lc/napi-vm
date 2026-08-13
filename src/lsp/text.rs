@@ -18,10 +18,60 @@ use url::Url;
 /// gets wrong. Non-URI inputs are passed through as plain paths so that
 /// callers that already hold a path keep working.
 pub fn uri_path(uri: &str) -> PathBuf {
-    Url::parse(uri)
-        .ok()
-        .and_then(|url| url.to_file_path().ok())
-        .unwrap_or_else(|| PathBuf::from(uri))
+    let Ok(url) = Url::parse(uri) else {
+        return PathBuf::from(uri);
+    };
+    if let Ok(path) = url.to_file_path() {
+        return path;
+    }
+    if url.scheme() != "file" {
+        return PathBuf::from(uri);
+    }
+    // `to_file_path` refuses some well-formed `file://` URIs — notably a
+    // POSIX-style `file:///home/...` when running on Windows, which has no
+    // drive letter. The decoded path is still the best answer available, and
+    // it must never leave `%20` in a path we then hash as the workspace root.
+    PathBuf::from(percent_decode(url.path()))
+}
+
+/// Decode `%XX` escapes. Invalid escapes are left as literal text, and bytes
+/// that do not form valid UTF-8 are replaced rather than dropped.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match (bytes[index], bytes.get(index + 1), bytes.get(index + 2)) {
+            (b'%', Some(&high), Some(&low)) => match hex_pair(high, low) {
+                Some(byte) => {
+                    out.push(byte);
+                    index += 3;
+                }
+                None => {
+                    out.push(bytes[index]);
+                    index += 1;
+                }
+            },
+            _ => {
+                out.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_pair(high: u8, low: u8) -> Option<u8> {
+    Some((hex_digit(high)? << 4) | hex_digit(low)?)
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Byte offset of the start of `line` (0-based), clamped to `text.len()`.
@@ -98,6 +148,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn percent_escapes_decode_and_survive_invalid_input() {
+        assert_eq!(percent_decode("/My%20Project"), "/My Project");
+        assert_eq!(percent_decode("/%C3%A1ccents"), "/áccents");
+        // Truncated or non-hex escapes stay literal instead of eating bytes.
+        assert_eq!(percent_decode("/100%"), "/100%");
+        assert_eq!(percent_decode("/100%zz"), "/100%zz");
+        assert_eq!(percent_decode("/a%2"), "/a%2");
+    }
+
+    // The POSIX-style URIs below take `Url::to_file_path` on unix and the
+    // percent-decoding fallback on Windows, where they have no drive letter.
+    #[test]
     fn plain_uri_round_trips() {
         assert_eq!(
             uri_path("file:///home/user/project"),
@@ -136,6 +198,25 @@ mod tests {
                 .to_string_lossy()
                 .contains("My Project")
         );
+    }
+
+    #[test]
+    fn no_platform_leaves_escapes_in_a_file_path() {
+        // Whichever branch a platform takes, an escape must never reach the
+        // filesystem: the workspace root is hashed, so `%20` would silently
+        // break runtime discovery.
+        for uri in [
+            "file:///home/user/My%20Project",
+            "file:///C:/Users/user/My%20Project",
+            "file://localhost/home/user/My%20Project",
+            "file:///home/user/%C3%A1ccents",
+        ] {
+            let path = uri_path(uri);
+            assert!(
+                !path.to_string_lossy().contains('%'),
+                "{uri} resolved to {path:?}"
+            );
+        }
     }
 
     #[test]
