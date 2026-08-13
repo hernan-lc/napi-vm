@@ -9,9 +9,12 @@
 | `npm test` | Run the JavaScript regression suite |
 | `npm run ipc:smoke` | Test IPC commands and events |
 | `npm run runtime:smoke` | Test the local runtime locator/transport |
-| `npm run lsp:smoke` | Test LSP framing with an explicit temporary manifest |
-| `npm run lsp:runtime-smoke` | Test LSP discovery from a live `VmSession` |
-| `npm run lsp` | Start the Node stdio LSP server |
+| `npm run lsp` | Start the native `napi-vm-lsp` server |
+| `npm run lsp:build` | Build the standalone `napi-vm-lsp` binary |
+| `npm run lsp:test` | Run the protocol-level LSP and runtime tests |
+| `npm run lsp:legacy` | Start the deprecated Node stdio server (`lsp/server.cjs`) |
+| `npm run lsp:legacy-smoke` | Legacy: LSP framing with an explicit temporary manifest |
+| `npm run lsp:legacy-runtime-smoke` | Legacy: LSP discovery from a live `VmSession` |
 | `npm run zed:build` | Build the Zed `wasm32-wasip2` extension |
 | `npm run playground:build` | Build the browser WASM package |
 | `npm run playground` | Start the Vite browser playground |

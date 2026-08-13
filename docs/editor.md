@@ -111,11 +111,30 @@ There is **no dependency on Node.js** or `node_modules` in the editor path.
 The binary works regardless of how the consumer application is packaged
 (Electron, Tauri, ASAR, Bun compiled, etc.).
 
+The extension resolves the binary in this order: an explicitly configured path
+(`lsp.napi-vm.binary.path`, or the `NAPI_VM_LSP_PATH` environment variable),
+then `$PATH`, then the platform archive from the latest GitHub release. For
+local development, build the binary and put it on `$PATH`:
+
+```bash
+cargo build --release --no-default-features --bin napi-vm-lsp
+export PATH="$PWD/target/release:$PATH"
+```
+
 Build the extension WASM:
 
 ```bash
 npm run zed:build
 ```
+
+### Linux binary compatibility
+
+Each release ships two Linux builds per architecture: a glibc build
+(`napi-vm-lsp-linux-<arch>.tar.gz`) and a statically linked musl build
+(`napi-vm-lsp-linux-<arch>-musl.tar.gz`). The extension downloads the glibc
+build; on a distribution older than the CI image, that can fail with
+`GLIBC_x.xx not found`. Download the musl archive instead and point
+`lsp.napi-vm.binary.path` at it — it has no shared-library requirements.
 
 Install the `zed-extension/` directory using Zed's local development-extension
 flow. If a `VmSession` is running in the workspace, the editor automatically

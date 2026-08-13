@@ -1,22 +1,30 @@
 use std::fs;
 
 use zed_extension_api::{
-    self as zed, Architecture, DownloadedFileType, Extension, GithubReleaseOptions,
-    LanguageServerId, LanguageServerInstallationStatus, Os, Worktree,
+    self as zed, settings::LspSettings, Architecture, DownloadedFileType, Extension,
+    GithubReleaseOptions, LanguageServerId, LanguageServerInstallationStatus, Os, Worktree,
 };
 
 const GITHUB_REPO: &str = "nglmercer/napi-vm";
 const BINARY_NAME: &str = "napi-vm-lsp";
+/// Escape hatch for local development: point this at a built binary.
+const PATH_ENV_VAR: &str = "NAPI_VM_LSP_PATH";
 
 struct NapiVmExtension {
     cached: Option<String>,
 }
 
 impl NapiVmExtension {
-    fn binary_relpath(os: Os) -> String {
+    /// The executable's file name inside the extracted release archive.
+    ///
+    /// The archives are packaged with the binary at their root
+    /// (`tar czf … napi-vm-lsp`), so after extraction into `<version_dir>` the
+    /// binary sits directly at `<version_dir>/napi-vm-lsp[.exe]` — with no
+    /// intermediate directory.
+    fn binary_name(os: Os) -> &'static str {
         match os {
-            Os::Windows => format!("{BINARY_NAME}/{BINARY_NAME}.exe"),
-            _ => format!("{BINARY_NAME}/{BINARY_NAME}"),
+            Os::Windows => "napi-vm-lsp.exe",
+            _ => BINARY_NAME,
         }
     }
 
@@ -37,30 +45,49 @@ impl NapiVmExtension {
         Ok(name.into())
     }
 
-    fn local_binary(worktree: &Worktree) -> Option<String> {
-        let root = worktree.root_path();
-        let candidates = [
-            format!("target/release/{BINARY_NAME}"),
-            format!("target/debug/{BINARY_NAME}"),
-            format!("target/release/{BINARY_NAME}.exe"),
-            format!("target/debug/{BINARY_NAME}.exe"),
-        ];
-        for relative in candidates {
-            if worktree.read_text_file(&relative).is_ok() {
-                return Some(format!("{root}/{relative}"));
-            }
+    /// An explicitly configured binary: Zed's
+    /// `lsp.napi-vm.binary.path` setting first, then the `NAPI_VM_LSP_PATH`
+    /// environment variable.
+    fn configured_binary(
+        language_server_id: &LanguageServerId,
+        worktree: &Worktree,
+    ) -> Option<String> {
+        if let Some(path) = LspSettings::for_worktree(language_server_id.as_ref(), worktree)
+            .ok()
+            .and_then(|settings| settings.binary)
+            .and_then(|binary| binary.path)
+        {
+            return Some(path);
         }
-        None
+        worktree
+            .shell_env()
+            .into_iter()
+            .find(|(key, _)| key == PATH_ENV_VAR)
+            .map(|(_, value)| value)
+            .filter(|value| !value.is_empty())
     }
 
-    fn ensure_language_server(
+    /// A `napi-vm-lsp` already on `$PATH`. This is the local development path:
+    ///
+    /// ```sh
+    /// cargo build --release --no-default-features --bin napi-vm-lsp
+    /// export PATH="$PWD/target/release:$PATH"
+    /// ```
+    ///
+    /// The binary is deliberately never inspected with a text-reading API —
+    /// it is an executable, not a text file.
+    fn binary_on_path(worktree: &Worktree) -> Option<String> {
+        worktree.which(BINARY_NAME)
+    }
+
+    fn download_language_server(
         &mut self,
         language_server_id: &LanguageServerId,
     ) -> zed::Result<String> {
-        if let Some(path) = &self.cached
-            && fs::metadata(path).is_ok()
-        {
-            return Ok(path.clone());
+        if let Some(path) = &self.cached {
+            if fs::metadata(path).is_ok() {
+                return Ok(path.clone());
+            }
         }
 
         zed::set_language_server_installation_status(
@@ -84,7 +111,7 @@ impl NapiVmExtension {
             .ok_or_else(|| format!("release {} has no {asset_name}", release.version))?;
 
         let version_dir = format!("{BINARY_NAME}-{}", release.version);
-        let binary_path = format!("{version_dir}/{}", Self::binary_relpath(os));
+        let binary_path = format!("{version_dir}/{}", Self::binary_name(os));
         if fs::metadata(&binary_path).is_err() {
             zed::set_language_server_installation_status(
                 language_server_id,
@@ -126,11 +153,30 @@ impl Extension for NapiVmExtension {
         language_server_id: &LanguageServerId,
         worktree: &Worktree,
     ) -> zed::Result<zed::Command> {
-        if let Some(local) = Self::local_binary(worktree) {
-            return Ok(zed::Command::new(local));
-        }
-        let server = self.ensure_language_server(language_server_id)?;
-        Ok(zed::Command::new(server))
+        // Resolution order: explicitly configured path → `$PATH` → the
+        // platform binary from the latest GitHub release. Node.js is never
+        // involved, and nothing is resolved out of the project's
+        // `node_modules`.
+        let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree).ok();
+        let command = match Self::configured_binary(language_server_id, worktree)
+            .or_else(|| Self::binary_on_path(worktree))
+        {
+            Some(path) => path,
+            None => self.download_language_server(language_server_id)?,
+        };
+
+        let binary_settings = settings.and_then(|settings| settings.binary);
+        Ok(zed::Command {
+            command,
+            args: binary_settings
+                .as_ref()
+                .and_then(|binary| binary.arguments.clone())
+                .unwrap_or_default(),
+            env: binary_settings
+                .and_then(|binary| binary.env)
+                .map(|env| env.into_iter().collect())
+                .unwrap_or_else(|| worktree.shell_env()),
+        })
     }
 }
 

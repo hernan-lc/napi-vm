@@ -1,6 +1,6 @@
 id = "napi-vm"
 name = "napi-vm"
-version = "0.1.0"
+version = "0.1.1"
 schema_version = 1
 authors = ["napi-vm"]
 description = "NAPI-backed language intelligence for napi-vm playground projects."

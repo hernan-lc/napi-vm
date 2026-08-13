@@ -47,12 +47,24 @@ jobs:
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
-      - name: Package LSP binary
+      # A musl build in addition to the glibc one: a binary linked against a
+      # recent glibc fails with `GLIBC_x.xx not found` on older distributions,
+      # while the musl build is statically linked and runs everywhere.
+      - name: Build napi-vm-lsp (musl, static)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --no-default-features --bin napi-vm-lsp \
+            --target x86_64-unknown-linux-musl
+
+      - name: Package LSP binaries
         run: |
           mkdir -p lsp-dist
           cp target/release/napi-vm-lsp lsp-dist/napi-vm-lsp
-          cd lsp-dist
-          tar czf ../napi-vm-lsp-linux-x64.tar.gz napi-vm-lsp
+          tar czf napi-vm-lsp-linux-x64.tar.gz -C lsp-dist napi-vm-lsp
+          cp target/x86_64-unknown-linux-musl/release/napi-vm-lsp lsp-dist/napi-vm-lsp
+          tar czf napi-vm-lsp-linux-x64-musl.tar.gz -C lsp-dist napi-vm-lsp
 
       - name: Upload .node artifact
         uses: actions/upload-artifact@v4
@@ -60,11 +72,22 @@ jobs:
           name: napi-vm-linux-x64
           path: "*.node"
 
+      # The generated NAPI loader and types are build outputs, not checked-in
+      # files: the release job consumes these artifacts instead of copying
+      # whatever happens to be committed in a fresh checkout.
+      - name: Upload npm runtime files
+        uses: actions/upload-artifact@v4
+        with:
+          name: napi-vm-runtime
+          path: |
+            index.js
+            index.d.ts
+
       - name: Upload LSP archive
         uses: actions/upload-artifact@v4
         with:
           name: napi-vm-lsp-linux-x64
-          path: napi-vm-lsp-linux-x64.tar.gz
+          path: napi-vm-lsp-linux-x64*.tar.gz
 
   # ── Linux aarch64 ─────────────────────────────────────────────────────
   linux-arm64:
@@ -91,18 +114,27 @@ jobs:
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
-      - name: Package LSP binary
+      - name: Build napi-vm-lsp (musl, static)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add aarch64-unknown-linux-musl
+          cargo build --release --no-default-features --bin napi-vm-lsp \
+            --target aarch64-unknown-linux-musl
+
+      - name: Package LSP binaries
         run: |
           mkdir -p lsp-dist
           cp target/release/napi-vm-lsp lsp-dist/napi-vm-lsp
-          cd lsp-dist
-          tar czf ../napi-vm-lsp-linux-arm64.tar.gz napi-vm-lsp
+          tar czf napi-vm-lsp-linux-arm64.tar.gz -C lsp-dist napi-vm-lsp
+          cp target/aarch64-unknown-linux-musl/release/napi-vm-lsp lsp-dist/napi-vm-lsp
+          tar czf napi-vm-lsp-linux-arm64-musl.tar.gz -C lsp-dist napi-vm-lsp
 
       - name: Upload LSP archive
         uses: actions/upload-artifact@v4
         with:
           name: napi-vm-lsp-linux-arm64
-          path: napi-vm-lsp-linux-arm64.tar.gz
+          path: napi-vm-lsp-linux-arm64*.tar.gz
 
   # ── macOS aarch64 (Apple Silicon) ─────────────────────────────────────
   darwin-arm64:
@@ -279,8 +311,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [linux-x64, linux-arm64, darwin-arm64, darwin-x64, win-x64, win-arm64]
     steps:
-      - uses: actions/checkout@v4
-
+      # No checkout: every published file must come from a build job's
+      # artifacts, so a stale generated `index.js` in the repository can never
+      # end up in a release.
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -289,16 +322,43 @@ jobs:
 
       - name: Collect release files
         run: |
+          set -euo pipefail
           mkdir -p release
           # .node files for the Node/Electron N-API layer
           find artifacts -name '*.node' -exec cp {} release/ \;
-          cp index.js release/
-          cp index.d.ts release/
+          # Generated NAPI loader + types, straight from the canonical build job
+          cp artifacts/index.js artifacts/index.d.ts release/
           # napi-vm-lsp native LSP binaries for all platforms
           find artifacts -name '*.tar.gz' -exec cp {} release/ \;
           find artifacts -name '*.zip' -exec cp {} release/ \;
           echo "=== Release files ==="
           ls -lh release/
+
+      # The Zed extension looks these names up verbatim, and expects the
+      # executable at the archive root. Fail the release rather than publish
+      # assets the extension cannot find or unpack.
+      - name: Verify LSP assets match the Zed extension's lookup
+        run: |
+          set -euo pipefail
+          for asset in \
+            napi-vm-lsp-linux-x64.tar.gz \
+            napi-vm-lsp-linux-arm64.tar.gz \
+            napi-vm-lsp-darwin-x64.tar.gz \
+            napi-vm-lsp-darwin-arm64.tar.gz \
+            napi-vm-lsp-windows-x64.zip \
+            napi-vm-lsp-windows-arm64.zip
+          do
+            test -f "release/$asset" || { echo "missing $asset"; exit 1; }
+          done
+          for archive in release/*.tar.gz; do
+            entries="$(tar tzf "$archive")"
+            test "$entries" = "napi-vm-lsp" \
+              || { echo "$archive must contain napi-vm-lsp at its root, got: $entries"; exit 1; }
+          done
+          for archive in release/*.zip; do
+            unzip -Z1 "$archive" | grep -qx 'napi-vm-lsp.exe' \
+              || { echo "$archive must contain napi-vm-lsp.exe at its root"; exit 1; }
+          done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

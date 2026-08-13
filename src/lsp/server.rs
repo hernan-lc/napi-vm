@@ -11,6 +11,7 @@ use crate::lang::{
 };
 
 use super::runtime_client::{RuntimeClient, RuntimeEvent};
+use super::text::{diagnostic_position, position_to_offset, uri_path};
 
 const SERVER_NAME: &str = "napi-vm-lsp";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -158,22 +159,21 @@ impl Server {
     }
 
     fn publish_diagnostics(&self, uri: &str) {
+        let text = self.documents.get(uri).map(String::as_str).unwrap_or("");
         let diagnostics = self
             .service
             .diagnostics(uri)
             .unwrap_or_default()
             .into_iter()
             .map(|diagnostic| {
+                // `crate::lang` reports 1-based character columns; LSP ranges
+                // are 0-based and counted in UTF-16 code units.
+                let (line, start) = diagnostic_position(text, diagnostic.line, diagnostic.col);
+                let (_, end) = diagnostic_position(text, diagnostic.line, diagnostic.col + 1);
                 json!({
                     "range": {
-                        "start": {
-                            "line": diagnostic.line.saturating_sub(1),
-                            "character": diagnostic.col.saturating_sub(1)
-                        },
-                        "end": {
-                            "line": diagnostic.line.saturating_sub(1),
-                            "character": diagnostic.col
-                        }
+                        "start": { "line": line, "character": start },
+                        "end": { "line": line, "character": end }
                     },
                     "severity": match diagnostic.severity {
                         DiagnosticSeverity::Error => 1,
@@ -212,10 +212,8 @@ impl Server {
 
         match method {
             "initialize" => {
-                if let Some(workspace) = params
-                    .get("rootUri")
-                    .and_then(Value::as_str)
-                    .or_else(|| {
+                if let Some(workspace) =
+                    params.get("rootUri").and_then(Value::as_str).or_else(|| {
                         params
                             .pointer("/workspaceFolders/0/uri")
                             .and_then(Value::as_str)
@@ -231,6 +229,9 @@ impl Server {
                         id,
                         json!({
                             "capabilities": {
+                                // UTF-16 is the LSP default; state it so the
+                                // negotiated encoding is never ambiguous.
+                                "positionEncoding": "utf-16",
                                 "textDocumentSync": 1,
                                 "hoverProvider": true,
                                 "completionProvider": { "triggerCharacters": [".", "_"] },
@@ -254,7 +255,10 @@ impl Server {
                     response(id, Value::Null);
                 }
             }
-            "exit" => return self.shutdown,
+            // `exit` always stops the event loop. The caller turns the
+            // recorded `shutdown` flag into the exit code (0 if `shutdown`
+            // was received first, 1 otherwise).
+            "exit" => return false,
             "textDocument/didOpen" => {
                 if let (Some(uri), Some(text)) = (
                     params.pointer("/textDocument/uri").and_then(Value::as_str),
@@ -295,10 +299,7 @@ impl Server {
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 let text = self.documents.get(uri).cloned().unwrap_or_default();
-                let offset = text_offset(
-                    &text,
-                    params.get("position").cloned().unwrap_or(json!({"line":0,"character":0})),
-                );
+                let offset = text_offset(&text, params.get("position"));
                 let context = self.service.context();
                 let items = self
                     .service
@@ -323,10 +324,7 @@ impl Server {
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 let text = self.documents.get(uri).cloned().unwrap_or_default();
-                let offset = text_offset(
-                    &text,
-                    params.get("position").cloned().unwrap_or(json!({"line":0,"character":0})),
-                );
+                let offset = text_offset(&text, params.get("position"));
                 let result = self.service.hover(uri, offset).map(|info| {
                     let value = match &info.documentation {
                         Some(docs) => format!("{}\n\n{docs}", info.detail),
@@ -405,28 +403,18 @@ fn lsp_completion_kind(kind: CompletionKind) -> u32 {
     }
 }
 
-fn uri_path(uri: &str) -> PathBuf {
-    uri.strip_prefix("file://")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(uri))
-}
-
-fn text_offset(text: &str, position: Value) -> usize {
+/// Map an LSP `Position` (0-based line, UTF-16 code-unit character) onto the
+/// UTF-8 byte offset that [`LanguageService`] expects.
+fn text_offset(text: &str, position: Option<&Value>) -> usize {
+    let Some(position) = position else {
+        return 0;
+    };
     let line = position.get("line").and_then(Value::as_u64).unwrap_or(0) as usize;
     let character = position
         .get("character")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
-    let lines: Vec<&str> = text.split('\n').collect();
-    let line = line.min(lines.len().saturating_sub(1));
-    let character = character.min(lines.get(line).map(|s| s.len()).unwrap_or(0));
-    let mut code_units = character;
-    for item in lines.iter().take(line) {
-        code_units += item.len() + 1;
-    }
-    text.get(..code_units)
-        .map(|slice| slice.len())
-        .unwrap_or(text.len())
+    position_to_offset(text, line, character)
 }
 
 fn send(message: Value) {
