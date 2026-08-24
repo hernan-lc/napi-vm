@@ -14,7 +14,10 @@
     "runtime"
   ],
   "scripts": {
-    "build": "npx napi build --platform --release --esm",
+    "build": "npx napi build --platform --release",
+    "build:all": "bun run build:esm && bun run build:commonjs",
+    "build:esm": "npx napi build --platform --release --esm",
+    "build:commonjs": "npx napi build --platform --release --js cjs",
     "build:debug": "npx napi build --platform",
     "lint:rust": "cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings",
     "test": "bun test",
