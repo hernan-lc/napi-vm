@@ -7,8 +7,6 @@ use zed_extension_api::{
 
 const GITHUB_REPO: &str = "nglmercer/napi-vm";
 const BINARY_NAME: &str = "napi-vm-lsp";
-/// Escape hatch for local development: point this at a built binary.
-const PATH_ENV_VAR: &str = "NAPI_VM_LSP_PATH";
 
 struct NapiVmExtension {
     cached: Option<String>,
@@ -43,28 +41,6 @@ impl NapiVmExtension {
             }
         };
         Ok(name.into())
-    }
-
-    /// An explicitly configured binary: Zed's
-    /// `lsp.napi-vm.binary.path` setting first, then the `NAPI_VM_LSP_PATH`
-    /// environment variable.
-    fn configured_binary(
-        language_server_id: &LanguageServerId,
-        worktree: &Worktree,
-    ) -> Option<String> {
-        if let Some(path) = LspSettings::for_worktree(language_server_id.as_ref(), worktree)
-            .ok()
-            .and_then(|settings| settings.binary)
-            .and_then(|binary| binary.path)
-        {
-            return Some(path);
-        }
-        worktree
-            .shell_env()
-            .into_iter()
-            .find(|(key, _)| key == PATH_ENV_VAR)
-            .map(|(_, value)| value)
-            .filter(|value| !value.is_empty())
     }
 
     /// A `napi-vm-lsp` already on `$PATH`. This is the local development path:
@@ -153,19 +129,21 @@ impl Extension for NapiVmExtension {
         language_server_id: &LanguageServerId,
         worktree: &Worktree,
     ) -> zed::Result<zed::Command> {
-        // Resolution order: explicitly configured path → `$PATH` → the
-        // platform binary from the latest GitHub release. Node.js is never
-        // involved, and nothing is resolved out of the project's
-        // `node_modules`.
-        let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree).ok();
-        let command = match Self::configured_binary(language_server_id, worktree)
+        // Resolution order: the `binary.path` setting → `$PATH` → the platform
+        // binary from the latest GitHub release. Node.js is never involved, and
+        // nothing is resolved out of the project's `node_modules`.
+        let binary_settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)
+            .ok()
+            .and_then(|settings| settings.binary);
+        let command = match binary_settings
+            .as_ref()
+            .and_then(|binary| binary.path.clone())
             .or_else(|| Self::binary_on_path(worktree))
         {
             Some(path) => path,
             None => self.download_language_server(language_server_id)?,
         };
 
-        let binary_settings = settings.and_then(|settings| settings.binary);
         Ok(zed::Command {
             command,
             args: binary_settings

@@ -1,9 +1,9 @@
-id = "napi-vm"
-name = "napi-vm"
-version = "0.1.2"
+id = "napi-vm-lsp"
+name = "napi-vm LSP"
+version = "0.1.3"
 schema_version = 1
-authors = ["hernan-lc"]
-description = "NAPI-backed language intelligence for napi-vm playground projects."
+authors = ["nglmercer"]
+description = "Language server for JavaScript projects running on the napi-vm runtime."
 repository = "https://github.com/nglmercer/napi-vm"
 
 [lib]

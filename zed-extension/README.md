@@ -1,4 +1,4 @@
-# napi-vm Zed extension
+# napi-vm LSP
 
 A thin launcher for the standalone native language server:
 
@@ -17,8 +17,7 @@ at all.
 
 ## How the binary is resolved
 
-1. **Explicitly configured path** — `lsp.napi-vm.binary.path` in Zed settings,
-   or the `NAPI_VM_LSP_PATH` environment variable:
+1. **Explicitly configured path** — `lsp.napi-vm.binary.path` in Zed settings:
 
    ```json
    {
