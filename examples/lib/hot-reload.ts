@@ -45,6 +45,7 @@ export class HotReloader {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private moduleSources = new Map<string, string>();
   private runtime: VmSession | null;
+  private stopped = false;
   private opts: Omit<HotReloadOptions, "onReload" | "debounceMs"> & {
     onReload: NonNullable<HotReloadOptions["onReload"]>;
     debounceMs: number;
@@ -67,6 +68,7 @@ export class HotReloader {
 
   /** Build the initial VM, register modules, attach the bus. */
   start(): Vm {
+    this.stopped = false;
     const vm = this.buildVm();
     this.vm = vm;
     this.runtime?.start();
@@ -80,18 +82,32 @@ export class HotReloader {
 
   /** Tear down everything and stop watching. */
   stop(): void {
-    if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.watcher?.close();
+    this.stopped = true;
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    const watcher = this.watcher;
     this.watcher = null;
-    this.teardown();
-    this.runtime?.stop();
+    watcher?.close();
+    try {
+      this.teardown();
+    } finally {
+      this.runtime?.stop();
+    }
   }
 
   /** Begin watching the modules directory for changes. */
   watch(): void {
+    if (this.watcher) return;
     this.watcher = watch(this.opts.modulesDir, (_event, filename) => {
-      if (filename && filename.endsWith(".js")) {
+      if (!this.stopped && filename && filename.endsWith(".js")) {
         this.scheduleReload(filename);
+      }
+    });
+    this.watcher.on("error", (error) => {
+      if (!this.stopped) {
+        console.error(`[hot-reload] watcher error: ${error.message}`);
       }
     });
   }
@@ -99,34 +115,53 @@ export class HotReloader {
   // ── internals ──────────────────────────────────────────────────────
 
   private scheduleReload(file: string): void {
+    if (this.stopped) return;
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => this.reload(file), this.opts.debounceMs);
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null;
+      this.reload(file);
+    }, this.opts.debounceMs);
   }
 
   private reload(changedFile: string): void {
+    if (this.stopped) return;
     console.log(`[hot-reload] change detected: ${changedFile}`);
-    this.teardown();
-    const vm = this.buildVm();
-    this.vm = vm;
-    this.runtime?.attach(vm, {
-      modules: [...this.moduleSources.entries()].map(([name, source]) => ({ name, source })),
-    });
-    this.bus.attach(vm);
-    this.opts.onReload(vm, this.bus, this.runtime || undefined);
-    console.log("[hot-reload] rebuild complete\n");
+    try {
+      this.teardown();
+      const vm = this.buildVm();
+      this.vm = vm;
+      this.runtime?.attach(vm, {
+        modules: [...this.moduleSources.entries()].map(([name, source]) => ({ name, source })),
+      });
+      this.bus.attach(vm);
+      this.opts.onReload(vm, this.bus, this.runtime || undefined);
+      console.log("[hot-reload] rebuild complete\n");
+    } catch (error) {
+      console.error(`[hot-reload] rebuild failed: ${error instanceof Error ? error.message : error}`);
+    }
   }
 
   /** Remove all modules, globals, and the bus binding from the current VM. */
   private teardown(): void {
     const vm = this.vm;
-    if (!vm) return;
     this.runtime?.detach();
     this.bus.detach();
-    for (const name of vm.listModules()) {
-      vm.removeModule(name);
+    if (!vm) return;
+    this.vm = null;
+    let moduleNames: string[] = [];
+    try {
+      moduleNames = vm.listModules();
+    } catch (error) {
+      if (!isBusyVmError(error)) throw error;
+    }
+    for (const name of moduleNames) {
+      try {
+        vm.removeModule(name);
+      } catch (error) {
+        if (!isBusyVmError(error)) throw error;
+      }
     }
     // Remove exposed host functions (tracked by the caller via onReload).
-    this.vm = null;
   }
 
   private buildVm(): Vm {
@@ -175,4 +210,8 @@ export class HotReloader {
     }
     return sources;
   }
+}
+
+function isBusyVmError(error: unknown): boolean {
+  return /VM is busy/i.test(error instanceof Error ? error.message : String(error));
 }

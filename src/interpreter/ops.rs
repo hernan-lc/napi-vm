@@ -57,7 +57,7 @@ impl Interpreter {
                         let mut s = String::with_capacity(a.len() + b.len());
                         s.push_str(a);
                         s.push_str(b);
-                        Value::String(s)
+                        Value::checked_string(s)?
                     }
                     (Value::String(a), _) => {
                         let rb = self.vs(r);
@@ -67,7 +67,7 @@ impl Interpreter {
                         let mut s = String::with_capacity(a.len() + rb.len());
                         s.push_str(a);
                         s.push_str(&rb);
-                        Value::String(s)
+                        Value::checked_string(s)?
                     }
                     (_, Value::String(b)) => {
                         let lb = self.vs(l);
@@ -77,7 +77,7 @@ impl Interpreter {
                         let mut s = String::with_capacity(lb.len() + b.len());
                         s.push_str(&lb);
                         s.push_str(b);
-                        Value::String(s)
+                        Value::checked_string(s)?
                     }
                     _ => Value::Number(self.tn(l) + self.tn(r)),
                 }
@@ -143,8 +143,16 @@ impl Interpreter {
                         Value::Object { proto, .. } => proto.clone(),
                         _ => None,
                     };
-                    while let Some(p) = cur {
+                    let mut visited = std::collections::HashSet::new();
+                    for _ in 0..crate::value::MAX_PROTOTYPE_DEPTH {
+                        let Some(p) = cur else {
+                            break;
+                        };
                         if let Value::Object { props, proto } = p.as_ref() {
+                            let identity = Rc::as_ptr(props) as *const ();
+                            if !visited.insert(identity) {
+                                break;
+                            }
                             if Rc::ptr_eq(props, &tp) {
                                 result = true;
                                 break;

@@ -116,6 +116,20 @@ impl BridgeState {
         }
     }
 
+    /// Finish a queued callback after Node has started tearing down the
+    /// environment. N-API references must not be deleted through a null
+    /// environment; the environment owns their final cleanup.
+    fn finish_call_on_teardown(&self, id: usize) {
+        let mut refs = self.lock_refs();
+        let Some(entry) = refs.get_mut(&id) else {
+            return;
+        };
+        entry.in_flight = entry.in_flight.saturating_sub(1);
+        if entry.retired && entry.in_flight == 0 {
+            refs.remove(&id);
+        }
+    }
+
     fn retire(&self, id: usize) {
         let maybe_ref = {
             let mut refs = self.lock_refs();
@@ -548,19 +562,28 @@ impl HostBridge for NapiHostBridge {
 }
 
 /// A main-thread lease that retires a persisted reference exactly once on all
-/// callback exits, including every N-API error path.
+/// callback exits, including every N-API error path. During environment
+/// teardown Node can invoke a TSFN callback with a null env; that path may
+/// release Rust bookkeeping but must not call N-API.
 struct MainCallLease {
     state: Arc<BridgeState>,
     id: usize,
+    env_available: bool,
 }
 
 impl Drop for MainCallLease {
     fn drop(&mut self) {
-        self.state.finish_call_on_main(self.id);
+        if self.env_available {
+            self.state.finish_call_on_main(self.id);
+        } else {
+            self.state.finish_call_on_teardown(self.id);
+        }
     }
 }
 
-/// TSFN callback — always runs on Node's main thread with a valid `env`.
+/// TSFN callback — runs on Node's main thread. Node may pass a null env
+/// while tearing down the environment, in which case queued data is freed
+/// and the worker is released without making any N-API calls.
 extern "C" fn tsfn_callback(
     env: sys::napi_env,
     _js_callback: sys::napi_value,
@@ -574,7 +597,14 @@ extern "C" fn tsfn_callback(
     let _lease = MainCallLease {
         state: msg.state.clone(),
         id: msg.func_id,
+        env_available: !env.is_null(),
     };
+    if env.is_null() {
+        let _ = msg
+            .reply_tx
+            .send(Err("Node environment is tearing down".into()));
+        return;
+    }
 
     let func_ref = msg.func_ref as sys::napi_ref;
     let mut func = ptr::null_mut();
@@ -887,10 +917,16 @@ pub(super) extern "C" fn run_async_done_cb(
     context: *mut std::ffi::c_void,
     data: *mut std::ffi::c_void,
 ) {
-    if data.is_null() || context.is_null() {
+    if data.is_null() {
         return;
     }
     let result = unsafe { *Box::from_raw(data as *mut Result<String, String>) };
+    // Node can invoke a thread-safe-function callback with a null env during
+    // teardown. The result has been reclaimed above; no deferred settlement
+    // is safe or necessary once the environment is gone.
+    if env.is_null() || context.is_null() {
+        return;
+    }
     let deferred = context as sys::napi_deferred;
     match result {
         Ok(value) => {

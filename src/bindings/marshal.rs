@@ -19,7 +19,7 @@ use std::ptr;
 use napi::sys;
 
 use crate::error::VmErr;
-use crate::value::{MAX_ARRAY_LEN, MAX_STRING_LEN, Value};
+use crate::value::{MAX_ARRAY_LEN, MAX_OBJECT_PROPS, MAX_STRING_LEN, Value};
 
 #[inline]
 pub(super) fn chk(status: sys::napi_status) -> Result<(), VmErr> {
@@ -151,7 +151,7 @@ fn to_napi_d(
                 }
                 chk(sys::napi_create_object(env, &mut out))?;
                 let props = props.borrow();
-                if props.len() > MAX_ARRAY_LEN {
+                if props.len() > MAX_OBJECT_PROPS {
                     active.remove(&identity);
                     return Err(VmErr::Msg(
                         "RangeError: Maximum object property count exceeded".to_string(),
@@ -185,6 +185,11 @@ fn read_string(env: sys::napi_env, raw: sys::napi_value) -> Result<String, VmErr
             0,
             &mut len,
         ))?;
+        if len > MAX_STRING_LEN {
+            return Err(VmErr::Msg(
+                "RangeError: Maximum string length exceeded".to_string(),
+            ));
+        }
         let mut buf: Vec<u8> = vec![0; len + 1];
         let mut copied: usize = 0;
         chk(sys::napi_get_value_string_utf8(
@@ -277,10 +282,10 @@ fn from_napi_d(
                 if is_error {
                     let name = get_named_str(env, raw, "name").unwrap_or_else(|_| "Error".into());
                     let message = get_named_str(env, raw, "message").unwrap_or_default();
-                    return Ok(Value::object(vec![
+                    return Value::checked_object(vec![
                         ("name".to_string(), Value::String(name)),
                         ("message".to_string(), Value::String(message)),
-                    ]));
+                    ]);
                 }
 
                 // N-API values are allowed to be cyclic. Keep an identity set
@@ -312,13 +317,13 @@ fn from_napi_d(
                         items.push(from_napi_d(env, ev, depth + 1, active)?);
                     }
                     active.remove(&identity);
-                    Value::array(items)
+                    Value::checked_array(items)?
                 } else {
                     let mut names = ptr::null_mut();
                     chk(sys::napi_get_property_names(env, raw, &mut names))?;
                     let mut len: u32 = 0;
                     chk(sys::napi_get_array_length(env, names, &mut len))?;
-                    if len as usize > MAX_ARRAY_LEN {
+                    if len as usize > MAX_OBJECT_PROPS {
                         active.remove(&identity);
                         return Err(VmErr::Msg(
                             "RangeError: Maximum object property count exceeded".to_string(),
@@ -340,7 +345,7 @@ fn from_napi_d(
                         props.push((key_str, from_napi_d(env, pv, depth + 1, active)?));
                     }
                     active.remove(&identity);
-                    Value::object(props)
+                    Value::checked_object(props)?
                 }
             }
             // Functions, symbols, bigints, externals: no VM representation yet.
@@ -425,7 +430,7 @@ impl WireValue {
                     ));
                 }
                 let props = props.borrow();
-                if props.len() > MAX_ARRAY_LEN {
+                if props.len() > MAX_OBJECT_PROPS {
                     active.remove(&identity);
                     return Err(VmErr::Msg(
                         "RangeError: Maximum object property count exceeded".to_string(),

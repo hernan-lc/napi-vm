@@ -216,6 +216,18 @@ test("host thenables settle only once", async () => {
   await expect(vm.runAsync("await badThenable();" )).resolves.toBe("7");
 });
 
+test("IPC detach is safe while runAsync still owns the VM", async () => {
+  const { VmIpc } = await import("../examples/lib/vm-ipc.ts");
+  const vm = new Vm();
+  const ipc = new VmIpc();
+  ipc.handleAsync("wait", () => new Promise((resolve) => setTimeout(() => resolve("done"), 10)));
+  ipc.attach(vm);
+
+  const running = vm.runAsync("await ipc.invokeAsync('wait');");
+  expect(() => ipc.detach()).not.toThrow();
+  await expect(running).resolves.toBe("done");
+});
+
 test("writing via window defines a real global", () => {
   const vm = new Vm();
   expect(vm.run("window.foo = 99; foo;")).toBe("99");

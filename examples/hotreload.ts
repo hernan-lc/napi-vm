@@ -104,6 +104,7 @@ const reloader = new HotReloader({
 });
 
 const vm = reloader.start();
+reloader.watch();
 
 // Host listeners are outside the VM and therefore survive hot-reload.
 const unsubscribeResponse = ipc.on("test:response", (payload) => {
@@ -127,11 +128,46 @@ vm.runAsync("async function main() { return await runAsyncIpcTest(); } main();")
 console.log("\nEdit a module in examples/callbacks/modules/ to trigger hot-reload.");
 console.log("Press Ctrl+C to stop.\n");
 
-process.on("SIGINT", () => {
-  unsubscribeResponse();
-  unsubscribeModules();
-  ipc.detach();
-  reloader.stop();
-  console.log("\nStopped.");
-  process.exit(0);
-});
+let stopping = false;
+const stdin = process.stdin;
+const onStdinData = (chunk: string | Buffer) => {
+  if (chunk.toString().includes("\u0003")) shutdown("Ctrl+C");
+};
+const shutdown = (signal: string) => {
+  if (stopping) return;
+  stopping = true;
+  console.log(`\n[shutdown] ${signal} received`);
+  try {
+    if (stdin.isTTY && stdin.setRawMode) {
+      stdin.setRawMode(false);
+      stdin.off("data", onStdinData);
+      stdin.pause();
+    }
+    unsubscribeResponse();
+    unsubscribeModules();
+    ipc.detach();
+    reloader.stop();
+  } catch (error) {
+    console.error(`[shutdown] cleanup error: ${error instanceof Error ? error.message : error}`);
+  } finally {
+    console.log("[shutdown] complete");
+    // A pending runAsync worker may intentionally keep its runtime alive. The
+    // example is interactive, so Ctrl+C must terminate even if that worker is
+    // waiting on a host promise or a module is doing CPU work.
+    process.exit(0);
+  }
+};
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+// Bun/Windows terminals can deliver Ctrl+C as a raw byte instead of raising
+// SIGINT when the process is launched through an editor task or pipe. Handling
+// both paths makes this example reliably stoppable in PowerShell, cmd, and
+// integrated terminals while restoring the terminal mode during cleanup.
+if (stdin.isTTY && stdin.setRawMode) {
+  stdin.setEncoding("utf8");
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.on("data", onStdinData);
+}

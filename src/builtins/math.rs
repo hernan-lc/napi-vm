@@ -9,7 +9,7 @@ use crate::value::Value;
 pub(super) fn install(e: &mut Environment) {
     if let Some(math) = e.get("Math") {
         for (name, f) in math_methods() {
-            math.set_prop(name, f);
+            math.set_prop(name, f).expect("built-in Math property");
         }
     }
 }

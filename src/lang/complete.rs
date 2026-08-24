@@ -289,6 +289,36 @@ fn complete_member(
 
     let head = receiver.split('.').next().unwrap_or(receiver);
 
+    // The VM exposes these aliases as views of its global environment. Include
+    // both catalog globals and live host functions so window completion works
+    // even when the user has not yet executed the file.
+    if matches!(receiver, "window" | "globalThis" | "self") {
+        for global in catalog::GLOBALS {
+            if !matches!(*global, "window" | "globalThis" | "self") {
+                add(global, CompletionKind::Global);
+            }
+        }
+        for function in &ctx.exposed_functions {
+            add(&function.name, CompletionKind::ExposedFn);
+        }
+        return filter_sorted(out);
+    }
+
+    // Resolve a catalog global through a global-object alias, such as
+    // window.ipc. or globalThis.Math.
+    if let Some(global_name) = receiver
+        .strip_prefix("window.")
+        .or_else(|| receiver.strip_prefix("globalThis."))
+        .or_else(|| receiver.strip_prefix("self."))
+        && !global_name.contains('.')
+        && let Some(members) = catalog::builtin_members(global_name)
+    {
+        for member in members {
+            add(member, member_kind(member));
+        }
+        return filter_sorted(out);
+    }
+
     // Configured playground namespace → the module's exports.
     if let Some(module_name) = playground_module_name(head)
         && let Some(info) = ctx.modules.iter().find(|m| m.name == module_name)

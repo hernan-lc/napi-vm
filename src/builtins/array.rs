@@ -1,5 +1,7 @@
 //! `Array` statics and `Array.prototype` methods.
 
+use std::cmp::Ordering;
+
 use super::{NativeFn, arr_items, join_str, nf};
 use crate::error::VmErr;
 use crate::interpreter::{Environment, Interpreter};
@@ -7,7 +9,8 @@ use crate::value::Value;
 
 pub(super) fn install(e: &mut Environment) {
     if let Some(a) = e.get("Array") {
-        a.set_prop("isArray".to_string(), nf("isArray", array_is_array));
+        a.set_prop("isArray".to_string(), nf("isArray", array_is_array))
+            .expect("built-in Array property");
     }
 }
 
@@ -58,7 +61,7 @@ fn array_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Val
         )?;
         out.push(r);
     }
-    Ok(Value::array(out))
+    Value::checked_array(out)
 }
 
 fn array_filter(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
@@ -75,7 +78,7 @@ fn array_filter(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
             out.push(it.clone());
         }
     }
-    Ok(Value::array(out))
+    Value::checked_array(out)
 }
 
 fn array_reduce(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
@@ -185,18 +188,21 @@ fn array_join(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
         Some(Value::Undefined) | None => ",".to_string(),
         Some(v) => interp.vs(v),
     };
-    let parts: Vec<String> = items.iter().map(|v| join_str(interp, v)).collect();
-    // Pre-check the joined size: joining a million long strings could
-    // allocate far past the string cap before `join` returns.
-    let total: usize = parts
-        .iter()
-        .map(|p| p.len())
-        .sum::<usize>()
-        .saturating_add(sep.len().saturating_mul(parts.len().saturating_sub(1)));
-    if total > crate::value::MAX_STRING_LEN {
-        return Err(crate::value::limit_err("Maximum string length exceeded"));
+    let mut out = String::new();
+    for (index, value) in items.iter().enumerate() {
+        if index > 0 {
+            if out.len().saturating_add(sep.len()) > crate::value::MAX_STRING_LEN {
+                return Err(crate::value::limit_err("Maximum string length exceeded"));
+            }
+            out.push_str(&sep);
+        }
+        let part = join_str(interp, value);
+        if out.len().saturating_add(part.len()) > crate::value::MAX_STRING_LEN {
+            return Err(crate::value::limit_err("Maximum string length exceeded"));
+        }
+        out.push_str(&part);
     }
-    Ok(Value::String(parts.join(&sep)))
+    Value::checked_string(out)
 }
 
 fn array_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
@@ -239,21 +245,32 @@ fn array_slice(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value,
     if start >= end {
         return Ok(Value::array(vec![]));
     }
-    Ok(Value::array(items[start as usize..end as usize].to_vec()))
+    Value::checked_array(items[start as usize..end as usize].to_vec())
 }
 
 fn array_concat(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let mut out = arr_items(&this);
     for v in a {
         match &v {
-            Value::Array(items) => out.extend(items.borrow().iter().cloned()),
-            _ => out.push(v),
+            Value::Array(items) => {
+                let items = items.borrow();
+                if out.len().saturating_add(items.len()) > crate::value::MAX_ARRAY_LEN {
+                    return Err(crate::value::limit_err("Maximum array length exceeded"));
+                }
+                out.extend(items.iter().cloned());
+            }
+            _ => {
+                if out.len() >= crate::value::MAX_ARRAY_LEN {
+                    return Err(crate::value::limit_err("Maximum array length exceeded"));
+                }
+                out.push(v);
+            }
         }
         if out.len() > crate::value::MAX_ARRAY_LEN {
             return Err(crate::value::limit_err("Maximum array length exceeded"));
         }
     }
-    Ok(Value::array(out))
+    Value::checked_array(out)
 }
 
 fn array_reverse(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
@@ -264,6 +281,60 @@ fn array_reverse(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Valu
     Ok(Value::Undefined)
 }
 
+fn compare_sort_values(
+    interp: &mut Interpreter,
+    comparator: &Value,
+    left: &Value,
+    right: &Value,
+) -> Result<Ordering, VmErr> {
+    let number = interp
+        .call_this(
+            comparator,
+            Value::Undefined,
+            vec![left.clone(), right.clone()],
+        )?
+        .to_number();
+    Ok(number.partial_cmp(&0.0).unwrap_or(Ordering::Equal))
+}
+
+fn merge_sort_values(
+    interp: &mut Interpreter,
+    values: &mut [Value],
+    comparator: &Value,
+) -> Result<(), VmErr> {
+    if values.len() < 2 {
+        return Ok(());
+    }
+    let midpoint = values.len() / 2;
+    merge_sort_values(interp, &mut values[..midpoint], comparator)?;
+    merge_sort_values(interp, &mut values[midpoint..], comparator)?;
+
+    // Clone the halves before invoking guest code. The comparator can mutate
+    // the original array, but it must not encounter a Rust borrow of this
+    // temporary sort buffer.
+    let left = values[..midpoint].to_vec();
+    let right = values[midpoint..].to_vec();
+    let mut merged = Vec::with_capacity(values.len());
+    let mut left_index = 0;
+    let mut right_index = 0;
+    while left_index < left.len() && right_index < right.len() {
+        let order =
+            compare_sort_values(interp, comparator, &left[left_index], &right[right_index])?;
+        if order == Ordering::Greater {
+            merged.push(right[right_index].clone());
+            right_index += 1;
+        } else {
+            // Taking the left value for equality preserves sort stability.
+            merged.push(left[left_index].clone());
+            left_index += 1;
+        }
+    }
+    merged.extend(left[left_index..].iter().cloned());
+    merged.extend(right[right_index..].iter().cloned());
+    values.clone_from_slice(&merged);
+    Ok(())
+}
+
 fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     if let Value::Array(items) = &this {
         let cmp = a.first().cloned().unwrap_or(Value::Undefined);
@@ -272,23 +343,29 @@ fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
         // calling `push`), and keeping the RefMut across the callback used to
         // turn that normal JavaScript re-entry into a Rust RefCell panic.
         let mut sorted = items.borrow().clone();
+        let original_len = sorted.len();
         if matches!(
             cmp,
             Value::Function(_) | Value::NativeFunction { .. } | Value::HostFunction { .. }
         ) {
-            // Comparator callback: negative/positive/zero ordering.
-            sorted.sort_by(|x, y| {
-                let n = interp
-                    .call_this(&cmp, Value::Undefined, vec![x.clone(), y.clone()])
-                    .map(|v| v.to_number())
-                    .unwrap_or(0.0);
-                n.partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            // Comparator errors must escape sort. Converting them to zero
+            // silently changes program behavior and leaves callers unable to
+            // catch the original exception.
+            merge_sort_values(interp, &mut sorted, &cmp)?;
         } else {
             // Default: lexicographic comparison of the stringified elements.
             sorted.sort_by_key(|x| interp.vs(x));
         }
-        *items.borrow_mut() = sorted;
+        let mut current = items.borrow_mut();
+        // Sorting uses the array length captured on entry. If a comparator
+        // shrinks the array, writing the sorted range extends it again; if it
+        // appends values, those values remain after the sorted range.
+        if current.len() < original_len {
+            current.resize(original_len, Value::Undefined);
+        }
+        for (index, value) in sorted.into_iter().enumerate() {
+            current[index] = value;
+        }
     }
     Ok(this)
 }
@@ -341,7 +418,7 @@ fn array_flat(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, 
             }
         }
     }
-    Ok(Value::array(out))
+    Value::checked_array(out)
 }
 
 fn array_flat_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
@@ -355,14 +432,25 @@ fn array_flat_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resul
             vec![it.clone(), Value::Number(i as f64), this.clone()],
         )?;
         match &r {
-            Value::Array(inner) => out.extend(inner.borrow().iter().cloned()),
-            _ => out.push(r),
+            Value::Array(inner) => {
+                let inner = inner.borrow();
+                if out.len().saturating_add(inner.len()) > crate::value::MAX_ARRAY_LEN {
+                    return Err(crate::value::limit_err("Maximum array length exceeded"));
+                }
+                out.extend(inner.iter().cloned());
+            }
+            _ => {
+                if out.len() >= crate::value::MAX_ARRAY_LEN {
+                    return Err(crate::value::limit_err("Maximum array length exceeded"));
+                }
+                out.push(r);
+            }
         }
         if out.len() > crate::value::MAX_ARRAY_LEN {
             return Err(crate::value::limit_err("Maximum array length exceeded"));
         }
     }
-    Ok(Value::array(out))
+    Value::checked_array(out)
 }
 
 fn array_reduce_right(

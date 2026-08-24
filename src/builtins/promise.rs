@@ -23,10 +23,14 @@ pub(crate) fn promise_method(name: &str) -> Option<Value> {
 
 pub(super) fn install(e: &mut Environment) {
     if let Some(p) = e.get("Promise") {
-        p.set_prop("resolve".to_string(), super::nf("resolve", promise_resolve));
-        p.set_prop("reject".to_string(), super::nf("reject", promise_reject));
-        p.set_prop("all".to_string(), super::nf("all", promise_all));
-        p.set_prop("race".to_string(), super::nf("race", promise_race));
+        p.set_prop("resolve".to_string(), super::nf("resolve", promise_resolve))
+            .expect("built-in Promise property");
+        p.set_prop("reject".to_string(), super::nf("reject", promise_reject))
+            .expect("built-in Promise property");
+        p.set_prop("all".to_string(), super::nf("all", promise_all))
+            .expect("built-in Promise property");
+        p.set_prop("race".to_string(), super::nf("race", promise_race))
+            .expect("built-in Promise property");
     }
 }
 

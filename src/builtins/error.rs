@@ -33,7 +33,9 @@ fn make_error_class(name: &str) -> Value {
         ("name".to_string(), Value::String(name.to_string())),
         ("message".to_string(), Value::String(String::new())),
     ]);
-    prototype.set_prop("constructor".to_string(), constructor.clone());
+    prototype
+        .set_prop("constructor".to_string(), constructor.clone())
+        .expect("built-in Error prototype property");
     Value::Class(Box::new(ClassData {
         name: name.to_string(),
         constructor: Box::new(constructor),
@@ -42,7 +44,6 @@ fn make_error_class(name: &str) -> Value {
             "name".to_string(),
             Value::String(name.to_string()),
         )])),
-        superclass: None,
     }))
 }
 
@@ -59,7 +60,7 @@ fn error_ctor(interp: &mut Interpreter, this: Value, args: Vec<Value>) -> Result
         None | Some(Value::Undefined) => String::new(),
         Some(v) => interp.vs(v),
     };
-    this.set_prop("message".to_string(), Value::String(msg));
-    this.set_prop("name".to_string(), Value::String(name));
+    this.set_prop("message".to_string(), Value::String(msg))?;
+    this.set_prop("name".to_string(), Value::String(name))?;
     Ok(Value::Undefined)
 }

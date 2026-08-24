@@ -8,10 +8,14 @@ use crate::value::Value;
 
 pub(super) fn install(e: &mut Environment) {
     if let Some(n) = e.get("Number") {
-        n.set_prop("isNaN".to_string(), nf("isNaN", number_is_nan));
-        n.set_prop("isFinite".to_string(), nf("isFinite", number_is_finite));
-        n.set_prop("parseInt".to_string(), nf("parseInt", parse_int));
-        n.set_prop("parseFloat".to_string(), nf("parseFloat", parse_float));
+        n.set_prop("isNaN".to_string(), nf("isNaN", number_is_nan))
+            .expect("built-in Number property");
+        n.set_prop("isFinite".to_string(), nf("isFinite", number_is_finite))
+            .expect("built-in Number property");
+        n.set_prop("parseInt".to_string(), nf("parseInt", parse_int))
+            .expect("built-in Number property");
+        n.set_prop("parseFloat".to_string(), nf("parseFloat", parse_float))
+            .expect("built-in Number property");
     }
 }
 
@@ -28,7 +32,10 @@ pub fn number_method(name: &str) -> Option<Value> {
 fn number_to_fixed(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let n = this.to_number();
     let digits = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
-    Ok(Value::String(format!("{:.*}", digits, n)))
+    if digits > crate::value::MAX_STRING_LEN {
+        return Err(crate::value::limit_err("Maximum string length exceeded"));
+    }
+    Value::checked_string(format!("{:.*}", digits, n))
 }
 
 // --- Number statics ---------------------------------------------------------

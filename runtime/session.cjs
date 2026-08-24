@@ -332,7 +332,11 @@ class VmSession {
     let authenticated = false;
     let buffer = "";
     socket.setEncoding("utf8");
-    socket.setTimeout(AUTH_TIMEOUT_MS, () => socket.destroy());
+    // Use an absolute deadline rather than socket inactivity. Otherwise an
+    // unauthenticated peer can trickle bytes often enough to occupy a client
+    // slot indefinitely.
+    const authTimer = setTimeout(() => socket.destroy(), AUTH_TIMEOUT_MS);
+    authTimer.unref?.();
     socket.on("data", (chunk) => {
       buffer += chunk;
       if (Buffer.byteLength(buffer, "utf8") > MAX_FRAME_BYTES) {
@@ -353,7 +357,7 @@ class VmSession {
             }
             authenticated = true;
             this.authenticatedClients.add(socket);
-            socket.setTimeout(0);
+            clearTimeout(authTimer);
             this.send(socket, "snapshot");
             continue;
           }
@@ -367,6 +371,7 @@ class VmSession {
       }
     });
     const removeClient = () => {
+      clearTimeout(authTimer);
       this.clients.delete(socket);
       this.authenticatedClients.delete(socket);
     };

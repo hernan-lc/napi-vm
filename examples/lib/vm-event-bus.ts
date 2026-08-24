@@ -40,10 +40,21 @@ export class VmEventBus {
 
   /** Detach from the current VM (call before hot-reload teardown). */
   detach(): void {
-    if (this.vm && this.vm.hasGlobal("__vmEmit")) {
-      this.vm.removeGlobal("__vmEmit");
-    }
+    const vm = this.vm;
     this.vm = null;
+    if (!vm) return;
+
+    // A VM can still be occupied by runAsync when shutdown or a file change
+    // arrives. The worker owns the runtime until it finishes, so dropping our
+    // reference is safe; removeGlobal is only a best-effort cleanup in that
+    // case and must not abort the caller's shutdown path.
+    try {
+      if (vm.hasGlobal("__vmEmit")) {
+        vm.removeGlobal("__vmEmit");
+      }
+    } catch (error) {
+      if (!isBusyVmError(error)) throw error;
+    }
   }
 
   /** Register a listener. Returns an unsubscribe function. */
@@ -108,4 +119,8 @@ export class VmEventBus {
       fn(...args);
     }
   }
+}
+
+function isBusyVmError(error: unknown): boolean {
+  return /VM is busy/i.test(error instanceof Error ? error.message : String(error));
 }

@@ -138,14 +138,26 @@ impl Interpreter {
             (Value::GlobalObject, Value::String(k)) => {
                 Ok(self.global.borrow().get(k).unwrap_or(Value::Undefined))
             }
-            (Value::Object { props, proto }, Value::String(k)) => {
-                if let Some(v) = props.borrow().iter().find(|(xk, _)| xk == k) {
-                    return Ok(v.1.clone());
+            (Value::Object { .. }, Value::String(k)) => {
+                let mut current = o;
+                for _ in 0..=crate::value::MAX_PROTOTYPE_DEPTH {
+                    match current {
+                        Value::Object { props, proto } => {
+                            if let Some((_, value)) = props.borrow().iter().find(|(xk, _)| xk == k)
+                            {
+                                return Ok(value.clone());
+                            }
+                            let Some(next) = proto.as_deref() else {
+                                return Ok(Value::Undefined);
+                            };
+                            current = next;
+                        }
+                        _ => return Ok(Value::Undefined),
+                    }
                 }
-                if let Some(proto) = proto {
-                    return self.prop(proto, p);
-                }
-                Ok(Value::Undefined)
+                Err(crate::value::limit_err(
+                    "Maximum prototype chain depth exceeded",
+                ))
             }
             (Value::Array(items), Value::Number(i)) => {
                 let items = items.borrow();
@@ -301,19 +313,32 @@ impl Interpreter {
             }
             // Object symbol-keyed lookup: `obj[Symbol.iterator]` resolves the
             // internal `__symbol_iterator__` property.
-            (Value::Object { props, proto }, Value::Symbol(desc)) => {
+            (Value::Object { .. }, Value::Symbol(desc)) => {
                 let internal_key = if desc == "Symbol.iterator" {
                     "__symbol_iterator__".to_string()
                 } else {
                     format!("__symbol:{}__", desc)
                 };
-                if let Some(v) = props.borrow().iter().find(|(k, _)| *k == internal_key) {
-                    return Ok(v.1.clone());
+                let mut current = o;
+                for _ in 0..=crate::value::MAX_PROTOTYPE_DEPTH {
+                    match current {
+                        Value::Object { props, proto } => {
+                            if let Some((_, value)) =
+                                props.borrow().iter().find(|(key, _)| *key == internal_key)
+                            {
+                                return Ok(value.clone());
+                            }
+                            let Some(next) = proto.as_deref() else {
+                                return Ok(Value::Undefined);
+                            };
+                            current = next;
+                        }
+                        _ => return Ok(Value::Undefined),
+                    }
                 }
-                if let Some(proto) = proto {
-                    return self.prop(proto, p);
-                }
-                Ok(Value::Undefined)
+                Err(crate::value::limit_err(
+                    "Maximum prototype chain depth exceeded",
+                ))
             }
             // Internal errors surface to guest `catch` blocks as error objects
             // with readable `name`/`message` properties.
@@ -433,7 +458,7 @@ fn array_iter_next(
         this.set_prop(
             "__cursor__".to_string(),
             super::Value::Number((cursor + 1) as f64),
-        );
+        )?;
         Ok(super::call::iter_result(val, false))
     } else {
         Ok(super::call::iter_result(super::Value::Undefined, true))

@@ -517,6 +517,11 @@ impl VM {
     ) -> napi::Result<Unknown<'_>> {
         let _busy = self.state.try_start()?;
         let raw_env = env.raw();
+        if args.len() > crate::value::MAX_ARRAY_LEN {
+            return Err(napi::Error::from_reason(
+                "RangeError: Maximum argument count exceeded",
+            ));
+        }
         let mut vm_args = Vec::with_capacity(args.len());
         for arg in &args {
             vm_args.push(

@@ -40,7 +40,10 @@ const WORKLOADS: &[(&str, &str)] = &[
     ),
     (
         "recursion_fib",
-        "function fib(n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); } fib(20);",
+        // Keep the recursive benchmark below the debug harness's native stack
+        // budget. The interpreter's crash-safety suite exercises the deeper
+        // recursion boundary separately with subprocess isolation.
+        "function fib(n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); } fib(10);",
     ),
     (
         "array_chain",

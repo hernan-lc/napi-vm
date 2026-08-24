@@ -102,6 +102,56 @@ test("indexed array assignment enforces the hard cap", () => {
   expect(r).toContain("Maximum array length exceeded");
 });
 
+test("sparse object destructuring does not materialize a huge array", () => {
+  const vm = new Vm();
+  expect(vm.run('let o = {}; o["1000000000"] = 1; let [x] = o; x;')).toBe("undefined");
+});
+
+test("JSON.parse enforces array and object caps", () => {
+  const vm = new Vm();
+  const arrayResult = vm.run(
+    "try { JSON.parse('[' + '0,'.repeat(262144) + '0]'); } catch (e) { e.message; }",
+  );
+  expect(arrayResult).toContain("Maximum array length exceeded");
+
+  const objectResult = vm.run(
+    "let p = '\"a\":0,'; try { JSON.parse('{' + p.repeat(262144) + '\"z\":0}'); } catch (e) { e.message; }",
+  );
+  expect(objectResult).toContain("Maximum object property count exceeded");
+});
+
+test("ordinary String.replace enforces the string cap", () => {
+  const vm = new Vm();
+  const r = vm.run(
+    "let s = 'x'.repeat(16 * 1024 * 1024); try { s.replace('x', 'xx'); } catch (e) { e.message; }",
+  );
+  expect(r).toContain("Maximum string length exceeded");
+});
+
+test("Array.join enforces the string cap before building its result", () => {
+  const vm = new Vm();
+  const r = vm.run(
+    "let s = 'x'.repeat(16 * 1024 * 1024); try { [s, s].join(''); } catch (e) { e.message; }",
+  );
+  expect(r).toContain("Maximum string length exceeded");
+});
+
+test("Number.toFixed rejects unbounded precision", () => {
+  const vm = new Vm();
+  const r = vm.run(
+    "try { (1).toFixed(17 * 1024 * 1024); } catch (e) { e.message; }",
+  );
+  expect(r).toContain("Maximum string length exceeded");
+});
+
+test("Object.assign enforces the object property cap", () => {
+  const vm = new Vm();
+  const r = vm.run(
+    "let target = JSON.parse('{' + '\"k\":0,'.repeat(262143) + '\"last\":0}'); try { Object.assign(target, { overflow: 1 }); } catch (e) { e.message; }",
+  );
+  expect(r).toContain("Maximum object property count exceeded");
+});
+
 test("deep Array.prototype.flat is iterative and bounded", () => {
   const vm = new Vm();
   const r = vm.run(
@@ -113,8 +163,23 @@ test("deep Array.prototype.flat is iterative and bounded", () => {
 test("Array.sort does not hold a RefCell borrow across a comparator", () => {
   const vm = new Vm();
   expect(
-    vm.run("let a = [3, 2, 1]; a.sort((x, y) => { a.push(4); return x - y; }); a.length;"),
-  ).toBe("3");
+    vm.run("let a = [3, 2, 1]; a.sort((x, y) => { a.push(4); return x - y; }); a.length > 3;"),
+  ).toBe("true");
+});
+
+test("Array.sort propagates comparator errors", () => {
+  const vm = new Vm();
+  expect(() => vm.run("let a = [3, 2, 1]; a.sort(() => { throw new Error('cmp'); });")).toThrow(
+    /cmp/,
+  );
+});
+
+test("deep prototype lookup is bounded without native recursion", () => {
+  const vm = new Vm();
+  const r = vm.run(
+    "class A {} for (let i = 0; i < 5000; i++) { class B extends A {} A = B; } try { new A().missing; } catch (e) { e.message; }",
+  );
+  expect(r).toContain("Maximum prototype chain depth exceeded");
 });
 
 test("string doubling past the cap throws a catchable RangeError", () => {

@@ -14,9 +14,12 @@ use crate::value::Value;
 
 pub(super) fn install(e: &mut Environment) {
     if let Some(d) = e.get("Date") {
-        d.set_prop("now".to_string(), super::nf("now", date_now));
-        d.set_prop("parse".to_string(), super::nf("parse", date_parse));
-        d.set_prop("UTC".to_string(), super::nf("UTC", date_utc));
+        d.set_prop("now".to_string(), super::nf("now", date_now))
+            .expect("built-in Date property");
+        d.set_prop("parse".to_string(), super::nf("parse", date_parse))
+            .expect("built-in Date property");
+        d.set_prop("UTC".to_string(), super::nf("UTC", date_utc))
+            .expect("built-in Date property");
     }
 }
 

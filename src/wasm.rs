@@ -31,7 +31,7 @@ use crate::lang::{
 };
 use crate::lexer::Lexer;
 use crate::parser::Parser;
-use crate::value::{MAX_ARRAY_LEN, Value, limit_err};
+use crate::value::{MAX_ARRAY_LEN, MAX_OBJECT_PROPS, MAX_STRING_LEN, Value, limit_err};
 
 /// Maximum nesting marshalled across the wasm boundary in either direction.
 /// Mirrors the NAPI layer: a structure deeper than this yields a catchable
@@ -122,6 +122,9 @@ fn js_to_value_d(j: &JsValue, depth: usize) -> Result<Value, VmErr> {
         return Ok(Value::Number(n));
     }
     if let Some(s) = j.as_string() {
+        if s.len() > MAX_STRING_LEN {
+            return Err(limit_err("Maximum string length exceeded"));
+        }
         return Ok(Value::String(s));
     }
     // A JS function has no callable VM representation in v1.
@@ -133,10 +136,10 @@ fn js_to_value_d(j: &JsValue, depth: usize) -> Result<Value, VmErr> {
     if j.is_instance_of::<js_sys::Error>() {
         let name = read_str_prop(j, "name").unwrap_or_else(|| "Error".to_string());
         let message = read_str_prop(j, "message").unwrap_or_default();
-        return Ok(Value::object(vec![
+        return Value::checked_object(vec![
             ("name".to_string(), Value::String(name)),
             ("message".to_string(), Value::String(message)),
-        ]));
+        ]);
     }
     if js_sys::Array::is_array(j) {
         let arr: &js_sys::Array = j.unchecked_ref();
@@ -148,11 +151,14 @@ fn js_to_value_d(j: &JsValue, depth: usize) -> Result<Value, VmErr> {
         for i in 0..len {
             items.push(js_to_value_d(&arr.get(i as u32), depth + 1)?);
         }
-        return Ok(Value::array(items));
+        return Value::checked_array(items);
     }
     if j.is_instance_of::<js_sys::Object>() {
         let keys = js_sys::Object::keys(j.unchecked_ref::<js_sys::Object>());
         let n = keys.length();
+        if n as usize > MAX_OBJECT_PROPS {
+            return Err(limit_err("Maximum object property count exceeded"));
+        }
         let mut props = Vec::with_capacity(n as usize);
         for i in 0..n {
             let k = keys.get(i);
@@ -161,7 +167,7 @@ fn js_to_value_d(j: &JsValue, depth: usize) -> Result<Value, VmErr> {
                 .map_err(|_| VmErr::Msg("failed to read object property".to_string()))?;
             props.push((key, js_to_value_d(&val, depth + 1)?));
         }
-        return Ok(Value::object(props));
+        return Value::checked_object(props);
     }
     Ok(Value::Undefined)
 }

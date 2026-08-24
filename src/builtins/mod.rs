@@ -420,12 +420,18 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
 
     // console: route output to the host's stdout/stderr.
     if let Some(c) = e.get("console") {
-        c.set_prop("log".to_string(), nf("log", console_out));
-        c.set_prop("info".to_string(), nf("info", console_out));
-        c.set_prop("debug".to_string(), nf("debug", console_out));
-        c.set_prop("error".to_string(), nf("error", console_err));
-        c.set_prop("warn".to_string(), nf("warn", console_err));
-        c.set_prop("dir".to_string(), nf("dir", console_dir));
+        c.set_prop("log".to_string(), nf("log", console_out))
+            .expect("built-in console property");
+        c.set_prop("info".to_string(), nf("info", console_out))
+            .expect("built-in console property");
+        c.set_prop("debug".to_string(), nf("debug", console_out))
+            .expect("built-in console property");
+        c.set_prop("error".to_string(), nf("error", console_err))
+            .expect("built-in console property");
+        c.set_prop("warn".to_string(), nf("warn", console_err))
+            .expect("built-in console property");
+        c.set_prop("dir".to_string(), nf("dir", console_dir))
+            .expect("built-in console property");
     }
 }
 

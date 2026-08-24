@@ -19,6 +19,10 @@ pub const GLOBALS: &[&str] = &[
     "Date",
     "Symbol",
     "console",
+    // Optional host-provided IPC facade installed by the examples' VmIpc
+    // bridge. Keeping it in the shared catalog makes completion available
+    // while the user is typing before a runtime snapshot exists.
+    "ipc",
     "Error",
     "TypeError",
     "RangeError",
@@ -99,6 +103,7 @@ pub enum BuiltinType {
 pub fn builtin_global_type(name: &str) -> Option<BuiltinType> {
     match name {
         "Date" => Some(BuiltinType::NativeObject("Date")),
+        "ipc" => Some(BuiltinType::NativeObject("ipc")),
         _ => None,
     }
 }
@@ -107,6 +112,9 @@ pub fn builtin_global_type(name: &str) -> Option<BuiltinType> {
 pub fn builtin_member_type(receiver: &str, member: &str) -> Option<BuiltinType> {
     match (receiver, member) {
         ("Date", "now" | "parse" | "UTC") => Some(BuiltinType::Function { result: "number" }),
+        ("ipc", "invoke" | "invokeAsync" | "send" | "commands") => {
+            Some(BuiltinType::Function { result: "unknown" })
+        }
         _ => None,
     }
 }
@@ -174,6 +182,7 @@ pub fn builtin_members(receiver: &str) -> Option<&'static [&'static str]> {
             "keyFor",
         ],
         "String" => &["fromCharCode"],
+        "ipc" => &["invoke", "invokeAsync", "send", "commands"],
         _ => return None,
     })
 }

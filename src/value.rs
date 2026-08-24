@@ -23,6 +23,11 @@ pub const MAX_OBJECT_PROPS: usize = 262_144;
 /// `join`, `replaceAll`, `JSON.stringify`. Same rationale as `MAX_ARRAY_LEN`.
 pub const MAX_STRING_LEN: usize = 16 * 1024 * 1024;
 
+/// Maximum prototype links followed by a property lookup. Prototype chains
+/// are guest-controlled and must not be allowed to consume the native stack
+/// or spend unbounded time resolving a missing property.
+pub const MAX_PROTOTYPE_DEPTH: usize = 4096;
+
 /// Convenience constructor for the guest-visible limit errors.
 pub fn limit_err(msg: &str) -> VmErr {
     VmErr::Msg(format!("RangeError: {}", msg))
@@ -56,7 +61,6 @@ pub struct ClassData {
     // `Rc` clone, and identity-comparable for `instanceof`).
     pub prototype: Rc<Value>,
     pub statics: Rc<RefCell<Vec<(String, Value)>>>,
-    pub superclass: Option<Box<Value>>,
 }
 
 /// Payload of `Value::Error`, boxed so the enum itself stays small.
@@ -210,6 +214,13 @@ pub struct GeneratorInit {
 unsafe impl Send for GeneratorInit {}
 
 impl Value {
+    pub fn checked_object(props: Vec<(String, Value)>) -> Result<Self, VmErr> {
+        if props.len() > MAX_OBJECT_PROPS {
+            return Err(limit_err("Maximum object property count exceeded"));
+        }
+        Ok(Self::object(props))
+    }
+
     pub fn object(props: Vec<(String, Value)>) -> Self {
         Value::Object {
             props: Rc::new(RefCell::new(props)),
@@ -228,20 +239,39 @@ impl Value {
         Value::Array(Rc::new(RefCell::new(items)))
     }
 
+    pub fn checked_array(items: Vec<Value>) -> Result<Self, VmErr> {
+        if items.len() > MAX_ARRAY_LEN {
+            return Err(limit_err("Maximum array length exceeded"));
+        }
+        Ok(Self::array(items))
+    }
+
+    pub fn checked_string(value: String) -> Result<Self, VmErr> {
+        if value.len() > MAX_STRING_LEN {
+            return Err(limit_err("Maximum string length exceeded"));
+        }
+        Ok(Self::String(value))
+    }
+
     pub fn get_prop(&self, key: &str) -> Option<Value> {
         match self {
-            Value::Object { props, proto } => {
-                let props = props.borrow();
-                for (k, v) in props.iter() {
-                    if k == key {
-                        return Some(v.clone());
+            Value::Object { .. } => {
+                let mut current = self;
+                for _ in 0..=MAX_PROTOTYPE_DEPTH {
+                    match current {
+                        Value::Object { props, proto } => {
+                            if let Some((_, value)) =
+                                props.borrow().iter().find(|(name, _)| name == key)
+                            {
+                                return Some(value.clone());
+                            }
+                            let next = proto.as_deref()?;
+                            current = next;
+                        }
+                        _ => return None,
                     }
                 }
-                if let Some(p) = proto {
-                    p.get_prop(key)
-                } else {
-                    None
-                }
+                None
             }
             Value::Array(items) => {
                 let items = items.borrow();
@@ -273,25 +303,43 @@ impl Value {
         }
     }
 
-    pub fn set_prop(&self, key: String, val: Value) {
+    /// Insert or replace an own property while enforcing the object cap.
+    pub fn set_prop(&self, key: String, val: Value) -> Result<(), VmErr> {
         if let Value::Object { props, .. } = self {
             let mut props = props.borrow_mut();
             for (k, v) in props.iter_mut() {
                 if k == &key {
                     *v = val;
-                    return;
+                    return Ok(());
                 }
+            }
+            if props.len() >= MAX_OBJECT_PROPS {
+                return Err(limit_err("Maximum object property count exceeded"));
             }
             props.push((key, val));
         }
+        Ok(())
     }
 
     pub fn has_prop(&self, key: &str) -> bool {
         match self {
-            Value::Object { props, proto } => {
-                let props = props.borrow();
-                props.iter().any(|(k, _)| k == key)
-                    || proto.as_ref().map(|p| p.has_prop(key)).unwrap_or(false)
+            Value::Object { .. } => {
+                let mut current = self;
+                for _ in 0..=MAX_PROTOTYPE_DEPTH {
+                    match current {
+                        Value::Object { props, proto } => {
+                            if props.borrow().iter().any(|(name, _)| name == key) {
+                                return true;
+                            }
+                            let Some(next) = proto.as_deref() else {
+                                return false;
+                            };
+                            current = next;
+                        }
+                        _ => return false,
+                    }
+                }
+                false
             }
             Value::Array(items) => {
                 let items = items.borrow();
@@ -366,9 +414,6 @@ impl Value {
             }
             Value::Class(cd) => {
                 work.push(std::mem::replace(cd.constructor.as_mut(), Value::Undefined));
-                if let Some(s) = cd.superclass.take() {
-                    work.push(*s);
-                }
                 if Rc::strong_count(&cd.prototype) == 1
                     && let Some(p) = Rc::get_mut(&mut cd.prototype)
                 {

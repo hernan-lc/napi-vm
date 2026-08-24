@@ -7,8 +7,10 @@ use crate::value::Value;
 
 pub(super) fn install(e: &mut Environment) {
     if let Some(j) = e.get("JSON") {
-        j.set_prop("stringify".to_string(), nf("stringify", json_stringify));
-        j.set_prop("parse".to_string(), nf("parse", json_parse));
+        j.set_prop("stringify".to_string(), nf("stringify", json_stringify))
+            .expect("built-in JSON property");
+        j.set_prop("parse".to_string(), nf("parse", json_parse))
+            .expect("built-in JSON property");
     }
 }
 
@@ -31,6 +33,22 @@ fn json_stringify(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value,
     Ok(Value::String(out))
 }
 
+fn append_json_str(out: &mut String, value: &str) -> Result<(), VmErr> {
+    if out.len().saturating_add(value.len()) > crate::value::MAX_STRING_LEN {
+        return Err(crate::value::limit_err("Maximum string length exceeded"));
+    }
+    out.push_str(value);
+    Ok(())
+}
+
+fn append_json_char(out: &mut String, value: char) -> Result<(), VmErr> {
+    if out.len().saturating_add(value.len_utf8()) > crate::value::MAX_STRING_LEN {
+        return Err(crate::value::limit_err("Maximum string length exceeded"));
+    }
+    out.push(value);
+    Ok(())
+}
+
 fn json_serialize(
     v: &Value,
     out: &mut String,
@@ -42,29 +60,23 @@ fn json_serialize(
             "RangeError: Maximum JSON depth exceeded".to_string(),
         ));
     }
-    if out.len() > crate::value::MAX_STRING_LEN {
-        return Err(VmErr::Msg(
-            "RangeError: Maximum string length exceeded".to_string(),
-        ));
-    }
     match v {
-        Value::Null => out.push_str("null"),
-        Value::Undefined => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Null | Value::Undefined => append_json_str(out, "null")?,
+        Value::Bool(b) => append_json_str(out, if *b { "true" } else { "false" })?,
         Value::Number(n) => {
-            if n.is_nan() || n.is_infinite() {
-                out.push_str("null");
+            let text = if n.is_nan() || n.is_infinite() {
+                "null".to_string()
             } else if n.fract() == 0.0 && n.abs() < 1e15 {
-                use std::fmt::Write;
-                let _ = write!(out, "{:.0}", n);
+                format!("{n:.0}")
             } else {
-                out.push_str(&n.to_string());
-            }
+                n.to_string()
+            };
+            append_json_str(out, &text)?;
         }
         Value::String(s) => {
-            out.push('"');
-            escape_json(s, out);
-            out.push('"');
+            append_json_char(out, '"')?;
+            escape_json(s, out)?;
+            append_json_char(out, '"')?;
         }
         Value::Array(items) => {
             let ptr = std::rc::Rc::as_ptr(items) as *const ();
@@ -73,15 +85,15 @@ fn json_serialize(
                     "TypeError: Converting circular structure to JSON".to_string(),
                 ));
             }
-            out.push('[');
+            append_json_char(out, '[')?;
             let items = items.borrow();
             for (i, it) in items.iter().enumerate() {
                 if i > 0 {
-                    out.push(',');
+                    append_json_char(out, ',')?;
                 }
                 json_serialize(it, out, visited, depth + 1)?;
             }
-            out.push(']');
+            append_json_char(out, ']')?;
             visited.remove(&ptr);
         }
         Value::Object { props, .. } => {
@@ -91,7 +103,7 @@ fn json_serialize(
                     "TypeError: Converting circular structure to JSON".to_string(),
                 ));
             }
-            out.push('{');
+            append_json_char(out, '{')?;
             let props = props.borrow();
             let mut first = true;
             for (k, v) in props.iter() {
@@ -99,39 +111,39 @@ fn json_serialize(
                     continue;
                 }
                 if !first {
-                    out.push(',');
+                    append_json_char(out, ',')?;
                 }
                 first = false;
-                out.push('"');
-                escape_json(k, out);
-                out.push_str("\":");
+                append_json_char(out, '"')?;
+                escape_json(k, out)?;
+                append_json_str(out, "\":")?;
                 json_serialize(v, out, visited, depth + 1)?;
             }
-            out.push('}');
+            append_json_char(out, '}')?;
             visited.remove(&ptr);
         }
-        _ => out.push_str("null"),
+        _ => append_json_str(out, "null")?,
     }
     Ok(())
 }
 
-fn escape_json(s: &str, out: &mut String) {
+fn escape_json(s: &str, out: &mut String) -> Result<(), VmErr> {
     for c in s.chars() {
         match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0C}' => out.push_str("\\f"),
+            '"' => append_json_str(out, "\\\"")?,
+            '\\' => append_json_str(out, "\\\\")?,
+            '\n' => append_json_str(out, "\\n")?,
+            '\t' => append_json_str(out, "\\t")?,
+            '\r' => append_json_str(out, "\\r")?,
+            '\u{08}' => append_json_str(out, "\\b")?,
+            '\u{0C}' => append_json_str(out, "\\f")?,
             c if (c as u32) < 0x20 => {
-                use std::fmt::Write;
-                let _ = write!(out, "\\u{:04x}", c as u32);
+                append_json_str(out, &format!("\\u{:04x}", c as u32))?;
             }
-            c => out.push(c),
+            c => append_json_char(out, c)?,
         }
     }
+    Ok(())
 }
 
 fn json_parse(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
@@ -139,6 +151,9 @@ fn json_parse(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmE
         Some(Value::String(s)) => s,
         _ => return vm_err("JSON.parse requires a string argument"),
     };
+    if s.len() > crate::value::MAX_STRING_LEN {
+        return Err(crate::value::limit_err("Maximum string length exceeded"));
+    }
     JsonParser::new(s).parse()
 }
 
@@ -189,6 +204,22 @@ impl<'a> JsonParser<'a> {
         } else {
             Err(VmErr::Msg("Invalid JSON".to_string()))
         }
+    }
+
+    fn push_str(&mut self, out: &mut String, value: &str) -> Result<(), VmErr> {
+        if out.len().saturating_add(value.len()) > crate::value::MAX_STRING_LEN {
+            return Err(crate::value::limit_err("Maximum string length exceeded"));
+        }
+        out.push_str(value);
+        Ok(())
+    }
+
+    fn push_char(&mut self, out: &mut String, value: char) -> Result<(), VmErr> {
+        if out.len().saturating_add(value.len_utf8()) > crate::value::MAX_STRING_LEN {
+            return Err(crate::value::limit_err("Maximum string length exceeded"));
+        }
+        out.push(value);
+        Ok(())
     }
 
     fn value(&mut self) -> Result<Value, VmErr> {
@@ -271,14 +302,14 @@ impl<'a> JsonParser<'a> {
                 Some(b'\\') => {
                     self.pos += 1;
                     match self.peek() {
-                        Some(b'"') => out.push('"'),
-                        Some(b'\\') => out.push('\\'),
-                        Some(b'/') => out.push('/'),
-                        Some(b'b') => out.push('\u{08}'),
-                        Some(b'f') => out.push('\u{0C}'),
-                        Some(b'n') => out.push('\n'),
-                        Some(b'r') => out.push('\r'),
-                        Some(b't') => out.push('\t'),
+                        Some(b'"') => self.push_char(&mut out, '"')?,
+                        Some(b'\\') => self.push_char(&mut out, '\\')?,
+                        Some(b'/') => self.push_char(&mut out, '/')?,
+                        Some(b'b') => self.push_char(&mut out, '\u{08}')?,
+                        Some(b'f') => self.push_char(&mut out, '\u{0C}')?,
+                        Some(b'n') => self.push_char(&mut out, '\n')?,
+                        Some(b'r') => self.push_char(&mut out, '\r')?,
+                        Some(b't') => self.push_char(&mut out, '\t')?,
                         Some(b'u') => {
                             self.pos += 1;
                             let hi = self.hex4()?;
@@ -291,13 +322,19 @@ impl<'a> JsonParser<'a> {
                                 let lo = self.hex4()?;
                                 if (0xDC00..0xE000).contains(&lo) {
                                     let cp = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00);
-                                    out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
+                                    self.push_char(
+                                        &mut out,
+                                        char::from_u32(cp).unwrap_or('\u{FFFD}'),
+                                    )?;
                                 } else {
-                                    out.push('\u{FFFD}');
-                                    out.push(char::from_u32(lo).unwrap_or('\u{FFFD}'));
+                                    self.push_char(&mut out, '\u{FFFD}')?;
+                                    self.push_char(
+                                        &mut out,
+                                        char::from_u32(lo).unwrap_or('\u{FFFD}'),
+                                    )?;
                                 }
                             } else {
-                                out.push(char::from_u32(hi).unwrap_or('\u{FFFD}'));
+                                self.push_char(&mut out, char::from_u32(hi).unwrap_or('\u{FFFD}'))?;
                             }
                             continue;
                         }
@@ -315,7 +352,7 @@ impl<'a> JsonParser<'a> {
                     }
                     let run = std::str::from_utf8(&self.bytes[start..self.pos])
                         .map_err(|_| VmErr::Msg("Invalid JSON".to_string()))?;
-                    out.push_str(run);
+                    self.push_str(&mut out, run)?;
                 }
             }
         }
@@ -345,16 +382,19 @@ impl<'a> JsonParser<'a> {
         self.skip_ws();
         if self.peek() == Some(b']') {
             self.pos += 1;
-            return Ok(Value::array(items));
+            return Value::checked_array(items);
         }
         loop {
+            if items.len() >= crate::value::MAX_ARRAY_LEN {
+                return Err(crate::value::limit_err("Maximum array length exceeded"));
+            }
             items.push(self.value()?);
             self.skip_ws();
             match self.peek() {
                 Some(b',') => self.pos += 1,
                 Some(b']') => {
                     self.pos += 1;
-                    return Ok(Value::array(items));
+                    return Value::checked_array(items);
                 }
                 _ => return vm_err("Invalid JSON"),
             }
@@ -367,7 +407,7 @@ impl<'a> JsonParser<'a> {
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
-            return Ok(Value::object(props));
+            return Value::checked_object(props);
         }
         loop {
             self.skip_ws();
@@ -377,6 +417,11 @@ impl<'a> JsonParser<'a> {
             let key = self.string()?;
             self.skip_ws();
             self.expect(b':')?;
+            if props.len() >= crate::value::MAX_OBJECT_PROPS {
+                return Err(crate::value::limit_err(
+                    "Maximum object property count exceeded",
+                ));
+            }
             let v = self.value()?;
             props.push((key, v));
             self.skip_ws();
@@ -384,7 +429,7 @@ impl<'a> JsonParser<'a> {
                 Some(b',') => self.pos += 1,
                 Some(b'}') => {
                     self.pos += 1;
-                    return Ok(Value::object(props));
+                    return Value::checked_object(props);
                 }
                 _ => return vm_err("Invalid JSON"),
             }

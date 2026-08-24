@@ -269,6 +269,33 @@ mod tests {
     }
 
     #[test]
+    fn member_ipc_facade() {
+        let src = "ipc.in";
+        let r = complete(src, src.len(), &AnalysisContext::default());
+        let l = labels(&r);
+        assert!(l.contains(&"invoke") && l.contains(&"invokeAsync"));
+    }
+
+    #[test]
+    fn member_global_alias_includes_ipc() {
+        let src = "window.ipc.";
+        let r = complete(src, src.len(), &AnalysisContext::default());
+        let l = labels(&r);
+        assert!(l.contains(&"invoke") && l.contains(&"commands"));
+    }
+
+    #[test]
+    fn member_global_alias_includes_exposed_host_functions() {
+        let ctx = AnalysisContext {
+            exposed_functions: vec![HostFunctionInfo::unknown("hostNow")],
+            ..Default::default()
+        };
+        let src = "window.host";
+        let r = complete(src, src.len(), &ctx);
+        assert!(labels(&r).contains(&"hostNow"));
+    }
+
+    #[test]
     fn member_object_literal_keys() {
         let src = "const user = { name: 1, age: 2, greet() {} };\nuser.";
         let r = complete(src, src.len(), &AnalysisContext::default());

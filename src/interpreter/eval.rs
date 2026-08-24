@@ -18,6 +18,14 @@ fn intern_params(params: &[String]) -> Rc<Vec<Rc<str>>> {
     Rc::new(params.iter().map(|p| Rc::from(p.as_str())).collect())
 }
 
+fn push_call_arg(args: &mut Vec<Value>, value: Value) -> Result<(), VmErr> {
+    if args.len() >= crate::value::MAX_ARRAY_LEN {
+        return Err(crate::value::limit_err("Maximum argument count exceeded"));
+    }
+    args.push(value);
+    Ok(())
+}
+
 /// Whether a labeled control-flow signal targets the loop with `label`.
 /// Unlabeled signals (`None`) target the innermost loop and are handled by
 /// the callers directly; this only decides labeled ones.
@@ -230,14 +238,13 @@ impl Interpreter {
                 }));
 
                 let prototype = Value::object_with_proto(proto_props, super_proto);
-                prototype.set_prop("constructor".to_string(), constructor.clone());
+                prototype.set_prop("constructor".to_string(), constructor.clone())?;
 
                 let class_val = Value::Class(Box::new(ClassData {
                     name: name.clone(),
                     constructor: Box::new(constructor),
                     prototype: Rc::new(prototype),
                     statics: Rc::new(RefCell::new(statics)),
-                    superclass: super_cls.map(Box::new),
                 }));
 
                 self.global.borrow_mut().set(name, class_val);
@@ -605,8 +612,25 @@ impl Interpreter {
                         Expr::Spread(inner) => {
                             let inner_val = self.eval_expr(inner)?;
                             match &inner_val {
-                                Value::Array(arr) => v.extend(arr.borrow().iter().cloned()),
+                                Value::Array(arr) => {
+                                    let items = arr.borrow();
+                                    if v.len().saturating_add(items.len())
+                                        > crate::value::MAX_ARRAY_LEN
+                                    {
+                                        return Err(crate::value::limit_err(
+                                            "Maximum array length exceeded",
+                                        ));
+                                    }
+                                    v.extend(items.iter().cloned());
+                                }
                                 Value::String(s) => {
+                                    if v.len().saturating_add(s.chars().count())
+                                        > crate::value::MAX_ARRAY_LEN
+                                    {
+                                        return Err(crate::value::limit_err(
+                                            "Maximum array length exceeded",
+                                        ));
+                                    }
                                     v.extend(s.chars().map(|c| Value::String(c.to_string())))
                                 }
                                 _ => {}
@@ -618,7 +642,7 @@ impl Interpreter {
                         return Err(crate::value::limit_err("Maximum array length exceeded"));
                     }
                 }
-                Ok(Value::array(v))
+                Value::checked_array(v)
             }
             Expr::Object(props) => {
                 let mut o = Vec::new();
@@ -691,7 +715,15 @@ impl Interpreter {
                         ObjectProp::Spread(expr) => {
                             let val = self.eval_expr(expr)?;
                             if let Value::Object { props: sprops, .. } = &val {
-                                o.extend(sprops.borrow().iter().cloned());
+                                let props = sprops.borrow();
+                                if o.len().saturating_add(props.len())
+                                    > crate::value::MAX_OBJECT_PROPS
+                                {
+                                    return Err(crate::value::limit_err(
+                                        "Maximum object property count exceeded",
+                                    ));
+                                }
+                                o.extend(props.iter().cloned());
                             }
                         }
                     }
@@ -701,7 +733,7 @@ impl Interpreter {
                         ));
                     }
                 }
-                Ok(Value::object(o))
+                Value::checked_object(o)
             }
             Expr::Binary { op, left, right } => {
                 let l = self.eval_expr(left)?;
@@ -786,11 +818,21 @@ impl Interpreter {
                         Expr::Spread(inner) => {
                             let inner_val = self.eval_expr(inner)?;
                             match &inner_val {
-                                Value::Array(arr) => a.extend(arr.borrow().iter().cloned()),
-                                _ => a.push(inner_val),
+                                Value::Array(arr) => {
+                                    let items = arr.borrow();
+                                    if a.len().saturating_add(items.len())
+                                        > crate::value::MAX_ARRAY_LEN
+                                    {
+                                        return Err(crate::value::limit_err(
+                                            "Maximum argument count exceeded",
+                                        ));
+                                    }
+                                    a.extend(items.iter().cloned());
+                                }
+                                _ => push_call_arg(&mut a, inner_val)?,
                             }
                         }
-                        _ => a.push(self.eval_expr(x)?),
+                        _ => push_call_arg(&mut a, self.eval_expr(x)?)?,
                     }
                 }
                 match callee.as_ref() {
@@ -958,7 +1000,7 @@ impl Interpreter {
             Expr::New { callee, args } => {
                 let mut a = Vec::new();
                 for x in args {
-                    a.push(self.eval_expr(x)?);
+                    push_call_arg(&mut a, self.eval_expr(x)?)?;
                 }
                 let c = self.eval_expr(callee)?;
                 self.ctor(&c, a)
@@ -975,16 +1017,22 @@ impl Interpreter {
             Expr::Template { quasis, exprs } => {
                 let mut result = String::new();
                 for (i, q) in quasis.iter().enumerate() {
+                    if result.len().saturating_add(q.len()) > crate::value::MAX_STRING_LEN {
+                        return Err(crate::value::limit_err("Maximum string length exceeded"));
+                    }
                     result.push_str(q);
                     if i < exprs.len() {
                         let val = self.eval_expr(&exprs[i])?;
-                        result.push_str(&self.vs(&val));
+                        let rendered = self.vs(&val);
+                        if result.len().saturating_add(rendered.len())
+                            > crate::value::MAX_STRING_LEN
+                        {
+                            return Err(crate::value::limit_err("Maximum string length exceeded"));
+                        }
+                        result.push_str(&rendered);
                     }
                 }
-                if result.len() > crate::value::MAX_STRING_LEN {
-                    return Err(crate::value::limit_err("Maximum string length exceeded"));
-                }
-                Ok(Value::String(result))
+                Value::checked_string(result)
             }
             Expr::Super => vm_err("'super' must be called as a function"),
             Expr::Await(inner) => {

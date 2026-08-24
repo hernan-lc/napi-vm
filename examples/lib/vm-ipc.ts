@@ -92,9 +92,16 @@ export class VmIpc {
     const vm = this.vm;
     if (!vm) return;
     for (const name of Object.values(IPC_GLOBALS)) {
-      if (!vm.hasGlobal(name)) continue;
-      if (this.session?.vm === vm) this.session.removeGlobal(name);
-      else vm.removeGlobal(name);
+      try {
+        if (!vm.hasGlobal(name)) continue;
+        if (this.session?.vm === vm) this.session.removeGlobal(name);
+        else vm.removeGlobal(name);
+      } catch (error) {
+        // runAsync owns the VM until its worker completes. Teardown must still
+        // release the host-side references and let the worker observe bridge
+        // shutdown instead of throwing from a SIGINT handler or reload task.
+        if (!isBusyVmError(error)) throw error;
+      }
     }
     this.vm = null;
     this.session = null;
@@ -159,4 +166,8 @@ export class VmIpc {
   private emit(event: string, payload: unknown): void {
     for (const listener of [...(this.listeners.get(event) || [])]) listener(payload);
   }
+}
+
+function isBusyVmError(error: unknown): boolean {
+  return /VM is busy/i.test(error instanceof Error ? error.message : String(error));
 }

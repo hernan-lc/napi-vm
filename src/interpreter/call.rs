@@ -24,19 +24,17 @@ impl Interpreter {
             Pattern::Array(elements) => {
                 let values: Vec<Value> = match val {
                     Value::Array(arr) => arr.borrow().clone(),
-                    Value::Object { props, .. } => {
-                        let mut vals = Vec::new();
-                        for (k, v) in props.borrow().iter() {
-                            if let Ok(n) = k.parse::<usize>() {
-                                while vals.len() <= n {
-                                    vals.push(Value::Undefined);
-                                }
-                                vals[n] = v.clone();
-                            }
+                    // Plain objects are not iterable and must never be
+                    // materialized into a sparse vector keyed by guest data.
+                    // The old numeric-key path let `{ "1000000000": 1 }`
+                    // request an enormous allocation during destructuring.
+                    Value::Object { .. } => vec![],
+                    Value::String(s) => {
+                        if s.chars().count() > crate::value::MAX_ARRAY_LEN {
+                            return Err(crate::value::limit_err("Maximum array length exceeded"));
                         }
-                        vals
+                        s.chars().map(|c| Value::String(c.to_string())).collect()
                     }
-                    Value::String(s) => s.chars().map(|c| Value::String(c.to_string())).collect(),
                     _ => vec![],
                 };
                 let mut rest_target = None;
@@ -181,6 +179,9 @@ impl Interpreter {
         this_val: Value,
         args: Vec<Value>,
     ) -> Result<Value, VmErr> {
+        if args.len() > crate::value::MAX_ARRAY_LEN {
+            return Err(crate::value::limit_err("Maximum argument count exceeded"));
+        }
         match f {
             Value::Function(fd) => {
                 // Calling a generator function does not run its body; it returns
@@ -239,7 +240,7 @@ impl Interpreter {
                                     .collect(),
                             );
                             args_obj
-                                .set_prop("length".to_string(), Value::Number(args.len() as f64));
+                                .set_prop("length".to_string(), Value::Number(args.len() as f64))?;
                             vars.push((Key::from("arguments"), args_obj));
                         }
                         Rc::new(RefCell::new(Environment::with_bindings(parent_env, vars)))
@@ -282,7 +283,7 @@ impl Interpreter {
                                     .collect(),
                             );
                             args_obj
-                                .set_prop("length".to_string(), Value::Number(args.len() as f64));
+                                .set_prop("length".to_string(), Value::Number(args.len() as f64))?;
                             fe.borrow_mut().set("arguments", args_obj);
                         }
                         fe
@@ -431,7 +432,7 @@ impl Interpreter {
                                     .collect(),
                             );
                             args_obj
-                                .set_prop("length".to_string(), Value::Number(args.len() as f64));
+                                .set_prop("length".to_string(), Value::Number(args.len() as f64))?;
                             vars.push((Key::from("arguments"), args_obj));
                         }
                         Rc::new(RefCell::new(Environment::with_bindings(parent_env, vars)))
@@ -466,7 +467,7 @@ impl Interpreter {
                                     .collect(),
                             );
                             args_obj
-                                .set_prop("length".to_string(), Value::Number(args.len() as f64));
+                                .set_prop("length".to_string(), Value::Number(args.len() as f64))?;
                             fe.borrow_mut().set("arguments", args_obj);
                         }
                         fe

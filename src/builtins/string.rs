@@ -5,24 +5,33 @@ use crate::error::VmErr;
 use crate::interpreter::{Environment, Interpreter};
 use crate::value::Value;
 
+fn bounded_string(value: String) -> Result<Value, VmErr> {
+    Value::checked_string(value)
+}
+
 pub(super) fn install(e: &mut Environment) {
     if let Some(s) = e.get("String") {
         s.set_prop(
             "fromCharCode".to_string(),
             nf("fromCharCode", string_from_char_code),
-        );
+        )
+        .expect("built-in String property");
     }
 }
 
 fn string_from_char_code(_: &mut Interpreter, _this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s: String = a
-        .iter()
-        .filter_map(|v| {
-            let n = v.to_number() as u32;
-            char::from_u32(n)
-        })
-        .collect();
-    Ok(Value::String(s))
+    let mut s = String::new();
+    for v in a {
+        let n = v.to_number() as u32;
+        let Some(ch) = char::from_u32(n) else {
+            continue;
+        };
+        if s.len().saturating_add(ch.len_utf8()) > crate::value::MAX_STRING_LEN {
+            return Err(crate::value::limit_err("Maximum string length exceeded"));
+        }
+        s.push(ch);
+    }
+    Value::checked_string(s)
 }
 
 /// Dispatch table for `String.prototype` methods, looked up by `prop()`.
@@ -49,13 +58,13 @@ pub fn string_method(name: &str) -> Option<Value> {
 }
 
 fn string_to_upper(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
-    Ok(Value::String(str_this(interp, &this).to_uppercase()))
+    bounded_string(str_this(interp, &this).to_uppercase())
 }
 fn string_to_lower(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
-    Ok(Value::String(str_this(interp, &this).to_lowercase()))
+    bounded_string(str_this(interp, &this).to_lowercase())
 }
 fn string_trim(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
-    Ok(Value::String(str_this(interp, &this).trim().to_string()))
+    bounded_string(str_this(interp, &this).trim().to_string())
 }
 fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
@@ -76,9 +85,7 @@ fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
     if start >= end {
         return Ok(Value::String(String::new()));
     }
-    Ok(Value::String(
-        chars[start as usize..end as usize].iter().collect(),
-    ))
+    bounded_string(chars[start as usize..end as usize].iter().collect())
 }
 fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
@@ -98,9 +105,9 @@ fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
                 }
                 parts.push(Value::String(p.to_string()));
             }
-            Ok(Value::array(parts))
+            Value::checked_array(parts)
         }
-        _ => Ok(Value::array(vec![Value::String(s)])),
+        _ => Value::checked_array(vec![Value::String(s)]),
     }
 }
 fn string_includes(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
@@ -161,7 +168,7 @@ fn string_repeat(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result
     if s.len().saturating_mul(n) > crate::value::MAX_STRING_LEN {
         return Err(crate::value::limit_err("Maximum string length exceeded"));
     }
-    Ok(Value::String(s.repeat(n)))
+    Value::checked_string(s.repeat(n))
 }
 fn string_replace(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this);
@@ -175,7 +182,22 @@ fn string_replace(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resul
         Some(v) => interp.vs(v),
         None => String::new(),
     };
-    Ok(Value::String(s.replacen(&from, &to, 1)))
+    let replaces: usize = if from.is_empty() || s.contains(&from) {
+        1
+    } else {
+        0
+    };
+    let result_len = if to.len() >= from.len() {
+        s.len()
+            .saturating_add(replaces.saturating_mul(to.len().saturating_sub(from.len())))
+    } else {
+        s.len()
+            .saturating_sub(replaces.saturating_mul(from.len().saturating_sub(to.len())))
+    };
+    if result_len > crate::value::MAX_STRING_LEN {
+        return Err(crate::value::limit_err("Maximum string length exceeded"));
+    }
+    bounded_string(s.replacen(&from, &to, 1))
 }
 fn string_replace_all(
     interp: &mut Interpreter,
@@ -208,7 +230,7 @@ fn string_replace_all(
             return Err(crate::value::limit_err("Maximum string length exceeded"));
         }
     }
-    Ok(Value::String(s.replace(&from, &to)))
+    bounded_string(s.replace(&from, &to))
 }
 fn string_char_code_at(
     interp: &mut Interpreter,
@@ -241,7 +263,5 @@ fn string_substring(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Res
     if start > end {
         std::mem::swap(&mut start, &mut end);
     }
-    Ok(Value::String(
-        chars[start as usize..end as usize].iter().collect(),
-    ))
+    bounded_string(chars[start as usize..end as usize].iter().collect())
 }
