@@ -15,6 +15,8 @@ const MAX_SHAPE_PARAMETERS = 64;
 const MAX_METADATA_NAME = 128;
 const MAX_DOCUMENTATION_BYTES = 16 * 1024;
 const MAX_SCHEMA_NODES = 4096;
+// Mirrors MAX_TYPE_NAME_LENGTH in src/lang/metadata.rs.
+const MAX_TYPE_NAME_LENGTH = 256;
 const MAX_LAST_VALUE_DEPTH = 6;
 const MAX_LAST_VALUE_PROPERTIES = 64;
 const MAX_LAST_VALUE_STRING = 512;
@@ -67,28 +69,74 @@ function validateDocumentation(documentation, kind) {
   }
 }
 
-function validateLegacyShape(value, depth, state) {
-  if (typeof value !== "string") metadataError("shape must be an object or supported type string");
-  const trimmed = value.trim();
-  if (trimmed.endsWith("[]")) return validateLegacyShape(trimmed.slice(0, -2), depth + 1, state);
-  if (trimmed.startsWith("Promise<") && trimmed.endsWith(">")) {
-    return validateLegacyShape(trimmed.slice(8, -1), depth + 1, state);
-  }
-  if (!["unknown", "any", "void", "undefined", "null", "boolean", "number", "string", "object", "function"].includes(trimmed)) {
-    metadataError(`unsupported legacy shape string: ${trimmed}`);
-  }
-}
+const LEGACY_SHAPE_NAMES = [
+  "unknown", "any", "void", "undefined", "null", "boolean", "number", "string", "object", "function",
+];
 
-function validateShape(shape, depth = 0, state = { nodes: 0 }) {
+/// Fields each shape kind is allowed to carry, so a declaration cannot smuggle
+/// limits past the validator by hanging `properties` off a `{ kind: "string" }`
+/// that nothing recurses into.
+const SHAPE_FIELDS = {
+  object: ["kind", "documentation", "properties"],
+  function: ["kind", "documentation", "params", "returns", "async"],
+  array: ["kind", "documentation", "items", "value"],
+  promise: ["kind", "documentation", "items", "value"],
+};
+const PRIMITIVE_SHAPE_FIELDS = ["kind", "documentation"];
+
+function checkBounds(depth, state) {
   if (depth > MAX_SHAPE_DEPTH) metadataError(`shape exceeds maximum depth of ${MAX_SHAPE_DEPTH}`);
   state.nodes += 1;
   if (state.nodes > MAX_SCHEMA_NODES) metadataError(`shape exceeds maximum node count of ${MAX_SCHEMA_NODES}`);
-  if (typeof shape === "string") return validateLegacyShape(shape, depth, state);
+}
+
+function rejectExtraFields(shape, allowed) {
+  const extra = Object.keys(shape).filter((field) => !allowed.includes(field));
+  if (extra.length > 0) {
+    metadataError(`${shape.kind} shape contains invalid fields: ${extra.sort().join(", ")}`);
+  }
+}
+
+// `options.named` allows arbitrary descriptive type names (`User`,
+// `Result<User>`). Legacy `exposeFunction()` metadata has always accepted those
+// as free-form display strings and the Rust side still renders them verbatim,
+// so rejecting them here would break callers that predate the declarative
+// model. `registerGlobal()` stays strict, since its shapes are actually
+// interpreted rather than displayed.
+function validateLegacyShape(value, depth, state, options) {
+  if (typeof value !== "string") metadataError("shape must be an object or supported type string");
+  const trimmed = value.trim();
+  // Each wrapper is a node at the next depth, exactly as Rust's
+  // `parse_legacy_shape` counts them. Recursing without re-checking would let
+  // the string form bypass limits the structured form enforces.
+  if (trimmed.endsWith("[]")) {
+    checkBounds(depth + 1, state);
+    return validateLegacyShape(trimmed.slice(0, -2), depth + 1, state, options);
+  }
+  if (trimmed.startsWith("Promise<") && trimmed.endsWith(">")) {
+    checkBounds(depth + 1, state);
+    return validateLegacyShape(trimmed.slice(8, -1), depth + 1, state, options);
+  }
+  if (LEGACY_SHAPE_NAMES.includes(trimmed)) return;
+  if (options && options.named) {
+    if (trimmed.length === 0 || trimmed.length > MAX_TYPE_NAME_LENGTH) {
+      metadataError(`legacy type name must be 1-${MAX_TYPE_NAME_LENGTH} characters`);
+    }
+    if (/[\u0000-\u001f\u007f]/u.test(trimmed)) metadataError("legacy type name contains control characters");
+    return;
+  }
+  metadataError(`unsupported legacy shape string: ${trimmed}`);
+}
+
+function validateShape(shape, depth = 0, state = { nodes: 0 }, options) {
+  checkBounds(depth, state);
+  if (typeof shape === "string") return validateLegacyShape(shape, depth, state, options);
   if (!shape || typeof shape !== "object" || Array.isArray(shape)) metadataError("shape must be an object");
 
   const kinds = ["unknown", "any", "void", "undefined", "null", "boolean", "number", "string", "array", "promise", "object", "function"];
   if (typeof shape.kind !== "string" || !kinds.includes(shape.kind)) metadataError(`unsupported shape kind: ${String(shape.kind)}`);
   validateDocumentation(shape.documentation, "shape");
+  rejectExtraFields(shape, SHAPE_FIELDS[shape.kind] || PRIMITIVE_SHAPE_FIELDS);
 
   if (shape.kind === "object") {
     if (shape.properties !== undefined && (!shape.properties || typeof shape.properties !== "object" || Array.isArray(shape.properties))) {
@@ -98,10 +146,7 @@ function validateShape(shape, depth = 0, state = { nodes: 0 }) {
     if (properties.length > MAX_SHAPE_PROPERTIES) metadataError(`object has too many properties (maximum ${MAX_SHAPE_PROPERTIES})`);
     for (const name of properties) {
       validateMetadataName(name, "property");
-      validateShape(shape.properties[name], depth + 1, state);
-    }
-    if (shape.params !== undefined || shape.returns !== undefined || shape.items !== undefined || shape.value !== undefined) {
-      metadataError("object shape contains invalid fields");
+      validateShape(shape.properties[name], depth + 1, state, options);
     }
     return;
   }
@@ -114,10 +159,9 @@ function validateShape(shape, depth = 0, state = { nodes: 0 }) {
       if (!parameter || typeof parameter !== "object" || Array.isArray(parameter)) metadataError("function parameter must be an object");
       validateMetadataName(parameter.name, "parameter");
       const parameterShape = parameter.type ?? parameter.shape ?? parameter.typeName ?? { kind: "unknown" };
-      validateShape(parameterShape, depth + 1, state);
+      validateShape(parameterShape, depth + 1, state, options);
     }
-    if (shape.returns !== undefined) validateShape(shape.returns, depth + 1, state);
-    if (shape.items !== undefined || shape.value !== undefined || shape.properties !== undefined) metadataError("function shape contains invalid fields");
+    if (shape.returns !== undefined) validateShape(shape.returns, depth + 1, state, options);
     if (shape.async !== undefined && typeof shape.async !== "boolean") metadataError("function async flag must be boolean");
     return;
   }
@@ -125,17 +169,22 @@ function validateShape(shape, depth = 0, state = { nodes: 0 }) {
   if (shape.kind === "array" || shape.kind === "promise") {
     if (shape.items !== undefined && shape.value !== undefined) metadataError(`${shape.kind} shape has duplicate item fields`);
     const itemShape = shape.items ?? shape.value;
-    if (itemShape !== undefined) validateShape(itemShape, depth + 1, state);
-    if (shape.properties !== undefined || shape.params !== undefined || shape.returns !== undefined) metadataError(`${shape.kind} shape contains invalid fields`);
+    if (itemShape !== undefined) validateShape(itemShape, depth + 1, state, options);
   }
 }
 
-function validateGlobal(name, shape, documentation) {
+function validateGlobal(name, shape, documentation, options) {
   validateMetadataName(name, "global");
   validateDocumentation(documentation, "global");
   const state = { nodes: 0 };
-  validateShape(shape, 0, state);
+  validateShape(shape, 0, state, options);
   return state.nodes;
+}
+
+/// Validation entry point for legacy `exposeFunction()` metadata, which may
+/// name types the declarative vocabulary does not cover.
+function validateHostFunction(name, shape, documentation) {
+  return validateGlobal(name, shape, documentation, { named: true });
 }
 
 function inferJsonShape(value, depth = 0) {
@@ -290,7 +339,7 @@ class VmSession {
       async: Boolean(info.async),
       documentation: info.documentation,
     };
-    validateGlobal(name, functionShape, info.documentation);
+    validateHostFunction(name, functionShape, info.documentation);
     this.requireVm().exposeFunction(name, fn);
     if (info.languageService === false || info.public === false) return;
     this.hostFunctions.set(name, {
@@ -311,7 +360,7 @@ class VmSession {
       async: true,
       documentation: info.documentation,
     };
-    validateGlobal(name, functionShape, info.documentation);
+    validateHostFunction(name, functionShape, info.documentation);
     this.requireVm().exposeAsyncFunction(name, fn);
     if (info.languageService === false || info.public === false) return;
     this.hostFunctions.set(name, {

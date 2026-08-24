@@ -194,10 +194,22 @@ Array of host functions callable from guest scripts.
 | `name`          | `string`  | Function name as it appears in the guest script.        |
 | `params`        | `array`   | Positional parameter list (may be empty).               |
 | `params[].name` | `string`  | Parameter name.                                         |
-| `params[].typeName` | `string` | TypeScript-style type annotation.                   |
+| `params[].typeName` | `string` | TypeScript-style type annotation (see below).       |
 | `returns`       | `string`  | Return type annotation (default `"unknown"`).           |
 | `documentation` | `string?` | Optional Markdown documentation string.                 |
 | `async`         | `boolean` | Whether the function returns a `Promise`.               |
+
+`typeName` and `returns` are free-form display text, not a closed vocabulary.
+Names the server recognises (`string`, `number[]`, `Promise<string>`, …) become
+structured types for member completion; anything else (`User`, `Result<User>`,
+`string | null`) is rendered verbatim in the hover signature and treated as
+`unknown` for inference. A server must never reject a function for naming a type
+it does not know.
+
+They are still bounded. A name longer than 256 bytes is replaced with
+`"unknown"`, and array/`Promise` wrapper nesting is interpreted only to a depth
+of 8 — beyond that the remainder collapses to `unknown`. An entry whose `name`
+exceeds 128 bytes, or which declares more than 64 parameters, is skipped.
 
 #### `payload.modules` — registered modules
 
@@ -289,6 +301,28 @@ values.
   "items": { /* element shape */ }
 }
 ```
+
+---
+
+### Resolution order
+
+A name may be declared by more than one layer. The server resolves the most
+specific declaration first:
+
+```text
+local declaration in the edited file
+> runtime generic global      (payload.globals)
+> runtime host function       (payload.functions)
+> manifest generic global     (--config globals)
+> manifest host function      (--config hostFunctions)
+> built-in global
+```
+
+The live runtime always outranks the static manifest, so a manifest that has
+drifted from the running program never masks what the program actually exposes.
+Within one source, an explicit declarative shape outranks the legacy host
+function form, which lets a server publish a richer shape for a name it also
+exposes as a plain function.
 
 ---
 

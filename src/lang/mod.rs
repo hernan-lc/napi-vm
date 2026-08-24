@@ -26,9 +26,12 @@ pub use complete::complete;
 pub(crate) use complete::member_trigger;
 pub use diagnostics::diagnose;
 pub use document::{Document, HoverInfo, Type};
+pub(crate) use metadata::clamp_type_name;
 pub use metadata::{GlobalInfo, ParameterInfo, PropertyInfo, Shape};
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use metadata::{MAX_MANIFEST_BYTES, parse_globals};
+pub(crate) use metadata::{
+    MAX_DOCUMENTATION_BYTES, MAX_MANIFEST_BYTES, MAX_NAME_LENGTH, MAX_PARAMETERS, parse_globals,
+};
 pub use service::LanguageService;
 
 use crate::lexer::Lexer;
@@ -163,16 +166,36 @@ impl HostFunctionInfo {
     }
 }
 
+/// Interpret a legacy display type string as a structured shape.
+///
+/// Unlike `metadata::parse_legacy_shape`, this never fails: legacy host
+/// function metadata carries arbitrary descriptive type names (`User`,
+/// `Result<User>`) that only ever reach the editor as display text, so an
+/// unrecognised name degrades to `Unknown` rather than rejecting the function.
+///
+/// It is still bounded. The wrapper recursion is driven by attacker-influenced
+/// runtime JSON (`src/lsp/server.rs` reads `returns`/`typeName` straight off the
+/// socket), so a string like `"string" + "[]".repeat(200_000)` would otherwise
+/// recurse once per wrapper and overflow the stack. Past `MAX_SHAPE_DEPTH` the
+/// remainder collapses to `Unknown`, matching the depth limit that
+/// `parse_globals` enforces on the declarative path.
 fn metadata_shape_from_string(value: &str) -> Shape {
+    metadata_shape_from_string_at(value, 0)
+}
+
+fn metadata_shape_from_string_at(value: &str, depth: usize) -> Shape {
     let value = value.trim();
+    if depth >= metadata::MAX_SHAPE_DEPTH {
+        return Shape::Unknown;
+    }
     if let Some(inner) = value.strip_suffix("[]") {
-        return Shape::Array(Box::new(metadata_shape_from_string(inner)));
+        return Shape::Array(Box::new(metadata_shape_from_string_at(inner, depth + 1)));
     }
     if let Some(inner) = value
         .strip_prefix("Promise<")
         .and_then(|value| value.strip_suffix('>'))
     {
-        return Shape::Promise(Box::new(metadata_shape_from_string(inner)));
+        return Shape::Promise(Box::new(metadata_shape_from_string_at(inner, depth + 1)));
     }
     match value {
         "any" => Shape::Any,
@@ -197,9 +220,13 @@ fn metadata_shape_from_string(value: &str) -> Shape {
 /// exposed and which modules it registered.
 #[derive(Debug, Clone, Default)]
 pub struct AnalysisContext {
-    /// Functions exposed to the VM as callable globals, including optional
-    /// parameter, return-type, and documentation metadata.
+    /// Functions the live runtime exposed to the VM as callable globals,
+    /// including optional parameter, return-type, and documentation metadata.
     pub exposed_functions: Vec<HostFunctionInfo>,
+    /// Host functions declared by the static project manifest. Kept separate
+    /// from `exposed_functions` so a stale manifest entry never outranks what
+    /// the running program actually exposed.
+    pub manifest_functions: Vec<HostFunctionInfo>,
     /// Registered modules and their export names.
     pub modules: Vec<ModuleInfo>,
     /// Shapes observed for VM event handlers. The key is the handler function
@@ -212,13 +239,46 @@ pub struct AnalysisContext {
 }
 
 impl AnalysisContext {
-    /// Resolve custom metadata using the one service-wide precedence order.
-    /// Legacy host functions remain a separate compatibility layer; callers
-    /// merge them after this map so explicit generic runtime metadata wins.
+    /// Generic globals resolved by the one service-wide precedence order.
+    ///
+    /// Legacy host functions stay a separate compatibility layer so they keep
+    /// their own hover and completion presentation, but they still take part
+    /// in precedence: a live runtime function shadows a static manifest global
+    /// of the same name, which is why manifest entries are dropped here before
+    /// runtime generics are layered on. Callers consult this map first and
+    /// `host_functions()` second, yielding:
+    ///
+    /// ```text
+    /// local
+    /// > runtime generic
+    /// > runtime host function
+    /// > manifest generic
+    /// > manifest host function
+    /// > builtin
+    /// ```
     pub(crate) fn resolved_globals(&self) -> HashMap<String, GlobalInfo> {
         let mut globals = self.manifest_globals.clone();
+        for function in &self.exposed_functions {
+            globals.remove(&function.name);
+        }
         globals.extend(self.runtime_globals.clone());
         globals
+    }
+
+    /// Host functions in precedence order: live runtime first, then any
+    /// manifest declaration the runtime has not superseded.
+    pub(crate) fn host_functions(&self) -> Vec<HostFunctionInfo> {
+        let mut functions = self.exposed_functions.clone();
+        let live: std::collections::HashSet<&str> =
+            functions.iter().map(|f| f.name.as_str()).collect();
+        let inherited: Vec<_> = self
+            .manifest_functions
+            .iter()
+            .filter(|function| !live.contains(function.name.as_str()))
+            .cloned()
+            .collect();
+        functions.extend(inherited);
+        functions
     }
 }
 
@@ -267,6 +327,60 @@ mod tests {
 
     fn labels(v: &[Completion]) -> Vec<&str> {
         v.iter().map(|c| c.label.as_str()).collect()
+    }
+
+    /// Legacy type strings arrive from untrusted runtime JSON, so the wrapper
+    /// recursion must be bounded. Unbounded, `"string" + "[]".repeat(200_000)`
+    /// recursed once per wrapper and aborted the language server with a stack
+    /// overflow — reachable through `HostFunctionInfo::global_info()`, which
+    /// hover and member resolution call on every request.
+    #[test]
+    fn legacy_type_strings_are_depth_bounded() {
+        let deep = "string".to_string() + &"[]".repeat(200_000);
+        let shape = metadata_shape_from_string(&deep);
+
+        let mut depth = 0;
+        let mut cursor = &shape;
+        while let Shape::Array(inner) = cursor {
+            depth += 1;
+            cursor = inner;
+        }
+        assert_eq!(depth, metadata::MAX_SHAPE_DEPTH);
+        assert_eq!(*cursor, Shape::Unknown);
+
+        // Shapes within the limit still round-trip exactly.
+        assert_eq!(
+            metadata_shape_from_string("string[]"),
+            Shape::Array(Box::new(Shape::String))
+        );
+        assert_eq!(
+            metadata_shape_from_string("Promise<number>"),
+            Shape::Promise(Box::new(Shape::Number))
+        );
+    }
+
+    /// Descriptive names the declarative vocabulary does not cover stay usable
+    /// as display text rather than being rejected, matching what legacy
+    /// `exposeFunction()` metadata has always allowed.
+    #[test]
+    fn unknown_legacy_type_names_degrade_instead_of_failing() {
+        assert_eq!(metadata_shape_from_string("User"), Shape::Unknown);
+        assert_eq!(
+            metadata_shape_from_string("Result<User>[]"),
+            Shape::Array(Box::new(Shape::Unknown))
+        );
+        // The raw string is what the editor actually renders.
+        let function = HostFunctionInfo {
+            name: "getUser".into(),
+            params: vec![HostFunctionParameter {
+                name: "id".into(),
+                type_name: "UserId".into(),
+            }],
+            return_type: "User".into(),
+            documentation: None,
+            async_fn: false,
+        };
+        assert_eq!(function.signature(), "(id: UserId) => User");
     }
 
     #[test]

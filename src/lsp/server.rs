@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 
 use crate::lang::{
     CompletionKind, DiagnosticSeverity, HostFunctionInfo, HostFunctionParameter, LanguageService,
-    MAX_MANIFEST_BYTES, parse_globals,
+    MAX_DOCUMENTATION_BYTES, MAX_MANIFEST_BYTES, MAX_NAME_LENGTH, MAX_PARAMETERS, clamp_type_name,
+    parse_globals,
 };
 
 use super::runtime_client::{RuntimeClient, RuntimeEvent};
@@ -77,8 +78,8 @@ impl Server {
             }
         }
         if let Some(hosts) = manifest.get("hostFunctions").and_then(Value::as_array) {
-            for host in hosts {
-                register_host(target, host);
+            for host in hosts.iter().filter_map(parse_host) {
+                target.register_manifest_host_function(host);
             }
         }
         if let Some(modules) = manifest.get("modules").and_then(Value::as_array) {
@@ -106,8 +107,8 @@ impl Server {
             }
         }
         if let Some(hosts) = snapshot.get("functions").and_then(Value::as_array) {
-            for host in hosts {
-                register_host(target, host);
+            for host in hosts.iter().filter_map(parse_host) {
+                target.register_host_function(host);
             }
         }
         if let Some(modules) = snapshot.get("modules").and_then(Value::as_array) {
@@ -372,42 +373,54 @@ impl Server {
     }
 }
 
-fn register_host(target: &mut LanguageService, host: &Value) {
-    let Some(name) = host.get("name").and_then(Value::as_str) else {
-        return;
-    };
-    let params = host
+/// Parse one host function entry from untrusted JSON.
+///
+/// Everything here arrives over the runtime socket or from the project
+/// manifest, so each field carries the same bounds the declarative
+/// `parse_globals` path enforces; an entry that breaks one is skipped rather
+/// than truncated, so the editor never shows half-parsed metadata.
+fn parse_host(host: &Value) -> Option<HostFunctionInfo> {
+    let name = host.get("name")?.as_str()?;
+    if name.is_empty() || name.len() > MAX_NAME_LENGTH {
+        return None;
+    }
+    let raw_params = host
         .get("params")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if raw_params.len() > MAX_PARAMETERS {
+        return None;
+    }
+    let params = raw_params
+        .iter()
         .filter_map(|param| {
+            let name = param.get("name")?.as_str()?;
+            if name.is_empty() || name.len() > MAX_NAME_LENGTH {
+                return None;
+            }
             Some(HostFunctionParameter {
-                name: param.get("name")?.as_str()?.to_string(),
-                type_name: param
-                    .get("typeName")
-                    .or_else(|| param.get("type_name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string(),
+                name: name.to_string(),
+                type_name: clamp_type_name(
+                    param
+                        .get("typeName")
+                        .or_else(|| param.get("type_name"))
+                        .and_then(Value::as_str),
+                ),
             })
         })
         .collect();
-    target.register_host_function(HostFunctionInfo {
+    Some(HostFunctionInfo {
         name: name.to_string(),
         params,
-        return_type: host
-            .get("returns")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string(),
+        return_type: clamp_type_name(host.get("returns").and_then(Value::as_str)),
         documentation: host
             .get("documentation")
             .and_then(Value::as_str)
+            .filter(|doc| doc.len() <= MAX_DOCUMENTATION_BYTES)
             .map(str::to_string),
         async_fn: host.get("async").and_then(Value::as_bool).unwrap_or(false),
-    });
+    })
 }
 
 fn lsp_completion_kind(kind: CompletionKind) -> u32 {

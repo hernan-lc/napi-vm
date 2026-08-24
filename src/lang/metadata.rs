@@ -19,6 +19,10 @@ pub const MAX_GLOBALS: usize = 256;
 pub const MAX_PARAMETERS: usize = 64;
 /// Maximum length of a global/property/parameter name.
 pub const MAX_NAME_LENGTH: usize = 128;
+/// Maximum length of a legacy display type string (`returns`, `typeName`).
+/// These are free-form descriptive names rather than a bounded vocabulary, so
+/// they need their own ceiling before they are stored and rendered in hovers.
+pub const MAX_TYPE_NAME_LENGTH: usize = 256;
 /// Maximum documentation length in bytes.
 pub const MAX_DOCUMENTATION_BYTES: usize = 16 * 1024;
 /// Maximum recursive shape nodes in one global declaration.
@@ -26,6 +30,21 @@ pub const MAX_SCHEMA_NODES: usize = 4096;
 /// Maximum static manifest file size.
 #[cfg(not(target_arch = "wasm32"))]
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+
+/// Clamp a legacy display type string (`returns`, `typeName`) arriving from a
+/// host.
+///
+/// These are free-form descriptive names (`User`, `Result<User>`) rather than a
+/// bounded vocabulary, so there is nothing to validate against — only a ceiling,
+/// so an oversized string cannot be stored and then rendered into every hover.
+/// An absent, empty, or oversized value degrades to `"unknown"`, matching how
+/// the rest of the legacy path treats metadata it cannot use.
+pub(crate) fn clamp_type_name(value: Option<&str>) -> String {
+    match value {
+        Some(name) if !name.is_empty() && name.len() <= MAX_TYPE_NAME_LENGTH => name.to_string(),
+        _ => "unknown".to_string(),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlobalInfo {
@@ -467,6 +486,54 @@ impl<'de> serde::Deserialize<'de> for Shape {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The exact boundary the Node validator in `runtime/session.cjs` must
+    /// mirror. When the two disagreed, `registerGlobal()` reported success and
+    /// the LSP then rejected the whole globals collection, silently dropping
+    /// the runtime snapshot. Keep this in step with the `legacy string shapes
+    /// enforce the same depth limit as structured shapes` test there.
+    #[test]
+    fn legacy_string_shapes_share_the_structured_depth_limit() {
+        let legacy = |wrappers: usize| {
+            parse_globals(&json!([{
+                "name": "g",
+                "shape": "string".to_string() + &"[]".repeat(wrappers),
+            }]))
+        };
+        let structured = |wrappers: usize| {
+            let mut shape = json!({ "kind": "string" });
+            for _ in 0..wrappers {
+                shape = json!({ "kind": "array", "items": shape });
+            }
+            parse_globals(&json!([{ "name": "g", "shape": shape }]))
+        };
+
+        for wrappers in 0..=MAX_SHAPE_DEPTH {
+            assert!(legacy(wrappers).is_ok(), "legacy depth {wrappers} rejected");
+            assert!(
+                structured(wrappers).is_ok(),
+                "structured depth {wrappers} rejected"
+            );
+        }
+        // The string form is flat in memory, so it can be pushed far past the
+        // limit — this is the shape that used to slip through the Node
+        // validator entirely.
+        for wrappers in [MAX_SHAPE_DEPTH + 1, 64, 5000] {
+            assert!(
+                legacy(wrappers).is_err(),
+                "legacy depth {wrappers} accepted"
+            );
+        }
+        // Structured shapes stay modest here: nesting a `serde_json::Value`
+        // thousands deep would overflow the stack building the test input
+        // itself, well before this parser sees it.
+        for wrappers in [MAX_SHAPE_DEPTH + 1, 64] {
+            assert!(
+                structured(wrappers).is_err(),
+                "structured depth {wrappers} accepted"
+            );
+        }
+    }
 
     #[test]
     fn parses_recursive_function_metadata() {

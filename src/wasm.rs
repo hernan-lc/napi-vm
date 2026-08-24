@@ -27,7 +27,7 @@ use crate::host::HostBridge;
 use crate::interpreter::Interpreter;
 use crate::lang::{
     AnalysisContext, Completion, CompletionKind, DiagnosticSeverity, HostFunctionInfo,
-    HostFunctionParameter, ModuleInfo,
+    HostFunctionParameter, ModuleInfo, clamp_type_name,
 };
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -198,8 +198,7 @@ fn host_function_info_from_js(name: &str, metadata: &JsValue) -> Result<HostFunc
             let parameter = params_array.get(index);
             let parameter_name = read_str_prop(&parameter, "name")
                 .ok_or_else(|| JsValue::from_str("host function parameter needs a name"))?;
-            let type_name =
-                read_str_prop(&parameter, "type").unwrap_or_else(|| "unknown".to_string());
+            let type_name = clamp_type_name(read_str_prop(&parameter, "type").as_deref());
             params.push(HostFunctionParameter {
                 name: parameter_name,
                 type_name,
@@ -207,7 +206,7 @@ fn host_function_info_from_js(name: &str, metadata: &JsValue) -> Result<HostFunc
         }
     }
 
-    let return_type = read_str_prop(metadata, "returns").unwrap_or_else(|| "unknown".into());
+    let return_type = clamp_type_name(read_str_prop(metadata, "returns").as_deref());
     let documentation = read_str_prop(metadata, "documentation");
     let async_fn = js_sys::Reflect::get(metadata, &JsValue::from_str("async"))
         .ok()
@@ -680,6 +679,8 @@ impl WasmVm {
     fn analysis_context(&self) -> AnalysisContext {
         AnalysisContext {
             exposed_functions: self.exposed_functions.clone(),
+            // The browser host has no static manifest layer.
+            manifest_functions: Vec::new(),
             modules: self.module_infos.clone(),
             runtime_handlers: std::collections::HashMap::new(),
             runtime_globals: std::collections::HashMap::new(),

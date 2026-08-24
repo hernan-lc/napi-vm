@@ -17,6 +17,7 @@ pub struct LanguageService {
     modules: HashMap<String, ModuleInfo>,
     module_sources: HashMap<String, String>,
     host_functions: HashMap<String, HostFunctionInfo>,
+    manifest_host_functions: HashMap<String, HostFunctionInfo>,
     runtime_handlers: HashMap<String, Type>,
     runtime_values: HashMap<String, String>,
     manifest_globals: HashMap<String, GlobalInfo>,
@@ -57,8 +58,18 @@ impl LanguageService {
         self.rebuild_documents();
     }
 
+    /// Register a host function exposed by the live runtime.
     pub fn register_host_function(&mut self, function: HostFunctionInfo) {
         self.host_functions.insert(function.name.clone(), function);
+        self.rebuild_documents();
+    }
+
+    /// Register a host function declared by the static project manifest. These
+    /// sit below everything the live runtime publishes, so a stale manifest
+    /// entry never masks a function the running program actually exposed.
+    pub fn register_manifest_host_function(&mut self, function: HostFunctionInfo) {
+        self.manifest_host_functions
+            .insert(function.name.clone(), function);
         self.rebuild_documents();
     }
 
@@ -148,6 +159,7 @@ impl LanguageService {
     pub fn context(&self) -> AnalysisContext {
         AnalysisContext {
             exposed_functions: self.hosts(),
+            manifest_functions: self.manifest_hosts(),
             modules: self.modules.values().cloned().collect(),
             runtime_handlers: self.runtime_handlers.clone(),
             runtime_globals: self.runtime_globals.clone(),
@@ -161,12 +173,25 @@ impl LanguageService {
         hosts
     }
 
+    /// Manifest host functions that the live runtime has not superseded.
+    fn manifest_hosts(&self) -> Vec<HostFunctionInfo> {
+        let mut hosts: Vec<_> = self
+            .manifest_host_functions
+            .values()
+            .filter(|function| !self.host_functions.contains_key(&function.name))
+            .cloned()
+            .collect();
+        hosts.sort_by(|a, b| a.name.cmp(&b.name));
+        hosts
+    }
+
     fn parse(&self, source: &str) -> Document {
-        let globals = self.context().resolved_globals();
+        let context = self.context();
+        let globals = context.resolved_globals();
         Document::parse_with_context_and_runtime_and_globals(
             source,
             &self.module_sources,
-            &self.hosts(),
+            &context.host_functions(),
             &self.runtime_handlers,
             &self.runtime_values,
             &globals,
@@ -192,7 +217,7 @@ impl LanguageService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lang::HostFunctionParameter;
+    use crate::lang::{CompletionKind, HostFunctionParameter};
     use crate::lang::{ParameterInfo, PropertyInfo, Shape};
     use std::collections::BTreeMap;
 
@@ -420,6 +445,83 @@ mod tests {
                 .detail,
             "(property) names: string[]"
         );
+    }
+
+    fn host_function(name: &str, returns: &str) -> HostFunctionInfo {
+        HostFunctionInfo {
+            name: name.into(),
+            params: vec![HostFunctionParameter {
+                name: "id".into(),
+                type_name: "number".into(),
+            }],
+            return_type: returns.into(),
+            documentation: Some(format!("{name} documentation")),
+            async_fn: false,
+        }
+    }
+
+    /// A stale static manifest must never describe a name the running program
+    /// is currently exposing. Before this, `resolved_globals()` merged only the
+    /// generic layers and host functions were consulted afterwards, so the
+    /// manifest declaration won and the editor showed the wrong type.
+    #[test]
+    fn live_host_function_outranks_a_manifest_generic_global() {
+        let mut service = LanguageService::new();
+        service.register_manifest_global(GlobalInfo {
+            name: "api".into(),
+            shape: Shape::String,
+            documentation: Some("from the static manifest".into()),
+        });
+        service.register_host_function(host_function("api", "number"));
+        service.open("file:///collision.js", "api");
+
+        let completions = service
+            .complete("file:///collision.js", 3, &service.context())
+            .unwrap();
+        let api = completions
+            .iter()
+            .find(|item| item.label == "api")
+            .expect("api offered");
+        assert_eq!(api.kind, CompletionKind::ExposedFn);
+        assert_eq!(api.detail.as_deref(), Some("(id: number) => number"));
+
+        let hover = service.hover("file:///collision.js", 0).unwrap();
+        assert_eq!(hover.detail, "(function) api: (id: number) => number");
+        assert_eq!(hover.documentation.as_deref(), Some("api documentation"));
+    }
+
+    /// ...but an explicit generic global from the same live runtime still wins
+    /// over that runtime's legacy host function.
+    #[test]
+    fn runtime_generic_global_outranks_a_runtime_host_function() {
+        let mut service = LanguageService::new();
+        service.register_host_function(host_function("api", "number"));
+        service.register_runtime_global(global("api", vec![("version", Shape::String, None)]));
+        service.open("file:///generic.js", "api.");
+
+        let completions = service
+            .complete("file:///generic.js", 4, &service.context())
+            .unwrap();
+        assert!(completions.iter().any(|item| item.label == "version"));
+    }
+
+    /// A manifest host function is a fallback, not an override: the live
+    /// runtime's declaration of the same name replaces it entirely.
+    #[test]
+    fn runtime_host_function_replaces_the_manifest_declaration() {
+        let mut service = LanguageService::new();
+        service.register_manifest_host_function(host_function("api", "string"));
+        service.register_manifest_host_function(host_function("legacy", "string"));
+        service.register_host_function(host_function("api", "number"));
+        service.open("file:///hosts.js", "");
+
+        let context = service.context();
+        let hosts = context.host_functions();
+        let api = hosts.iter().find(|f| f.name == "api").expect("api present");
+        assert_eq!(api.return_type, "number");
+        assert_eq!(hosts.iter().filter(|f| f.name == "api").count(), 1);
+        // A manifest-only function the runtime never mentioned still survives.
+        assert!(hosts.iter().any(|f| f.name == "legacy"));
     }
 
     #[test]

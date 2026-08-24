@@ -34,7 +34,7 @@ pub fn complete(source: &str, offset: usize, ctx: &AnalysisContext) -> Vec<Compl
     let document = Document::parse_with_context_and_runtime_and_globals(
         source,
         &std::collections::HashMap::new(),
-        &ctx.exposed_functions,
+        &ctx.host_functions(),
         &ctx.runtime_handlers,
         &std::collections::HashMap::new(),
         &globals,
@@ -224,12 +224,22 @@ fn complete_ident(
         add(&d.name, d.kind, detail);
     }
 
-    // 2. Generic live runtime globals, followed by static manifest globals.
+    // 2. Custom metadata, in the service-wide precedence order. `add` keeps the
+    //    first entry for a name, so a live runtime declaration wins over the
+    //    static manifest and legacy host functions sit between the two generic
+    //    layers rather than below both. Host functions keep their own
+    //    completion kind and signature detail.
     let mut runtime_globals: Vec<_> = ctx.runtime_globals.values().collect();
     runtime_globals.sort_by(|a, b| a.name.cmp(&b.name));
     for global in runtime_globals {
         let detail = global_detail(global);
         add(&global.name, CompletionKind::Global, detail.as_deref());
+    }
+    let mut exposed = ctx.exposed_functions.clone();
+    exposed.sort_by(|a, b| a.name.cmp(&b.name));
+    for function in &exposed {
+        let detail = function.signature();
+        add(&function.name, CompletionKind::ExposedFn, Some(&detail));
     }
     let mut manifest_globals: Vec<_> = ctx.manifest_globals.values().collect();
     manifest_globals.sort_by(|a, b| a.name.cmp(&b.name));
@@ -237,13 +247,9 @@ fn complete_ident(
         let detail = global_detail(global);
         add(&global.name, CompletionKind::Global, detail.as_deref());
     }
-
-    // Legacy exposed host functions are runtime globals too. Keep their
-    // existing completion kind/detail while allowing explicit generic runtime
-    // metadata above to win on a name collision.
-    let mut exposed = ctx.exposed_functions.clone();
-    exposed.sort_by(|a, b| a.name.cmp(&b.name));
-    for function in &exposed {
+    let mut manifest_functions = ctx.manifest_functions.clone();
+    manifest_functions.sort_by(|a, b| a.name.cmp(&b.name));
+    for function in &manifest_functions {
         let detail = function.signature();
         add(&function.name, CompletionKind::ExposedFn, Some(&detail));
     }
@@ -333,20 +339,12 @@ fn complete_member(
     // both catalog globals and live host functions so window completion works
     // even when the user has not yet executed the file.
     if matches!(receiver, "window" | "globalThis" | "self") {
+        // Same precedence order as bare-identifier completion, so `foo` and
+        // `globalThis.foo` never disagree about which layer defines `foo`.
         let mut runtime_globals: Vec<_> = ctx.runtime_globals.values().collect();
         runtime_globals.sort_by(|a, b| a.name.cmp(&b.name));
         for global in runtime_globals {
             add(&global.name, CompletionKind::Global, global_detail(global));
-        }
-        let mut manifest_globals: Vec<_> = ctx.manifest_globals.values().collect();
-        manifest_globals.sort_by(|a, b| a.name.cmp(&b.name));
-        for global in manifest_globals {
-            add(&global.name, CompletionKind::Global, global_detail(global));
-        }
-        for global in catalog::GLOBALS {
-            if !matches!(*global, "window" | "globalThis" | "self") {
-                add(global, CompletionKind::Global, None);
-            }
         }
         for function in &ctx.exposed_functions {
             add(
@@ -354,6 +352,23 @@ fn complete_member(
                 CompletionKind::ExposedFn,
                 Some(function.signature()),
             );
+        }
+        let mut manifest_globals: Vec<_> = ctx.manifest_globals.values().collect();
+        manifest_globals.sort_by(|a, b| a.name.cmp(&b.name));
+        for global in manifest_globals {
+            add(&global.name, CompletionKind::Global, global_detail(global));
+        }
+        for function in &ctx.manifest_functions {
+            add(
+                &function.name,
+                CompletionKind::ExposedFn,
+                Some(function.signature()),
+            );
+        }
+        for global in catalog::GLOBALS {
+            if !matches!(*global, "window" | "globalThis" | "self") {
+                add(global, CompletionKind::Global, None);
+            }
         }
         return filter_sorted(out);
     }
