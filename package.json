@@ -12,7 +12,8 @@
     "*.node",
     "docs",
     "lsp",
-    "runtime"
+    "runtime",
+    "plugins"
   ],
   "scripts": {
     "build": "npx napi build --platform --release --js index.js",
@@ -35,7 +36,8 @@
     "runtime:smoke": "node runtime/smoke.cjs",
     "zed:build": "cargo build --manifest-path zed-extension/Cargo.toml --target wasm32-wasip2 --release",
     "playground:build": "wasm-pack build --target web --out-dir playground/pkg --release -- --no-default-features --features wasm",
-    "playground": "vite --config playground/vite.config.ts"
+    "playground": "vite --config playground/vite.config.ts",
+    "plugins:example": "bun examples/plugins.ts"
   },
   "repository": {
     "type": "git",

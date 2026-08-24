@@ -225,6 +225,64 @@ mod tests {
         assert!(matches!(&stmts[0], Statement::ExportDefault(_)));
     }
 
+    /// `export default class`/`function` are declarations: the parser binds
+    /// the name (synthesizing one when anonymous) and exports that binding.
+    #[test]
+    fn test_export_default_class_declaration() {
+        for source in [
+            "export default class P { hi() { return 1; } }",
+            "export default class { hi() { return 1; } }",
+        ] {
+            let stmts = parse(source);
+            assert_eq!(stmts.len(), 1);
+            let Statement::Block(inner) = &stmts[0] else {
+                panic!("expected a desugared block for {source}");
+            };
+            assert!(matches!(&inner[0], Statement::ClassDecl { .. }));
+            assert!(matches!(&inner[1], Statement::ExportDefault(_)));
+        }
+    }
+
+    #[test]
+    fn test_export_default_function_declaration() {
+        for source in [
+            "export default function f() { return 1; }",
+            "export default function () { return 1; }",
+            "export default async function () { return 1; }",
+        ] {
+            let stmts = parse(source);
+            assert_eq!(stmts.len(), 1);
+            let Statement::Block(inner) = &stmts[0] else {
+                panic!("expected a desugared block for {source}");
+            };
+            assert!(matches!(&inner[0], Statement::FnDecl { .. }));
+            assert!(matches!(&inner[1], Statement::ExportDefault(_)));
+        }
+    }
+
+    /// `get` / `set` / `static` are modifiers only when a member name follows.
+    #[test]
+    fn test_class_members_named_like_modifiers() {
+        let stmts = parse("class A { get() { return 1; } set(v) { return v; } static() {} }");
+        let Statement::ClassDecl { body, .. } = &stmts[0] else {
+            panic!("expected a class declaration");
+        };
+        assert_eq!(body.len(), 3);
+        for member in body {
+            assert!(matches!(member, ClassMember::Method { .. }));
+        }
+    }
+
+    #[test]
+    fn test_class_accessors_still_parse() {
+        let stmts = parse("class A { get value() { return 1; } set value(v) {} }");
+        let Statement::ClassDecl { body, .. } = &stmts[0] else {
+            panic!("expected a class declaration");
+        };
+        assert!(matches!(&body[0], ClassMember::Getter { name, .. } if name == "value"));
+        assert!(matches!(&body[1], ClassMember::Setter { name, .. } if name == "value"));
+    }
+
     #[test]
     fn test_binary_precedence() {
         let stmts = parse("1 + 2 * 3;");

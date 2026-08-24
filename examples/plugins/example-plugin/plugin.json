@@ -1,0 +1,13 @@
+{
+  "name": "example-plugin",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "./plugin.js",
+  "permissions": {
+    "fs": {
+      "read": ["./config.json", "./assets/**"],
+      "write": "./cache/**"
+    },
+    "path": true
+  }
+}

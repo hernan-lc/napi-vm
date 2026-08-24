@@ -12,7 +12,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use napi::bindgen_prelude::Unknown;
+use napi::bindgen_prelude::JsObjectValue;
+use napi::bindgen_prelude::{Object, Unknown};
 use napi::{Env, JsValue, sys};
 use napi_derive::napi;
 
@@ -26,6 +27,81 @@ use crate::value::{PromiseState, Value};
 use super::bridge::{NapiHostBridge, run_async_done_cb};
 use super::marshal::{chk, from_napi, make_str, to_napi};
 
+/// Encode a module name into a global-name prefix.
+///
+/// The encoding is injective: alphanumerics pass through and every other byte
+/// becomes `_<hex>`, so `a:b` and `a/b` cannot collapse onto the same prefix
+/// and hand one module another's bridge globals. Names remain conventional
+/// rather than a security boundary — the host functions enforce their own
+/// rules — but two modules must never share a namespace.
+fn host_module_prefix(name: &str) -> String {
+    let mut out = String::from("__hostmod_");
+    for byte in name.as_bytes() {
+        if byte.is_ascii_alphanumeric() {
+            out.push(*byte as char);
+        } else {
+            out.push_str(&format!("_{byte:02x}"));
+        }
+    }
+    out.push('_');
+    out
+}
+
+/// Reserved words that would turn the generated wrapper into a syntax error.
+const RESERVED_EXPORT_NAMES: &[&str] = &[
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "export",
+    "extends",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "let",
+    "new",
+    "return",
+    "static",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+];
+
+/// A key usable both as an ES export name and as part of a global identifier.
+fn is_export_identifier(key: &str) -> bool {
+    let mut chars = key.chars();
+    let first = match chars.next() {
+        Some(ch) => ch,
+        None => return false,
+    };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
+        return false;
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$') {
+        return false;
+    }
+    !RESERVED_EXPORT_NAMES.contains(&key)
+}
+
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
     let mut interp = Interpreter::with_builtins();
     interp.is_main = is_main;
@@ -37,6 +113,9 @@ pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
 struct VmRuntime {
     interp: Interpreter,
     modules: HashMap<String, String>,
+    /// Bridge globals generated per `registerHostModule` name, so they can be
+    /// revoked when the module is replaced or removed.
+    host_module_globals: HashMap<String, Vec<String>>,
     bridge: Option<std::rc::Rc<NapiHostBridge>>,
 }
 
@@ -123,6 +202,7 @@ impl VM {
             runtime: RuntimeCell::new(VmRuntime {
                 interp: Interpreter::with_builtins(),
                 modules: HashMap::new(),
+                host_module_globals: HashMap::new(),
                 bridge: None,
             }),
             busy: Arc::new(AtomicBool::new(false)),
@@ -152,6 +232,20 @@ impl VM {
 
     fn current_bridge(runtime: &VmRuntime) -> Option<std::rc::Rc<NapiHostBridge>> {
         runtime.bridge.clone()
+    }
+
+    /// Drop a global and release its bridge handle. Must be called while the
+    /// runtime gate is held.
+    fn revoke_global(runtime: &mut VmRuntime, name: &str) -> bool {
+        let old = runtime.interp.global_value(name);
+        let removed = runtime.interp.persistent_global.borrow_mut().remove(name);
+        if removed
+            && let Some(Value::HostFunction { id, .. }) = old
+            && let Some(bridge) = Self::current_bridge(runtime)
+        {
+            bridge.unregister(id);
+        }
+        removed
     }
 }
 
@@ -210,6 +304,198 @@ impl VM {
             runtime.modules.insert(name, source);
             Ok(())
         })
+    }
+
+    /// Register a module whose exports are host functions.
+    ///
+    /// This is the generic half of `exposeFunction` + `registerModule`: the
+    /// core bridges each function to a hidden global and generates the wrapper
+    /// module that re-exports it. What those functions *do* — including any
+    /// permission checks — stays entirely on the host side.
+    ///
+    /// Returns the generated global names so the host can tear them down with
+    /// `removeGlobal` when it removes the module.
+    #[napi(
+        ts_args_type = "name: string, exports: Record<string, Function>, options?: { async?: Array<string> }"
+    )]
+    pub fn register_host_module(
+        &mut self,
+        env: Env,
+        name: String,
+        exports: Object,
+        options: Option<Object>,
+    ) -> napi::Result<Vec<String>> {
+        let _busy = self.state.try_start()?;
+
+        let async_names: Vec<String> = match options.as_ref() {
+            Some(options) => options.get::<Vec<String>>("async")?.unwrap_or_default(),
+            None => Vec::new(),
+        };
+
+        let keys = Object::keys(&exports)?;
+        if keys.is_empty() {
+            return Err(napi::Error::from_reason(format!(
+                "registerHostModule: '{name}' must export at least one function"
+            )));
+        }
+
+        let prefix = host_module_prefix(&name);
+        let mut bindings: Vec<(String, sys::napi_value, bool)> = Vec::with_capacity(keys.len());
+        let mut source = String::new();
+
+        for key in keys {
+            if !is_export_identifier(&key) {
+                return Err(napi::Error::from_reason(format!(
+                    "registerHostModule: '{key}' is not a usable export name"
+                )));
+            }
+            let value: Unknown = exports.get_named_property_unchecked(&key)?;
+            let raw = value.raw();
+            let mut value_type: sys::napi_valuetype = 0;
+            chk(unsafe { sys::napi_typeof(env.raw(), raw, &mut value_type) })
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+            if value_type != sys::ValueType::napi_function {
+                return Err(napi::Error::from_reason(format!(
+                    "registerHostModule: export '{key}' must be a function"
+                )));
+            }
+
+            let global = format!("{prefix}{key}");
+            source.push_str(&format!(
+                "export function {key}(...args) {{ return {global}(...args); }}\n"
+            ));
+            let is_async = async_names.iter().any(|entry| entry == &key);
+            bindings.push((global, raw, is_async));
+        }
+
+        if let Some(unknown) = async_names
+            .iter()
+            .find(|entry| !source.contains(&format!("export function {entry}(")))
+        {
+            return Err(napi::Error::from_reason(format!(
+                "registerHostModule: options.async names '{unknown}', which is not an export"
+            )));
+        }
+
+        let state = self.state.clone();
+        let globals = state
+            .runtime
+            .with_mut(|runtime| -> napi::Result<Vec<String>> {
+                let bridge = Self::ensure_bridge(&state, runtime, env)
+                    .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+
+                // Everything this call can touch, snapshotted first: a failure
+                // part-way through must not leave half the capability swapped
+                // in. Old bridge handles stay registered until the whole
+                // operation succeeds, so a restored global is still callable.
+                let previous_globals = runtime
+                    .host_module_globals
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default();
+                let prior_values: Vec<(String, Option<Value>)> = bindings
+                    .iter()
+                    .map(|(global, _, _)| (global.clone(), runtime.interp.global_value(global)))
+                    .collect();
+                let prior_module = runtime.interp.modules.get(&name).cloned();
+                let prior_source = runtime.modules.get(&name).cloned();
+
+                // Phase 1 — register every callback. Nothing is visible yet.
+                let mut new_ids = Vec::with_capacity(bindings.len());
+                let mut outcome: napi::Result<()> = Ok(());
+                for (_, raw, is_async) in &bindings {
+                    let registered = if *is_async {
+                        bridge.register_async(*raw)
+                    } else {
+                        bridge.register(*raw)
+                    };
+                    match registered {
+                        Ok(id) => new_ids.push(id),
+                        Err(error) => {
+                            outcome = Err(napi::Error::from_reason(error.to_string()));
+                            break;
+                        }
+                    }
+                }
+
+                // Phase 2 — install the globals.
+                if outcome.is_ok() {
+                    for ((global, _, _), id) in bindings.iter().zip(&new_ids) {
+                        if let Err(error) = runtime.interp.set_global_checked(
+                            global,
+                            Value::HostFunction {
+                                name: global.as_str().into(),
+                                id: *id,
+                            },
+                        ) {
+                            outcome = Err(napi::Error::from_reason(error.to_string()));
+                            break;
+                        }
+                    }
+                }
+
+                // Phase 3 — evaluate the generated wrapper module.
+                if outcome.is_ok() {
+                    runtime.interp.cur_mod = Some(name.clone());
+                    let result = execute_source(&mut runtime.interp, &source);
+                    runtime.interp.cur_mod = None;
+                    outcome = result
+                        .map(|_| ())
+                        .map_err(|error| napi::Error::from_reason(error.to_string()));
+                }
+
+                if let Err(error) = outcome {
+                    // Roll back to the snapshot, including bindings that had
+                    // already been replaced by this call.
+                    for (global, prior) in &prior_values {
+                        match prior {
+                            Some(value) => {
+                                let _ = runtime.interp.set_global_checked(global, value.clone());
+                            }
+                            None => {
+                                runtime.interp.persistent_global.borrow_mut().remove(global);
+                            }
+                        }
+                    }
+                    match prior_module {
+                        Some(module) => runtime.interp.modules.insert(name.clone(), module),
+                        None => runtime.interp.modules.remove(&name),
+                    };
+                    match prior_source {
+                        Some(source) => runtime.modules.insert(name.clone(), source),
+                        None => runtime.modules.remove(&name),
+                    };
+                    for id in new_ids {
+                        bridge.unregister(id);
+                    }
+                    return Err(error);
+                }
+
+                // Committed: retire the handles the replaced globals owned.
+                for (_, prior) in &prior_values {
+                    if let Some(Value::HostFunction { id, .. }) = prior {
+                        bridge.unregister(*id);
+                    }
+                }
+
+                // An export that disappeared must lose its bridge global, or a
+                // privileged function stays callable after the host drops it.
+                let created: Vec<String> = bindings
+                    .iter()
+                    .map(|(global, _, _)| global.clone())
+                    .collect();
+                for stale in previous_globals.iter().filter(|g| !created.contains(g)) {
+                    Self::revoke_global(runtime, stale);
+                }
+
+                runtime
+                    .host_module_globals
+                    .insert(name.clone(), created.clone());
+                runtime.modules.insert(name, source);
+                Ok(created)
+            })?;
+
+        Ok(globals)
     }
 
     #[napi]
@@ -307,31 +593,46 @@ impl VM {
 
         let state = self.state.clone();
         state.runtime.with_mut(|runtime| {
-            if let Some(Value::HostFunction { id, .. }) = runtime.interp.global_value(&name)
-                && let Some(bridge) = Self::current_bridge(runtime)
-            {
-                bridge.unregister(id);
-            }
-            let bridge = Self::ensure_bridge(&state, runtime, env)
-                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-            let id = if async_fn {
-                bridge.register_async(raw)
-            } else {
-                bridge.register(raw)
-            }
-            .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-            runtime
-                .interp
-                .set_global_checked(
-                    &name,
-                    Value::HostFunction {
-                        name: name.as_str().into(),
-                        id,
-                    },
-                )
-                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-            Ok(())
+            Self::bind_host_function(&state, runtime, env, &name, raw, async_fn)
         })
+    }
+
+    /// Bridge one Node function into the interpreter as a global.
+    ///
+    /// Must be called while the runtime gate is held; callers own the busy
+    /// guard so this can be used repeatedly inside one gated operation.
+    fn bind_host_function(
+        state: &Arc<VMState>,
+        runtime: &mut VmRuntime,
+        env: Env,
+        name: &str,
+        raw: sys::napi_value,
+        async_fn: bool,
+    ) -> napi::Result<()> {
+        if let Some(Value::HostFunction { id, .. }) = runtime.interp.global_value(name)
+            && let Some(bridge) = Self::current_bridge(runtime)
+        {
+            bridge.unregister(id);
+        }
+        let bridge = Self::ensure_bridge(state, runtime, env)
+            .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        let id = if async_fn {
+            bridge.register_async(raw)
+        } else {
+            bridge.register(raw)
+        }
+        .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        runtime
+            .interp
+            .set_global_checked(
+                name,
+                Value::HostFunction {
+                    name: name.into(),
+                    id,
+                },
+            )
+            .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        Ok(())
     }
 
     /// Execute code that may await host functions. The worker captures only
@@ -467,10 +768,17 @@ impl VM {
     #[napi]
     pub fn remove_module(&mut self, name: String) -> napi::Result<bool> {
         let _busy = self.state.try_start()?;
-        Ok(self
-            .state
-            .runtime
-            .with_mut(|runtime| runtime.modules.remove(&name).is_some()))
+        Ok(self.state.runtime.with_mut(|runtime| {
+            let removed = runtime.modules.remove(&name).is_some();
+            // A host module's capability is its bridge globals, not the wrapper
+            // source: removing the module must revoke them too.
+            if let Some(globals) = runtime.host_module_globals.remove(&name) {
+                for global in globals {
+                    Self::revoke_global(runtime, &global);
+                }
+            }
+            removed
+        }))
     }
 
     #[napi]
@@ -494,17 +802,10 @@ impl VM {
     #[napi]
     pub fn remove_global(&mut self, name: String) -> napi::Result<bool> {
         let _busy = self.state.try_start()?;
-        Ok(self.state.runtime.with_mut(|runtime| {
-            let old = runtime.interp.global_value(&name);
-            let removed = runtime.interp.persistent_global.borrow_mut().remove(&name);
-            if removed
-                && let Some(Value::HostFunction { id, .. }) = old
-                && let Some(bridge) = Self::current_bridge(runtime)
-            {
-                bridge.unregister(id);
-            }
-            removed
-        }))
+        Ok(self
+            .state
+            .runtime
+            .with_mut(|runtime| Self::revoke_global(runtime, &name)))
     }
 
     #[napi]

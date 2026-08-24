@@ -224,10 +224,24 @@ impl Parser {
     }
 
     pub(crate) fn fn_decl(&mut self, is_async: bool) -> Option<Statement> {
+        self.fn_decl_named(is_async, None)
+    }
+
+    /// Parse a function declaration whose name may be omitted (`export default
+    /// function () { … }`), in which case `fallback` supplies the binding name.
+    pub(crate) fn fn_decl_named(
+        &mut self,
+        is_async: bool,
+        fallback: Option<&str>,
+    ) -> Option<Statement> {
         self.adv(); // consume `function`
         // Generator declaration: `function*`.
         let is_generator = self.eat(&Token::Star);
-        let n = self.ident()?;
+        let n = match (self.cur(), fallback) {
+            (Token::Identifier(_), _) => self.ident()?,
+            (_, Some(name)) => name.to_string(),
+            _ => return None,
+        };
         self.eat(&Token::LParen);
         let (p, defaults) = self.params();
         self.eat(&Token::RParen);

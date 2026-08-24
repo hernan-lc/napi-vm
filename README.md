@@ -26,6 +26,7 @@ console.log(vm.run("answer;")); // 42
 - [Getting started](docs/getting-started.md) — installation, VM usage, host bridge, modules, and playground
 - [API reference](docs/api.md) — `Vm`, `LanguageService`, and `VmSession`
 - [Editor integration](docs/editor.md) — playground, LSP, Zed, live metadata, and IPC commands
+- [Plugins](docs/plugins.md) — manifests, filesystem permissions, `napi:fs` / `napi:path`, and the plugin lifecycle
 - [Sandbox safety](docs/safety.md) — containment guards and operational limits
 - [Development](docs/development.md) — quality gate, scripts, benchmarks, and project structure
 - [Roadmap](docs/roadmap.md) — implemented features and known boundaries
@@ -33,6 +34,7 @@ console.log(vm.run("answer;")); // 42
 ## Useful examples
 
 ```bash
+bun examples/plugins.ts
 bun examples/hotreload.ts
 NAPI_VM_SESSION=1 bun examples/hotreload.ts
 npm run ipc:smoke
