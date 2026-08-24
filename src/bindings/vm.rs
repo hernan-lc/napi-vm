@@ -381,24 +381,60 @@ impl VM {
         let globals = state
             .runtime
             .with_mut(|runtime| -> napi::Result<Vec<String>> {
-                let previous = runtime
+                let bridge = Self::ensure_bridge(&state, runtime, env)
+                    .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+
+                // Everything this call can touch, snapshotted first: a failure
+                // part-way through must not leave half the capability swapped
+                // in. Old bridge handles stay registered until the whole
+                // operation succeeds, so a restored global is still callable.
+                let previous_globals = runtime
                     .host_module_globals
                     .get(&name)
                     .cloned()
                     .unwrap_or_default();
+                let prior_values: Vec<(String, Option<Value>)> = bindings
+                    .iter()
+                    .map(|(global, _, _)| (global.clone(), runtime.interp.global_value(global)))
+                    .collect();
+                let prior_module = runtime.interp.modules.get(&name).cloned();
+                let prior_source = runtime.modules.get(&name).cloned();
 
-                let mut created: Vec<String> = Vec::with_capacity(bindings.len());
+                // Phase 1 — register every callback. Nothing is visible yet.
+                let mut new_ids = Vec::with_capacity(bindings.len());
                 let mut outcome: napi::Result<()> = Ok(());
-                for (global, raw, is_async) in &bindings {
-                    match Self::bind_host_function(&state, runtime, env, global, *raw, *is_async) {
-                        Ok(()) => created.push(global.clone()),
+                for (_, raw, is_async) in &bindings {
+                    let registered = if *is_async {
+                        bridge.register_async(*raw)
+                    } else {
+                        bridge.register(*raw)
+                    };
+                    match registered {
+                        Ok(id) => new_ids.push(id),
                         Err(error) => {
-                            outcome = Err(error);
+                            outcome = Err(napi::Error::from_reason(error.to_string()));
                             break;
                         }
                     }
                 }
 
+                // Phase 2 — install the globals.
+                if outcome.is_ok() {
+                    for ((global, _, _), id) in bindings.iter().zip(&new_ids) {
+                        if let Err(error) = runtime.interp.set_global_checked(
+                            global,
+                            Value::HostFunction {
+                                name: global.as_str().into(),
+                                id: *id,
+                            },
+                        ) {
+                            outcome = Err(napi::Error::from_reason(error.to_string()));
+                            break;
+                        }
+                    }
+                }
+
+                // Phase 3 — evaluate the generated wrapper module.
                 if outcome.is_ok() {
                     runtime.interp.cur_mod = Some(name.clone());
                     let result = execute_source(&mut runtime.interp, &source);
@@ -409,17 +445,46 @@ impl VM {
                 }
 
                 if let Err(error) = outcome {
-                    // Leave the VM as it was: revoke what this call installed,
-                    // keeping any binding the previous registration owned.
-                    for global in created.iter().filter(|g| !previous.contains(g)) {
-                        Self::revoke_global(runtime, global);
+                    // Roll back to the snapshot, including bindings that had
+                    // already been replaced by this call.
+                    for (global, prior) in &prior_values {
+                        match prior {
+                            Some(value) => {
+                                let _ = runtime.interp.set_global_checked(global, value.clone());
+                            }
+                            None => {
+                                runtime.interp.persistent_global.borrow_mut().remove(global);
+                            }
+                        }
+                    }
+                    match prior_module {
+                        Some(module) => runtime.interp.modules.insert(name.clone(), module),
+                        None => runtime.interp.modules.remove(&name),
+                    };
+                    match prior_source {
+                        Some(source) => runtime.modules.insert(name.clone(), source),
+                        None => runtime.modules.remove(&name),
+                    };
+                    for id in new_ids {
+                        bridge.unregister(id);
                     }
                     return Err(error);
                 }
 
+                // Committed: retire the handles the replaced globals owned.
+                for (_, prior) in &prior_values {
+                    if let Some(Value::HostFunction { id, .. }) = prior {
+                        bridge.unregister(*id);
+                    }
+                }
+
                 // An export that disappeared must lose its bridge global, or a
                 // privileged function stays callable after the host drops it.
-                for stale in previous.iter().filter(|g| !created.contains(g)) {
+                let created: Vec<String> = bindings
+                    .iter()
+                    .map(|(global, _, _)| global.clone())
+                    .collect();
+                for stale in previous_globals.iter().filter(|g| !created.contains(g)) {
                     Self::revoke_global(runtime, stale);
                 }
 

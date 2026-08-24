@@ -181,3 +181,29 @@ test("options.async naming a missing export is rejected", () => {
     vm.registerHostModule("napi:demo", { ping: () => "pong" }, { async: ["pong"] }),
   ).toThrow(/options.async names 'pong', which is not an export/);
 });
+
+test("a failure after a binding was replaced rolls that binding back", () => {
+  // Exhausting the global-binding quota makes installing a *new* global fail
+  // while replacing an existing one still succeeds — a failure that lands
+  // after `read` has already been swapped for its replacement.
+  const vm = new Vm();
+  vm.setLoopLimit(5_000_000);
+  const [readGlobal] = vm.registerHostModule("cap", { read: () => "old" });
+  expect(vm.run(`${readGlobal}();`)).toBe("old");
+
+  vm.run(`let n = 0;
+    let done = false;
+    while (!done) {
+      try { globalThis["__fill" + n] = 1; n = n + 1; }
+      catch (error) { done = true; }
+    }`);
+
+  expect(() =>
+    vm.registerHostModule("cap", { read: () => "new", anotherExport: () => "x" }),
+  ).toThrow(/Maximum global binding count exceeded/);
+
+  // The old function is restored *and* still callable: its bridge handle was
+  // never retired, because the swap did not commit.
+  expect(vm.run(`${readGlobal}();`)).toBe("old");
+  expect(vm.run(`typeof __hostmod_cap_anotherExport;`)).toBe("undefined");
+});
