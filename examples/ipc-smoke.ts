@@ -6,12 +6,12 @@ const vm = new Vm();
 const ipc = new VmIpc();
 const events: Array<{ name: string; payload: unknown }> = [];
 
-ipc.handle("math.add", (payload: any) => payload.left + payload.right, {
+ipc.handle("math.add", (payload: { left: number; right: number }) => payload.left + payload.right, {
   params: [{ name: "payload", typeName: "object" }],
   returns: "number",
   documentation: "Adds two values sent through IPC.",
 });
-ipc.handleAsync("math.doubleAsync", async (payload: any) => payload.value * 2, {
+ipc.handleAsync("math.doubleAsync", async (payload: { value: number }) => payload.value * 2, {
   params: [{ name: "payload", typeName: "object" }],
   returns: "number",
 });

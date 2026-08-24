@@ -52,10 +52,20 @@ vm.expose_function("alert", (m: string) => {
 });
 r = vm.run('alert("hi from vm")');
 check("exposed fn called", alerted === "hi from vm", `alerted=${alerted}`);
+interface CompletionItem {
+  label: string;
+  kind?: string;
+  detail?: string;
+}
+
+interface SymbolItem {
+  name: string;
+}
+
 let comp = vm.complete("al", 2);
 check(
   "exposed fn completes",
-  comp.some((c: any) => c.label === "alert" && c.kind === "exposed"),
+  comp.some((c: CompletionItem) => c.label === "alert" && c.kind === "exposed"),
   JSON.stringify(comp),
 );
 
@@ -66,7 +76,7 @@ check("module import runs", r.ok === true && r.value === "42", JSON.stringify(r)
 comp = vm.complete('import * as u from "utils";\nu.', 'import * as u from "utils";\nu.'.length);
 check(
   "namespace exports complete",
-  comp.some((c: any) => c.label === "double") && comp.some((c: any) => c.label === "VERSION"),
+  comp.some((c: CompletionItem) => c.label === "double") && comp.some((c: CompletionItem) => c.label === "VERSION"),
   JSON.stringify(comp),
 );
 
@@ -82,16 +92,16 @@ check("relative imports require explicit context", r.ok === false && String(r.er
 
 // 7. Member completion on a builtin.
 comp = vm.complete("Math.fl", "Math.fl".length);
-check("Math.floor completes", comp.some((c: any) => c.label === "floor"), JSON.stringify(comp));
+check("Math.floor completes", comp.some((c: CompletionItem) => c.label === "floor"), JSON.stringify(comp));
 
 // 8. Runtime member completion reads live object/prototype properties without
 // executing the receiver expression again.
 r = vm.run('const store = { count: 1, nested: { ready: true }, read() { return this.count; } }; store;');
 check("runtime object created", r.ok === true, JSON.stringify(r));
 comp = vm.complete("store.re", "store.re".length);
-check("runtime object members complete", comp.some((c: any) => c.label === "read"), JSON.stringify(comp));
+check("runtime object members complete", comp.some((c: CompletionItem) => c.label === "read"), JSON.stringify(comp));
 comp = vm.complete("store.nested.re", "store.nested.re".length);
-check("runtime nested members complete", comp.some((c: any) => c.label === "ready"), JSON.stringify(comp));
+check("runtime nested members complete", comp.some((c: CompletionItem) => c.label === "ready"), JSON.stringify(comp));
 
 const hoverSource = 'async function loadUser(id) { const response = await Promise.resolve({ id, name: "Ada" }); return response; } loadUser(42).then((user) => user.name);';
 const hoverOffset = hoverSource.lastIndexOf("user") + 1;
@@ -135,7 +145,7 @@ check(
 comp = vm.complete("al", 2);
 check(
   "host function completion includes signature",
-  comp.some((item: any) => item.label === "alert" && item.detail === "(message: string) => void"),
+  comp.some((item: CompletionItem) => item.label === "alert" && item.detail === "(message: string) => void"),
   JSON.stringify(comp),
 );
 
@@ -173,10 +183,10 @@ const src = "const counter = 1;\nfunction bump() {}\n";
 comp = vm.complete(src, src.length);
 check(
   "scope decls complete",
-  comp.some((c: any) => c.label === "counter") && comp.some((c: any) => c.label === "bump"),
+  comp.some((c: CompletionItem) => c.label === "counter") && comp.some((c: CompletionItem) => c.label === "bump"),
 );
 comp = vm.complete("Ma", 2);
-check("global completes", comp.some((c: any) => c.label === "Math"));
+check("global completes", comp.some((c: CompletionItem) => c.label === "Math"));
 
 // 10. Diagnostics.
 let diag = vm.diagnose("const x = [1, 2;");
@@ -188,9 +198,9 @@ check("balanced clean", (diag?.length ?? 0) === 0, JSON.stringify(diag));
 const syms = vm.symbols("function f(){} class C{} const x = 1;");
 check(
   "symbols found",
-  syms.some((s: any) => s.name === "f") &&
-    syms.some((s: any) => s.name === "C") &&
-    syms.some((s: any) => s.name === "x"),
+  syms.some((s: SymbolItem) => s.name === "f") &&
+    syms.some((s: SymbolItem) => s.name === "C") &&
+    syms.some((s: SymbolItem) => s.name === "x"),
   JSON.stringify(syms),
 );
 

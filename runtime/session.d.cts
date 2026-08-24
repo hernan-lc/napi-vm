@@ -1,49 +1,77 @@
+import type { Vm } from "../index";
+
+export interface HostFunctionParam {
+  readonly name: string;
+  readonly typeName: string;
+}
+
 export interface HostFunctionMetadata {
-  params?: Array<{ name: string; typeName: string }>;
-  returns?: string;
-  documentation?: string;
-  async?: boolean;
-  languageService?: boolean;
-  public?: boolean;
+  readonly params?: ReadonlyArray<HostFunctionParam>;
+  readonly returns?: string;
+  readonly documentation?: string;
+  readonly async?: boolean;
+  readonly languageService?: boolean;
+  readonly public?: boolean;
+}
+
+export type LanguageShapeKind =
+  | "unknown"
+  | "any"
+  | "void"
+  | "undefined"
+  | "null"
+  | "boolean"
+  | "number"
+  | "string"
+  | "array"
+  | "promise"
+  | "object"
+  | "function";
+
+export interface LanguageShapeParam {
+  readonly name: string;
+  readonly type?: LanguageShape | string;
+  readonly shape?: LanguageShape | string;
+  readonly typeName?: string;
 }
 
 export interface LanguageShape {
-  kind: "unknown" | "any" | "void" | "undefined" | "null" | "boolean" | "number" | "string" | "array" | "promise" | "object" | "function";
-  documentation?: string;
-  properties?: Record<string, LanguageShape | string>;
-  items?: LanguageShape | string;
-  value?: LanguageShape | string;
-  params?: Array<{ name: string; type?: LanguageShape | string; shape?: LanguageShape | string; typeName?: string }>;
-  returns?: LanguageShape | string;
-  async?: boolean;
+  readonly kind: LanguageShapeKind;
+  readonly documentation?: string;
+  readonly properties?: { readonly [key: string]: LanguageShape | string };
+  readonly items?: LanguageShape | string;
+  readonly value?: LanguageShape | string;
+  readonly params?: ReadonlyArray<LanguageShapeParam>;
+  readonly returns?: LanguageShape | string;
+  readonly async?: boolean;
 }
 
 export interface GlobalMetadataOptions {
-  documentation?: string;
+  readonly documentation?: string;
 }
 
 export interface VmSessionOptions {
-  workspace?: string;
-  sessionId?: string;
-  vm?: any;
+  readonly workspace?: string;
+  readonly sessionId?: string;
+  readonly vm?: Vm | null;
 }
 
 export interface VmSessionModule {
-  name: string;
-  source: string;
+  readonly name: string;
+  readonly source: string;
 }
 
 export interface VmSessionHandlerShape {
-  name: string;
-  shape: unknown;
+  readonly name: string;
+  readonly shape: unknown;
 }
 
 export declare class VmSession {
   constructor(options?: VmSessionOptions);
-  readonly vm: any;
+  readonly vm: Vm | null;
   readonly workspace: string;
   readonly runtimeFile: string;
-  attach(vm: any, options?: { modules?: VmSessionModule[] }): any;
+  attach<T extends Vm = Vm>(vm: T, options?: { readonly modules?: ReadonlyArray<VmSessionModule> }): T;
   detach(): void;
   exposeFunction(name: string, fn: (...args: unknown[]) => unknown, info?: HostFunctionMetadata): void;
   exposeAsyncFunction(name: string, fn: (...args: unknown[]) => unknown, info?: HostFunctionMetadata): void;
@@ -56,7 +84,9 @@ export declare class VmSession {
   runAsync(source: string): Promise<string>;
   start(): this;
   stop(): void;
-  snapshot(): object;
+  snapshot(): Record<string, unknown>;
 }
 
 export declare function runtimePath(workspace: string): string;
+
+

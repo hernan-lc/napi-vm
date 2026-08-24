@@ -194,14 +194,15 @@ export class HotReloader {
       vm.registerModule(name, source);
       this.registry.set(name, { name, file: `${name}.js`, status: "active" });
       console.log(`  [OK] ${name} loaded`);
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
       this.registry.set(name, {
         name,
         file: `${name}.js`,
         status: "error",
-        error: err.message || String(err),
+        error: message,
       });
-      console.log(`  [ERROR] ${name}: ${err.message || err}`);
+      console.log(`  [ERROR] ${name}: ${message}`);
     }
   }
 

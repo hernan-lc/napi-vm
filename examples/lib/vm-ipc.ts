@@ -55,7 +55,7 @@ export interface IpcCommandInfo {
   async?: boolean;
 }
 
-export type IpcHandler = (payload: unknown) => unknown;
+export type IpcHandler<T = unknown, R = unknown> = (payload: T) => R | Promise<R>;
 
 type Listener = (payload: unknown) => void;
 
@@ -68,7 +68,7 @@ type Listener = (payload: unknown) => void;
 export class VmIpc {
   private vm: Vm | null = null;
   private session: VmSession | null = null;
-  private commands = new Map<string, { handler: IpcHandler; info: IpcCommandInfo }>();
+  private commands = new Map<string, { handler: IpcHandler<unknown, unknown>; info: IpcCommandInfo }>();
   private listeners = new Map<string, Set<Listener>>();
 
   attach(vm: Vm, session?: VmSession): void {
@@ -149,15 +149,15 @@ export class VmIpc {
     this.session = null;
   }
 
-  handle(name: string, handler: IpcHandler, info: IpcCommandInfo = {}): () => void {
+  handle<T = unknown, R = unknown>(name: string, handler: (payload: T) => R, info: IpcCommandInfo = {}): () => void {
     if (!name.trim()) throw new Error("IPC command name cannot be empty");
     if (this.commands.has(name)) throw new Error(`IPC command already registered: ${name}`);
-    this.commands.set(name, { handler, info });
+    this.commands.set(name, { handler: handler as IpcHandler<unknown, unknown>, info });
     return () => this.removeHandler(name);
   }
 
-  handleAsync(name: string, handler: IpcHandler, info: IpcCommandInfo = {}): () => void {
-    return this.handle(name, handler, { ...info, async: true });
+  handleAsync<T = unknown, R = unknown>(name: string, handler: (payload: T) => Promise<R> | R, info: IpcCommandInfo = {}): () => void {
+    return this.handle<T, Promise<R> | R>(name, handler, { ...info, async: true });
   }
 
   removeHandler(name: string): boolean {

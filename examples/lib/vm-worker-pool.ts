@@ -13,7 +13,6 @@ import { Worker } from "worker_threads";
 import { join } from "node:path";
 
 interface PendingCall {
-  id: number;
   resolve: (value: string) => void;
   reject: (reason: Error) => void;
 }
@@ -55,10 +54,11 @@ export class VmWorkerPool {
       }
     });
 
-    this.worker.on("error", (err) => {
-      this.readyReject?.(err);
+    this.worker.on("error", (err: unknown) => {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.readyReject?.(error);
       for (const p of this.pending.values()) {
-        p.reject(err);
+        p.reject(error);
       }
       this.pending.clear();
     });
