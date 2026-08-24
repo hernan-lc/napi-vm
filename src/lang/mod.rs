@@ -22,11 +22,12 @@ mod service;
 mod symbols;
 
 pub use complete::complete;
-#[cfg(feature = "wasm")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) use complete::member_trigger;
 pub use diagnostics::diagnose;
 pub use document::{Document, HoverInfo, Type};
 pub use metadata::{GlobalInfo, ParameterInfo, PropertyInfo, Shape};
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use metadata::{MAX_MANIFEST_BYTES, parse_globals};
 pub use service::LanguageService;
 

@@ -16,7 +16,10 @@ pub mod lsp;
 pub mod parser;
 pub mod span;
 pub mod value;
-#[cfg(feature = "wasm")]
+// `wasm` also requires the wasm32 target: the module depends on `js-sys`, which
+// is a target-scoped dependency, so `--all-features` on a native host would
+// otherwise fail to compile.
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub mod wasm;
 
 #[cfg(feature = "napi")]

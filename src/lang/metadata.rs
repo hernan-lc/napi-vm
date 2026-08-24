@@ -13,6 +13,7 @@ pub const MAX_SHAPE_DEPTH: usize = 8;
 /// Maximum properties on one object shape.
 pub const MAX_SHAPE_PROPERTIES: usize = 256;
 /// Maximum globals in one runtime snapshot or manifest.
+#[cfg(not(target_arch = "wasm32"))]
 pub const MAX_GLOBALS: usize = 256;
 /// Maximum parameters on one function shape.
 pub const MAX_PARAMETERS: usize = 64;
@@ -23,6 +24,7 @@ pub const MAX_DOCUMENTATION_BYTES: usize = 16 * 1024;
 /// Maximum recursive shape nodes in one global declaration.
 pub const MAX_SCHEMA_NODES: usize = 4096;
 /// Maximum static manifest file size.
+#[cfg(not(target_arch = "wasm32"))]
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +137,10 @@ struct ParsedShape {
 }
 
 /// Parse and validate a bounded list of global declarations.
+///
+/// Only the language server consumes this, and `crate::lsp` is not built for
+/// wasm32 — so the manifest path is gated off there along with it.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn parse_globals(value: &serde_json::Value) -> Result<Vec<GlobalInfo>, MetadataError> {
     let raw: Vec<RawGlobal> = serde_json::from_value(value.clone())
         .map_err(|error| MetadataError(format!("invalid globals metadata: {error}")))?;

@@ -50,7 +50,7 @@ pub fn complete(source: &str, offset: usize, ctx: &AnalysisContext) -> Vec<Compl
 
 /// Return the member receiver and identifier prefix at a cursor position.
 /// The WASM host uses this to merge runtime members with static candidates.
-#[cfg(feature = "wasm")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn member_trigger(source: &str, offset: usize) -> Option<(String, String)> {
     let offset = snap_boundary(source, offset.min(source.len()));
     match_member(&source[..offset])

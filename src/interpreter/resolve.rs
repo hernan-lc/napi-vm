@@ -3,7 +3,7 @@
 
 use super::Interpreter;
 use crate::error::VmErr;
-#[cfg(feature = "wasm")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 use crate::lang::CompletionKind;
 use crate::value::Value;
 
@@ -11,7 +11,7 @@ impl Interpreter {
     /// Enumerate properties visible on a simple runtime receiver such as
     /// `store` or `user.profile`. This only reads existing values and walks
     /// their prototype objects; it never evaluates guest source.
-    #[cfg(feature = "wasm")]
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     pub(crate) fn completion_property_members(
         &self,
         receiver: &str,
@@ -26,7 +26,7 @@ impl Interpreter {
         members
     }
 
-    #[cfg(feature = "wasm")]
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     fn completion_receiver_value(&self, receiver: &str) -> Option<Value> {
         let mut parts = receiver.split('.');
         let first = parts.next()?;
@@ -43,7 +43,7 @@ impl Interpreter {
         Some(value)
     }
 
-    #[cfg(feature = "wasm")]
+    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     fn collect_completion_members(
         &self,
         value: &Value,
@@ -367,7 +367,7 @@ impl Interpreter {
     }
 }
 
-#[cfg(feature = "wasm")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 fn is_completion_identifier(name: &str) -> bool {
     !name.is_empty()
         && name.chars().enumerate().all(|(index, c)| {
@@ -379,7 +379,7 @@ fn is_completion_identifier(name: &str) -> bool {
         })
 }
 
-#[cfg(feature = "wasm")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 fn completion_kind(value: &Value) -> CompletionKind {
     match value {
         Value::Function(_)
