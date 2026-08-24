@@ -8,6 +8,46 @@ const IPC_GLOBALS = Object.freeze({
   list: "__ipcList",
 });
 
+const IPC_LANGUAGE_SHAPE = {
+  kind: "object",
+  properties: {
+    invoke: {
+      kind: "function",
+      params: [
+        { name: "command", type: { kind: "string" } },
+        { name: "payload", type: { kind: "unknown" } },
+      ],
+      returns: { kind: "unknown" },
+      documentation: "Invokes a registered host command synchronously.",
+    },
+    invokeAsync: {
+      kind: "function",
+      params: [
+        { name: "command", type: { kind: "string" } },
+        { name: "payload", type: { kind: "unknown" } },
+      ],
+      returns: { kind: "unknown" },
+      async: true,
+      documentation: "Invokes a registered host command asynchronously.",
+    },
+    send: {
+      kind: "function",
+      params: [
+        { name: "event", type: { kind: "string" } },
+        { name: "payload", type: { kind: "unknown" } },
+      ],
+      returns: { kind: "void" },
+      documentation: "Sends an event from the VM to the host.",
+    },
+    commands: {
+      kind: "function",
+      params: [],
+      returns: { kind: "array", items: { kind: "string" } },
+      documentation: "Lists registered host command names.",
+    },
+  },
+} as const;
+
 export interface IpcCommandInfo {
   params?: Array<{ name: string; typeName: string }>;
   returns?: string;
@@ -70,6 +110,8 @@ export class VmIpc {
       documentation: "Lists registered host command names.",
     });
 
+    this.session?.registerGlobal("ipc", IPC_LANGUAGE_SHAPE);
+
     vm.run(`
       var ipc = {
         invoke: function(command, payload) {
@@ -91,9 +133,9 @@ export class VmIpc {
   detach(): void {
     const vm = this.vm;
     if (!vm) return;
-    for (const name of Object.values(IPC_GLOBALS)) {
+    for (const name of [...Object.values(IPC_GLOBALS), "ipc"]) {
       try {
-        if (!vm.hasGlobal(name)) continue;
+        if (!vm.hasGlobal(name) && name !== "ipc") continue;
         if (this.session?.vm === vm) this.session.removeGlobal(name);
         else vm.removeGlobal(name);
       } catch (error) {
@@ -154,13 +196,15 @@ export class VmIpc {
   }
 
   private expose(name: string, handler: (...args: unknown[]) => unknown, info: IpcCommandInfo): void {
-    if (this.session) this.session.exposeFunction(name, handler, info);
-    else this.vm?.exposeFunction(name, handler);
+    // The bridge names are implementation details. Only the public `ipc`
+    // object is declared to the language service through registerGlobal().
+    void info;
+    this.vm?.exposeFunction(name, handler);
   }
 
   private exposeAsync(name: string, handler: (...args: unknown[]) => Promise<unknown>, info: IpcCommandInfo): void {
-    if (this.session) this.session.exposeAsyncFunction(name, handler, info);
-    else this.vm?.exposeAsyncFunction(name, handler);
+    void info;
+    this.vm?.exposeAsyncFunction(name, handler);
   }
 
   private emit(event: string, payload: unknown): void {

@@ -8,6 +8,7 @@
 mod common;
 
 use serde_json::{Value, json};
+use std::fs;
 
 use common::{Client, temp_root};
 
@@ -166,20 +167,101 @@ fn utf16_positions_locate_completion_and_hover_after_astral_characters() {
 }
 
 #[test]
-fn ipc_facade_completion_is_available_without_a_runtime_snapshot() {
+fn ipc_facade_completion_is_absent_without_metadata() {
     let uri = "file:///tmp/napi-vm-ipc.js";
     let mut client = Client::start(&temp_root());
     client.open(uri, "ipc.");
 
     let items = client.completion(14, uri, 0, 4);
-    for expected in ["invoke", "invokeAsync", "send", "commands"] {
-        assert!(
-            items.iter().any(|label| label == expected),
-            "missing {expected} in IPC completion: {items:?}"
-        );
-    }
+    assert!(
+        items
+            .iter()
+            .all(|label| !["invoke", "invokeAsync", "send", "commands"].contains(&label.as_str()))
+    );
 
     assert_eq!(client.shutdown_and_exit(15), 0);
+}
+
+#[test]
+fn static_manifest_globals_support_completion_hover_and_documentation() {
+    let config =
+        std::env::temp_dir().join(format!("napi-vm-lsp-manifest-{}.json", std::process::id()));
+    fs::write(
+        &config,
+        json!({
+            "globals": [{
+                "name": "analytics",
+                "shape": {
+                    "kind": "object",
+                    "properties": {
+                        "track": {
+                            "kind": "function",
+                            "params": [{"name": "event", "type": {"kind": "string"}}],
+                            "returns": {"kind": "void"},
+                            "documentation": "Records an analytics event."
+                        }
+                    }
+                }
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let config_arg = config.to_string_lossy().to_string();
+    let mut client = Client::start_at_uri_with_args(
+        &format!("file://{}", std::env::temp_dir().to_string_lossy()),
+        &["--config", &config_arg],
+    );
+    let uri = "file:///tmp/napi-vm-manifest.js";
+    client.open(uri, "analytics.track");
+    let _ = client.wait_for_diagnostics(uri);
+
+    let items = client.completion(20, uri, 0, "analytics.".len());
+    assert!(items.iter().any(|label| label == "track"));
+    let hover = client.hover(21, uri, 0, "analytics.track".len() - 1);
+    let value = hover
+        .pointer("/contents/value")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(value.contains("(event: string) => void"), "hover: {value}");
+    assert!(
+        value.contains("Records an analytics event."),
+        "hover: {value}"
+    );
+
+    assert_eq!(client.shutdown_and_exit(22), 0);
+    let _ = fs::remove_file(config);
+}
+
+#[test]
+fn invalid_static_manifest_globals_are_ignored_safely() {
+    let config = std::env::temp_dir().join(format!(
+        "napi-vm-lsp-invalid-manifest-{}.json",
+        std::process::id()
+    ));
+    fs::write(
+        &config,
+        json!({
+            "globals": [{
+                "name": "broken",
+                "shape": { "kind": "banana" }
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let config_arg = config.to_string_lossy().to_string();
+    let mut client = Client::start_at_uri_with_args(
+        &format!("file://{}", std::env::temp_dir().to_string_lossy()),
+        &["--config", &config_arg],
+    );
+    let uri = "file:///tmp/napi-vm-invalid-manifest.js";
+    client.open(uri, "broken.");
+    let _ = client.wait_for_diagnostics(uri);
+    let items = client.completion(24, uri, 0, "broken.".len());
+    assert!(!items.iter().any(|label| label == "broken"));
+    assert_eq!(client.shutdown_and_exit(25), 0);
+    let _ = fs::remove_file(config);
 }
 
 #[test]

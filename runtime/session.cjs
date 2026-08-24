@@ -10,6 +10,11 @@ const RUNTIME_DIR = ".napi-vm";
 const RUNTIME_FILE = "runtime.json";
 const MAX_SHAPE_DEPTH = 8;
 const MAX_SHAPE_PROPERTIES = 256;
+const MAX_REGISTERED_GLOBALS = 256;
+const MAX_SHAPE_PARAMETERS = 64;
+const MAX_METADATA_NAME = 128;
+const MAX_DOCUMENTATION_BYTES = 16 * 1024;
+const MAX_SCHEMA_NODES = 4096;
 const MAX_LAST_VALUE_DEPTH = 6;
 const MAX_LAST_VALUE_PROPERTIES = 64;
 const MAX_LAST_VALUE_STRING = 512;
@@ -41,6 +46,96 @@ function clone(value) {
 
 function dataObject() {
   return Object.create(null);
+}
+
+function metadataError(message) {
+  throw new Error(`Invalid language-service metadata: ${message}`);
+}
+
+function validateMetadataName(name, kind) {
+  if (typeof name !== "string" || name.length === 0 || name.length > MAX_METADATA_NAME || /[\u0000-\u001f\u007f]/u.test(name)) {
+    metadataError(`invalid ${kind} name`);
+  }
+}
+
+function validateDocumentation(documentation, kind) {
+  if (documentation !== undefined && documentation !== null && typeof documentation !== "string") {
+    metadataError(`${kind} documentation must be a string`);
+  }
+  if (typeof documentation === "string" && Buffer.byteLength(documentation, "utf8") > MAX_DOCUMENTATION_BYTES) {
+    metadataError(`${kind} documentation exceeds the maximum length`);
+  }
+}
+
+function validateLegacyShape(value, depth, state) {
+  if (typeof value !== "string") metadataError("shape must be an object or supported type string");
+  const trimmed = value.trim();
+  if (trimmed.endsWith("[]")) return validateLegacyShape(trimmed.slice(0, -2), depth + 1, state);
+  if (trimmed.startsWith("Promise<") && trimmed.endsWith(">")) {
+    return validateLegacyShape(trimmed.slice(8, -1), depth + 1, state);
+  }
+  if (!["unknown", "any", "void", "undefined", "null", "boolean", "number", "string", "object", "function"].includes(trimmed)) {
+    metadataError(`unsupported legacy shape string: ${trimmed}`);
+  }
+}
+
+function validateShape(shape, depth = 0, state = { nodes: 0 }) {
+  if (depth > MAX_SHAPE_DEPTH) metadataError(`shape exceeds maximum depth of ${MAX_SHAPE_DEPTH}`);
+  state.nodes += 1;
+  if (state.nodes > MAX_SCHEMA_NODES) metadataError(`shape exceeds maximum node count of ${MAX_SCHEMA_NODES}`);
+  if (typeof shape === "string") return validateLegacyShape(shape, depth, state);
+  if (!shape || typeof shape !== "object" || Array.isArray(shape)) metadataError("shape must be an object");
+
+  const kinds = ["unknown", "any", "void", "undefined", "null", "boolean", "number", "string", "array", "promise", "object", "function"];
+  if (typeof shape.kind !== "string" || !kinds.includes(shape.kind)) metadataError(`unsupported shape kind: ${String(shape.kind)}`);
+  validateDocumentation(shape.documentation, "shape");
+
+  if (shape.kind === "object") {
+    if (shape.properties !== undefined && (!shape.properties || typeof shape.properties !== "object" || Array.isArray(shape.properties))) {
+      metadataError("object properties must be an object");
+    }
+    const properties = Object.keys(shape.properties || {});
+    if (properties.length > MAX_SHAPE_PROPERTIES) metadataError(`object has too many properties (maximum ${MAX_SHAPE_PROPERTIES})`);
+    for (const name of properties) {
+      validateMetadataName(name, "property");
+      validateShape(shape.properties[name], depth + 1, state);
+    }
+    if (shape.params !== undefined || shape.returns !== undefined || shape.items !== undefined || shape.value !== undefined) {
+      metadataError("object shape contains invalid fields");
+    }
+    return;
+  }
+
+  if (shape.kind === "function") {
+    if (shape.params !== undefined && !Array.isArray(shape.params)) metadataError("function params must be an array");
+    const params = shape.params || [];
+    if (params.length > MAX_SHAPE_PARAMETERS) metadataError(`function has too many parameters (maximum ${MAX_SHAPE_PARAMETERS})`);
+    for (const parameter of params) {
+      if (!parameter || typeof parameter !== "object" || Array.isArray(parameter)) metadataError("function parameter must be an object");
+      validateMetadataName(parameter.name, "parameter");
+      const parameterShape = parameter.type ?? parameter.shape ?? parameter.typeName ?? { kind: "unknown" };
+      validateShape(parameterShape, depth + 1, state);
+    }
+    if (shape.returns !== undefined) validateShape(shape.returns, depth + 1, state);
+    if (shape.items !== undefined || shape.value !== undefined || shape.properties !== undefined) metadataError("function shape contains invalid fields");
+    if (shape.async !== undefined && typeof shape.async !== "boolean") metadataError("function async flag must be boolean");
+    return;
+  }
+
+  if (shape.kind === "array" || shape.kind === "promise") {
+    if (shape.items !== undefined && shape.value !== undefined) metadataError(`${shape.kind} shape has duplicate item fields`);
+    const itemShape = shape.items ?? shape.value;
+    if (itemShape !== undefined) validateShape(itemShape, depth + 1, state);
+    if (shape.properties !== undefined || shape.params !== undefined || shape.returns !== undefined) metadataError(`${shape.kind} shape contains invalid fields`);
+  }
+}
+
+function validateGlobal(name, shape, documentation) {
+  validateMetadataName(name, "global");
+  validateDocumentation(documentation, "global");
+  const state = { nodes: 0 };
+  validateShape(shape, 0, state);
+  return state.nodes;
 }
 
 function inferJsonShape(value, depth = 0) {
@@ -140,6 +235,9 @@ class VmSession {
     this.clients = new Set();
     this.authenticatedClients = new Set();
     this.hostFunctions = new Map();
+    this.globals = new Map();
+    this.globalSchemaNodes = new Map();
+    this.totalGlobalSchemaNodes = 0;
     this.modules = new Map();
     this.handlerShapes = new Map();
     this.lastValues = new Map();
@@ -154,6 +252,9 @@ class VmSession {
   attach(vm, options = {}) {
     this.vm = vm;
     this.hostFunctions.clear();
+    this.globals.clear();
+    this.globalSchemaNodes.clear();
+    this.totalGlobalSchemaNodes = 0;
     this.modules.clear();
     this.handlerShapes.clear();
     this.lastValues.clear();
@@ -171,6 +272,9 @@ class VmSession {
   detach() {
     this.vm = null;
     this.hostFunctions.clear();
+    this.globals.clear();
+    this.globalSchemaNodes.clear();
+    this.totalGlobalSchemaNodes = 0;
     this.modules.clear();
     this.handlerShapes.clear();
     this.lastValues.clear();
@@ -179,7 +283,16 @@ class VmSession {
   }
 
   exposeFunction(name, fn, info = {}) {
+    const functionShape = {
+      kind: "function",
+      params: info.params || [],
+      returns: info.returns || "unknown",
+      async: Boolean(info.async),
+      documentation: info.documentation,
+    };
+    validateGlobal(name, functionShape, info.documentation);
     this.requireVm().exposeFunction(name, fn);
+    if (info.languageService === false || info.public === false) return;
     this.hostFunctions.set(name, {
       name,
       params: info.params || [],
@@ -191,7 +304,16 @@ class VmSession {
   }
 
   exposeAsyncFunction(name, fn, info = {}) {
+    const functionShape = {
+      kind: "function",
+      params: info.params || [],
+      returns: info.returns || "unknown",
+      async: true,
+      documentation: info.documentation,
+    };
+    validateGlobal(name, functionShape, info.documentation);
     this.requireVm().exposeAsyncFunction(name, fn);
+    if (info.languageService === false || info.public === false) return;
     this.hostFunctions.set(name, {
       name,
       params: info.params || [],
@@ -204,11 +326,43 @@ class VmSession {
 
   removeGlobal(name) {
     const removed = this.requireVm().removeGlobal(name);
-    if (removed) {
-      this.hostFunctions.delete(name);
+    const hostMetadataRemoved = this.hostFunctions.delete(name);
+    const globalMetadataRemoved = this.globals.delete(name);
+    if (globalMetadataRemoved) {
+      this.totalGlobalSchemaNodes -= this.globalSchemaNodes.get(name) || 0;
+      this.globalSchemaNodes.delete(name);
+    }
+    const metadataRemoved = hostMetadataRemoved || globalMetadataRemoved;
+    if (removed || metadataRemoved) {
       this.publish("function-remove");
     }
-    return removed;
+    return removed || metadataRemoved;
+  }
+
+  registerGlobal(name, shape, options = {}) {
+    if (!options || typeof options !== "object" || Array.isArray(options)) options = {};
+    const nodeCount = validateGlobal(name, shape, options.documentation ?? shape?.documentation);
+    if (!this.globals.has(name) && this.globals.size >= MAX_REGISTERED_GLOBALS) {
+      metadataError(`too many global declarations (maximum ${MAX_REGISTERED_GLOBALS})`);
+    }
+    const previousNodes = this.globalSchemaNodes.get(name) || 0;
+    if (this.totalGlobalSchemaNodes - previousNodes + nodeCount > MAX_SCHEMA_NODES) {
+      metadataError(`global metadata exceeds the maximum node count of ${MAX_SCHEMA_NODES}`);
+    }
+    let storedShape;
+    try {
+      storedShape = clone(shape);
+    } catch (error) {
+      metadataError(`shape is not JSON-serializable: ${error.message || String(error)}`);
+    }
+    this.globals.set(name, {
+      name,
+      shape: storedShape,
+      ...(options.documentation !== undefined ? { documentation: options.documentation } : {}),
+    });
+    this.globalSchemaNodes.set(name, nodeCount);
+    this.totalGlobalSchemaNodes = this.totalGlobalSchemaNodes - previousNodes + nodeCount;
+    this.publish("global");
   }
 
   registerModule(name, source) {
@@ -304,6 +458,7 @@ class VmSession {
       generation: this.generation,
       startedAt: this.startedAt,
       functions: [...this.hostFunctions.values()].map(clone),
+      globals: [...this.globals.values()].map(clone),
       modules: [...this.modules.values()].map(clone),
       handlers: [...this.handlerShapes.entries()].map(([name, shape]) => ({
         name,

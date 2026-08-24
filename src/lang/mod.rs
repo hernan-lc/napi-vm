@@ -16,6 +16,7 @@ pub mod catalog;
 mod complete;
 mod diagnostics;
 mod document;
+mod metadata;
 mod scope;
 mod service;
 mod symbols;
@@ -25,6 +26,8 @@ pub use complete::complete;
 pub(crate) use complete::member_trigger;
 pub use diagnostics::diagnose;
 pub use document::{Document, HoverInfo, Type};
+pub use metadata::{GlobalInfo, ParameterInfo, PropertyInfo, Shape};
+pub(crate) use metadata::{MAX_MANIFEST_BYTES, parse_globals};
 pub use service::LanguageService;
 
 use crate::lexer::Lexer;
@@ -101,6 +104,27 @@ pub struct HostFunctionInfo {
 }
 
 impl HostFunctionInfo {
+    pub fn global_info(&self) -> GlobalInfo {
+        GlobalInfo {
+            name: self.name.clone(),
+            shape: Shape::Function {
+                params: self
+                    .params
+                    .iter()
+                    .map(|parameter| ParameterInfo {
+                        name: parameter.name.clone(),
+                        shape: metadata_shape_from_string(&parameter.type_name),
+                    })
+                    .collect(),
+                returns: Box::new(metadata_shape_from_string(&self.return_type)),
+                async_fn: self.async_fn,
+            },
+            documentation: self.documentation.clone(),
+        }
+    }
+}
+
+impl HostFunctionInfo {
     pub fn unknown(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -138,6 +162,35 @@ impl HostFunctionInfo {
     }
 }
 
+fn metadata_shape_from_string(value: &str) -> Shape {
+    let value = value.trim();
+    if let Some(inner) = value.strip_suffix("[]") {
+        return Shape::Array(Box::new(metadata_shape_from_string(inner)));
+    }
+    if let Some(inner) = value
+        .strip_prefix("Promise<")
+        .and_then(|value| value.strip_suffix('>'))
+    {
+        return Shape::Promise(Box::new(metadata_shape_from_string(inner)));
+    }
+    match value {
+        "any" => Shape::Any,
+        "void" => Shape::Void,
+        "undefined" => Shape::Undefined,
+        "null" => Shape::Null,
+        "boolean" => Shape::Boolean,
+        "number" => Shape::Number,
+        "string" => Shape::String,
+        "object" => Shape::Object(std::collections::BTreeMap::new()),
+        "function" => Shape::Function {
+            params: Vec::new(),
+            returns: Box::new(Shape::Unknown),
+            async_fn: false,
+        },
+        _ => Shape::Unknown,
+    }
+}
+
 /// Runtime/workspace knowledge the static analyzer cannot derive from source
 /// alone. The host fills this in: the playground knows which functions it
 /// exposed and which modules it registered.
@@ -151,6 +204,21 @@ pub struct AnalysisContext {
     /// Shapes observed for VM event handlers. The key is the handler function
     /// name and the value is assigned to its first parameter for completion.
     pub runtime_handlers: HashMap<String, Type>,
+    /// Generic globals published by the currently connected runtime.
+    pub runtime_globals: HashMap<String, GlobalInfo>,
+    /// Generic globals loaded from the optional static LSP manifest.
+    pub manifest_globals: HashMap<String, GlobalInfo>,
+}
+
+impl AnalysisContext {
+    /// Resolve custom metadata using the one service-wide precedence order.
+    /// Legacy host functions remain a separate compatibility layer; callers
+    /// merge them after this map so explicit generic runtime metadata wins.
+    pub(crate) fn resolved_globals(&self) -> HashMap<String, GlobalInfo> {
+        let mut globals = self.manifest_globals.clone();
+        globals.extend(self.runtime_globals.clone());
+        globals
+    }
 }
 
 /// A registered module: its specifier and the names it exports.
@@ -269,19 +337,89 @@ mod tests {
     }
 
     #[test]
-    fn member_ipc_facade() {
+    fn member_generic_global() {
         let src = "ipc.in";
-        let r = complete(src, src.len(), &AnalysisContext::default());
+        let ctx = AnalysisContext {
+            runtime_globals: std::collections::BTreeMap::from([("ipc".into(), ipc_global())])
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let r = complete(src, src.len(), &ctx);
         let l = labels(&r);
         assert!(l.contains(&"invoke") && l.contains(&"invokeAsync"));
     }
 
     #[test]
-    fn member_global_alias_includes_ipc() {
+    fn unknown_local_binding_still_shadows_builtin_members() {
+        let source = "let Math;\nMath.";
+        let r = complete(source, source.len(), &AnalysisContext::default());
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn member_global_alias_includes_generic_global() {
         let src = "window.ipc.";
-        let r = complete(src, src.len(), &AnalysisContext::default());
+        let ctx = AnalysisContext {
+            runtime_globals: std::collections::BTreeMap::from([("ipc".into(), ipc_global())])
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let r = complete(src, src.len(), &ctx);
         let l = labels(&r);
         assert!(l.contains(&"invoke") && l.contains(&"commands"));
+    }
+
+    #[test]
+    fn ipc_is_absent_without_metadata() {
+        let r = complete("ipc.", 4, &AnalysisContext::default());
+        assert!(r.is_empty());
+    }
+
+    fn ipc_global() -> GlobalInfo {
+        GlobalInfo {
+            name: "ipc".into(),
+            shape: Shape::Object(std::collections::BTreeMap::from([
+                (
+                    "invoke".into(),
+                    PropertyInfo {
+                        shape: Shape::Function {
+                            params: vec![ParameterInfo {
+                                name: "command".into(),
+                                shape: Shape::String,
+                            }],
+                            returns: Box::new(Shape::Unknown),
+                            async_fn: false,
+                        },
+                        documentation: Some("Invoke a command.".into()),
+                    },
+                ),
+                (
+                    "invokeAsync".into(),
+                    PropertyInfo {
+                        shape: Shape::Function {
+                            params: vec![],
+                            returns: Box::new(Shape::Unknown),
+                            async_fn: true,
+                        },
+                        documentation: None,
+                    },
+                ),
+                (
+                    "commands".into(),
+                    PropertyInfo {
+                        shape: Shape::Function {
+                            params: vec![],
+                            returns: Box::new(Shape::Array(Box::new(Shape::String))),
+                            async_fn: false,
+                        },
+                        documentation: None,
+                    },
+                ),
+            ])),
+            documentation: None,
+        }
     }
 
     #[test]

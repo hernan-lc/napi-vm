@@ -10,13 +10,14 @@ use crate::lexer::Token;
 use crate::parser::{BinOp, ClassMember, Expr, ExprOrBlock, ObjectProp, Statement, VarKind};
 use crate::span::SpannedToken;
 
-use super::HostFunctionInfo;
 use super::catalog::{self, BuiltinType};
+use super::{GlobalInfo, HostFunctionInfo, ParameterInfo, Shape};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Any,
     Unknown,
+    Void,
     Number,
     String,
     Boolean,
@@ -36,10 +37,42 @@ pub enum Type {
     Array(Box<Type>),
     Promise(Box<Type>),
     Function {
-        params: Vec<String>,
+        params: Vec<TypeParameter>,
         result: Box<Type>,
         async_fn: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParameter {
+    pub name: String,
+    pub ty: Type,
+    pub show_type: bool,
+}
+
+impl TypeParameter {
+    fn untyped(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            ty: Type::Any,
+            show_type: false,
+        }
+    }
+
+    fn typed(parameter: &ParameterInfo) -> Self {
+        Self {
+            name: parameter.name.clone(),
+            ty: Type::from_shape(&parameter.shape),
+            show_type: true,
+        }
+    }
+}
+
+fn untyped_parameters(params: &[String]) -> Vec<TypeParameter> {
+    params
+        .iter()
+        .map(|param| TypeParameter::untyped(param))
+        .collect()
 }
 
 impl Type {
@@ -73,6 +106,44 @@ impl Type {
         }
     }
 
+    pub(crate) fn from_shape(shape: &Shape) -> Self {
+        match shape {
+            Shape::Unknown => Type::Unknown,
+            Shape::Any => Type::Any,
+            Shape::Void => Type::Void,
+            Shape::Undefined => Type::Undefined,
+            Shape::Null => Type::Null,
+            Shape::Boolean => Type::Boolean,
+            Shape::Number => Type::Number,
+            Shape::String => Type::String,
+            Shape::Array(item) => Type::Array(Box::new(Self::from_shape(item))),
+            Shape::Promise(value) => Type::Promise(Box::new(Self::from_shape(value))),
+            Shape::Object(properties) => Type::Object(
+                properties
+                    .iter()
+                    .map(|(name, property)| (name.clone(), Self::from_shape(&property.shape)))
+                    .collect(),
+            ),
+            Shape::Function {
+                params,
+                returns,
+                async_fn,
+            } => {
+                let result = Self::from_shape(returns);
+                let result = if *async_fn && !matches!(result, Type::Promise(_)) {
+                    Type::Promise(Box::new(result))
+                } else {
+                    result
+                };
+                Type::Function {
+                    params: params.iter().map(TypeParameter::typed).collect(),
+                    result: Box::new(result),
+                    async_fn: *async_fn,
+                }
+            }
+        }
+    }
+
     fn unwrap_promise(&self) -> Type {
         match self {
             Type::Promise(value) => value.as_ref().clone(),
@@ -80,10 +151,11 @@ impl Type {
         }
     }
 
-    fn display(&self) -> String {
+    pub(crate) fn display(&self) -> String {
         match self {
             Type::Any => "any".into(),
             Type::Unknown => "unknown".into(),
+            Type::Void => "void".into(),
             Type::Number => "number".into(),
             Type::String => "string".into(),
             Type::Boolean => "boolean".into(),
@@ -91,8 +163,28 @@ impl Type {
             Type::Undefined => "undefined".into(),
             Type::Array(item) => format!("{}[]", item.display()),
             Type::Promise(value) => format!("Promise<{}>", value.display()),
-            Type::Function { params, result, .. } => {
-                format!("({}) => {}", params.join(", "), result.display())
+            Type::Function {
+                params,
+                result,
+                async_fn,
+            } => {
+                let params = params
+                    .iter()
+                    .map(|parameter| {
+                        if parameter.show_type {
+                            format!("{}: {}", parameter.name, parameter.ty.display())
+                        } else {
+                            parameter.name.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let result = if *async_fn && !matches!(result.as_ref(), Type::Promise(_)) {
+                    format!("Promise<{}>", result.display())
+                } else {
+                    result.display()
+                };
+                format!("({params}) => {result}")
             }
             Type::Object(fields) => {
                 if fields.is_empty() {
@@ -110,7 +202,7 @@ impl Type {
         }
     }
 
-    fn display_compact(&self) -> String {
+    pub(crate) fn display_compact(&self) -> String {
         self.display_compact_depth(0)
     }
 
@@ -139,21 +231,44 @@ impl Type {
             Type::Promise(value) => {
                 format!("Promise<{}>", value.display_compact_depth(depth + 1))
             }
-            Type::Function { params, result, .. } => format!(
-                "({}) => {}",
-                params.join(", "),
-                result.display_compact_depth(depth + 1)
-            ),
+            Type::Function {
+                params,
+                result,
+                async_fn,
+            } => {
+                let params = params
+                    .iter()
+                    .map(|parameter| {
+                        if parameter.show_type {
+                            format!(
+                                "{}: {}",
+                                parameter.name,
+                                parameter.ty.display_compact_depth(depth + 1)
+                            )
+                        } else {
+                            parameter.name.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let result = if *async_fn && !matches!(result.as_ref(), Type::Promise(_)) {
+                    format!("Promise<{}>", result.display_compact_depth(depth + 1))
+                } else {
+                    result.display_compact_depth(depth + 1)
+                };
+                format!("({params}) => {result}")
+            }
             _ => self.display(),
         }
     }
 
-    fn from_builtin(builtin: BuiltinType) -> Self {
+    pub(crate) fn from_builtin(builtin: BuiltinType) -> Self {
         match builtin {
             BuiltinType::Unknown => Type::Unknown,
             BuiltinType::Number => Type::Number,
             BuiltinType::String => Type::String,
             BuiltinType::Boolean => Type::Boolean,
+            BuiltinType::Undefined => Type::Undefined,
             BuiltinType::Function { result } => Type::Function {
                 params: vec![],
                 result: Box::new(match result {
@@ -165,39 +280,6 @@ impl Type {
                 async_fn: false,
             },
             BuiltinType::NativeObject(name) => Type::NativeObject(name),
-        }
-    }
-
-    pub(crate) fn from_runtime_shape(value: &serde_json::Value) -> Self {
-        let Some(kind) = value.get("kind").and_then(serde_json::Value::as_str) else {
-            return Type::Unknown;
-        };
-
-        match kind {
-            "object" => {
-                let mut fields = BTreeMap::new();
-                if let Some(properties) = value
-                    .get("properties")
-                    .and_then(serde_json::Value::as_object)
-                {
-                    for (name, property) in properties {
-                        fields.insert(name.clone(), Self::from_runtime_shape(property));
-                    }
-                }
-                Type::Object(fields)
-            }
-            "array" => Type::Array(Box::new(
-                value
-                    .get("items")
-                    .map(Self::from_runtime_shape)
-                    .unwrap_or(Type::Unknown),
-            )),
-            "number" => Type::Number,
-            "string" => Type::String,
-            "boolean" => Type::Boolean,
-            "null" => Type::Null,
-            "undefined" => Type::Undefined,
-            _ => Type::Unknown,
         }
     }
 }
@@ -215,6 +297,13 @@ pub struct HoverInfo {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct ResolvedType {
+    pub ty: Type,
+    pub documentation: Option<String>,
+    shape: Option<Shape>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Document {
     source: String,
     tokens: Vec<SpannedToken>,
@@ -222,6 +311,7 @@ pub struct Document {
     properties: HashMap<String, Type>,
     exports: HashMap<String, Type>,
     host_functions: HashMap<String, HostFunctionInfo>,
+    globals: HashMap<String, GlobalInfo>,
     parameter_values: HashMap<String, String>,
 }
 
@@ -255,6 +345,24 @@ impl Document {
         runtime_handlers: &HashMap<String, Type>,
         runtime_values: &HashMap<String, String>,
     ) -> Self {
+        Self::parse_with_context_and_runtime_and_globals(
+            source,
+            module_sources,
+            host_functions,
+            runtime_handlers,
+            runtime_values,
+            &HashMap::new(),
+        )
+    }
+
+    pub fn parse_with_context_and_runtime_and_globals(
+        source: &str,
+        module_sources: &HashMap<String, String>,
+        host_functions: &[HostFunctionInfo],
+        runtime_handlers: &HashMap<String, Type>,
+        runtime_values: &HashMap<String, String>,
+        globals: &HashMap<String, GlobalInfo>,
+    ) -> Self {
         let mut module_stack = HashSet::new();
         Self::parse_with_context_inner(
             source,
@@ -262,6 +370,7 @@ impl Document {
             host_functions,
             runtime_handlers,
             runtime_values,
+            globals,
             &mut module_stack,
         )
     }
@@ -272,6 +381,7 @@ impl Document {
         host_functions: &[HostFunctionInfo],
         runtime_handlers: &HashMap<String, Type>,
         runtime_values: &HashMap<String, String>,
+        globals: &HashMap<String, GlobalInfo>,
         module_stack: &mut HashSet<String>,
     ) -> Self {
         let mut lexer = crate::lexer::Lexer::new(source);
@@ -286,6 +396,7 @@ impl Document {
             host_functions,
             runtime_handlers,
             runtime_values,
+            globals,
             parameter_values: HashMap::new(),
             module_stack,
         };
@@ -301,6 +412,7 @@ impl Document {
                 .cloned()
                 .map(|function| (function.name.clone(), function))
                 .collect(),
+            globals: globals.clone(),
             parameter_values: builder.parameter_values,
         }
     }
@@ -313,28 +425,24 @@ impl Document {
             _ => return None,
         };
 
-        if token_index > 0
+        if token_index >= 2
             && matches!(
                 self.tokens[token_index - 1].0,
                 Token::Dot | Token::QuestionDot
             )
         {
             let receiver = self.receiver_name(token_index - 2);
-            let ty = receiver
+            let resolved = receiver
+                .as_deref()
+                .and_then(|receiver| self.resolve_path(&format!("{receiver}.{name}")));
+            let ty = resolved
                 .as_ref()
-                .and_then(|receiver| self.bindings.get(receiver))
-                .map(|binding| binding.ty.property(name))
+                .map(|resolved| resolved.ty.clone())
                 .or_else(|| self.properties.get(name).cloned())
-                .or_else(|| {
-                    receiver
-                        .as_deref()
-                        .and_then(|receiver| catalog::builtin_member_type(receiver, name))
-                        .map(Type::from_builtin)
-                })
                 .unwrap_or(Type::Unknown);
             return Some(HoverInfo {
                 detail: format!("(property) {}: {}", name, ty.display_compact()),
-                documentation: None,
+                documentation: resolved.and_then(|resolved| resolved.documentation),
             });
         }
 
@@ -356,10 +464,19 @@ impl Document {
             });
         }
 
-        if let Some(function) = self.host_functions.get(name) {
+        if !self.globals.contains_key(name)
+            && let Some(function) = self.host_functions.get(name)
+        {
             return Some(HoverInfo {
                 detail: format!("(function) {}: {}", name, function.signature()),
                 documentation: function.documentation.clone(),
+            });
+        }
+
+        if let Some(resolved) = self.resolve_path(name) {
+            return Some(HoverInfo {
+                detail: format!("(global) {}: {}", name, resolved.ty.display()),
+                documentation: resolved.documentation,
             });
         }
 
@@ -402,11 +519,128 @@ impl Document {
     }
 
     fn receiver_name(&self, index: usize) -> Option<String> {
-        match self.tokens.get(index)?.0 {
-            Token::Identifier(ref name) => Some(name.clone()),
-            _ => None,
+        let mut parts = Vec::new();
+        let mut cursor = index;
+        let Token::Identifier(name) = self.tokens.get(cursor)?.0.clone() else {
+            return None;
+        };
+        parts.push(name);
+        while cursor >= 2
+            && matches!(
+                self.tokens.get(cursor - 1).map(|token| &token.0),
+                Some(Token::Dot | Token::QuestionDot)
+            )
+        {
+            cursor -= 2;
+            let Token::Identifier(name) = self.tokens.get(cursor)?.0.clone() else {
+                break;
+            };
+            parts.push(name);
         }
+        parts.reverse();
+        Some(parts.join("."))
     }
+
+    pub(crate) fn resolve_path(&self, path: &str) -> Option<ResolvedType> {
+        let mut segments = path.split('.');
+        let first = segments.next()?.trim();
+        if first.is_empty() {
+            return None;
+        }
+
+        if let Some(binding) = self.bindings.get(first) {
+            let mut resolved = ResolvedType {
+                ty: binding.ty.clone(),
+                documentation: None,
+                shape: None,
+            };
+            for segment in segments {
+                resolved.ty = resolved.ty.property(segment);
+                resolved.documentation = None;
+            }
+            return Some(resolved);
+        }
+
+        // An explicit global-object alias addresses the VM's global object,
+        // not a same-named lexical binding in the current source. Bare
+        // `ipc` still takes the binding branch above, while `window.ipc` and
+        // `globalThis.ipc` resolve the published runtime/manifest global.
+        if matches!(first, "window" | "globalThis" | "self") {
+            let Some(global_name) = segments.next() else {
+                return Some(ResolvedType {
+                    ty: Type::Unknown,
+                    documentation: None,
+                    shape: None,
+                });
+            };
+            let suffix = std::iter::once(global_name).chain(segments);
+            let path = suffix.collect::<Vec<_>>().join(".");
+            return self.resolve_global_path(&path);
+        }
+
+        self.resolve_global_path(path)
+    }
+
+    pub(crate) fn has_binding(&self, name: &str) -> bool {
+        self.bindings.contains_key(name)
+    }
+
+    fn resolve_global_path(&self, path: &str) -> Option<ResolvedType> {
+        let mut segments = path.split('.');
+        let first = segments.next()?.trim();
+        if first.is_empty() {
+            return None;
+        }
+
+        if let Some(global) = self.globals.get(first) {
+            let mut resolved = ResolvedType {
+                ty: Type::from_shape(&global.shape),
+                documentation: global.documentation.clone(),
+                shape: Some(global.shape.clone()),
+            };
+            for segment in segments {
+                resolved = property_resolution(resolved, segment);
+            }
+            return Some(resolved);
+        }
+
+        if let Some(function) = self.host_functions.get(first) {
+            let global = function.global_info();
+            let mut resolved = ResolvedType {
+                ty: Type::from_shape(&global.shape),
+                documentation: global.documentation,
+                shape: Some(global.shape.clone()),
+            };
+            for segment in segments {
+                resolved = property_resolution(resolved, segment);
+            }
+            return Some(resolved);
+        }
+
+        let mut resolved = ResolvedType {
+            ty: Type::from_builtin(catalog::builtin_global_type(first)?),
+            documentation: None,
+            shape: None,
+        };
+        for segment in segments {
+            resolved = property_resolution(resolved, segment);
+        }
+        Some(resolved)
+    }
+}
+
+fn property_resolution(mut resolved: ResolvedType, segment: &str) -> ResolvedType {
+    resolved.ty = resolved.ty.property(segment);
+    let next_shape = resolved.shape.take().and_then(|shape| {
+        let property = shape.property(segment)?;
+        resolved.documentation = property.documentation.clone();
+        Some(property.shape.clone())
+    });
+    resolved.shape = next_shape;
+    if resolved.shape.is_none() {
+        resolved.documentation = None;
+    }
+    resolved
 }
 
 struct Builder<'a> {
@@ -417,6 +651,7 @@ struct Builder<'a> {
     host_functions: &'a [HostFunctionInfo],
     runtime_handlers: &'a HashMap<String, Type>,
     runtime_values: &'a HashMap<String, String>,
+    globals: &'a HashMap<String, GlobalInfo>,
     parameter_values: HashMap<String, String>,
     module_stack: &'a mut HashSet<String>,
 }
@@ -461,7 +696,7 @@ impl Builder<'_> {
             } => {
                 let result = self.function_result_named(Some(name), params, body, env);
                 let ty = Type::Function {
-                    params: params.clone(),
+                    params: untyped_parameters(params),
                     result: Box::new(if *is_async {
                         Type::Promise(Box::new(result))
                     } else {
@@ -618,6 +853,7 @@ impl Builder<'_> {
             self.host_functions,
             self.runtime_handlers,
             self.runtime_values,
+            self.globals,
             self.module_stack,
         );
         self.module_stack.remove(module);
@@ -687,6 +923,17 @@ impl Builder<'_> {
             Expr::Identifier(name) => env
                 .get(name)
                 .cloned()
+                .or_else(|| {
+                    self.globals
+                        .get(name)
+                        .map(|global| Type::from_shape(&global.shape))
+                })
+                .or_else(|| {
+                    self.host_functions
+                        .iter()
+                        .find(|function| function.name == *name)
+                        .map(|function| Type::from_shape(&function.global_info().shape))
+                })
                 .or_else(|| catalog::builtin_global_type(name).map(Type::from_builtin))
                 .unwrap_or(Type::Unknown),
             Expr::Object(props) => {
@@ -705,7 +952,7 @@ impl Builder<'_> {
                             fields.insert(
                                 name.clone(),
                                 Type::Function {
-                                    params: params.clone(),
+                                    params: untyped_parameters(params),
                                     result: Box::new(self.function_result(params, body, env)),
                                     async_fn: false,
                                 },
@@ -718,7 +965,7 @@ impl Builder<'_> {
                             fields.insert(
                                 name.clone(),
                                 Type::Function {
-                                    params: vec![param.clone()],
+                                    params: vec![TypeParameter::untyped(param)],
                                     result: Box::new(self.function_result(
                                         std::slice::from_ref(param),
                                         body,
@@ -817,7 +1064,7 @@ impl Builder<'_> {
                     ExprOrBlock::Block(body) => self.function_result(params, body, env),
                 };
                 Type::Function {
-                    params: params.clone(),
+                    params: untyped_parameters(params),
                     result: Box::new(result),
                     async_fn: false,
                 }
@@ -831,7 +1078,7 @@ impl Builder<'_> {
             } => {
                 let result = self.function_result(params, body, env);
                 Type::Function {
-                    params: params.clone(),
+                    params: untyped_parameters(params),
                     result: Box::new(if *is_async {
                         Type::Promise(Box::new(result))
                     } else {
@@ -897,7 +1144,7 @@ impl Builder<'_> {
                     fields.insert(
                         member_name.clone(),
                         Type::Function {
-                            params: params.clone(),
+                            params: untyped_parameters(params),
                             result: Box::new(result),
                             async_fn: false,
                         },
@@ -931,7 +1178,7 @@ impl Builder<'_> {
                     fields.insert(
                         field_name.clone(),
                         Type::Function {
-                            params: vec![param.clone()],
+                            params: vec![TypeParameter::untyped(param)],
                             result: Box::new(self.function_result(
                                 std::slice::from_ref(param),
                                 body,
@@ -1152,5 +1399,11 @@ mod tests {
         let source = "// 🦀\nconst total = 1; total;";
         // This deliberately points into the four-byte emoji.
         assert!(Document::parse(source).hover(4).is_none());
+    }
+
+    #[test]
+    fn hover_never_panics_on_a_member_without_a_receiver() {
+        let document = Document::parse(".name");
+        let _ = document.hover(".name".len());
     }
 }

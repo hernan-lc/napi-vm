@@ -59,6 +59,7 @@ impl Workspace {
             "workspaceId": self.workspace_id(),
             "sessionId": session_id,
             "pid": std::process::id(),
+            "authToken": format!("{session_id}-token"),
             "transport": { "kind": "unix", "address": socket.to_string_lossy() }
         });
         write_atomic(&self.root.join(".napi-vm").join("runtime.json"), &locator);
@@ -137,6 +138,34 @@ fn send_snapshot(stream: &mut UnixStream, functions: &[&str]) {
     let message = json!({ "type": "snapshot", "payload": payload });
     writeln!(stream, "{message}").expect("write snapshot");
     stream.flush().expect("flush snapshot");
+}
+
+fn send_global_snapshot(stream: &mut UnixStream) {
+    let payload = json!({
+        "globals": [{
+            "name": "custom",
+            "shape": {
+                "kind": "object",
+                "properties": {
+                    "ping": {
+                        "kind": "function",
+                        "params": [],
+                        "returns": { "kind": "string" },
+                        "documentation": "Pings the host."
+                    },
+                    "loadAsync": {
+                        "kind": "function",
+                        "params": [],
+                        "returns": { "kind": "unknown" },
+                        "async": true
+                    }
+                }
+            }
+        }]
+    });
+    let message = json!({ "type": "snapshot", "payload": payload });
+    writeln!(stream, "{message}").expect("write global snapshot");
+    stream.flush().expect("flush global snapshot");
 }
 
 /// Poll completion until `predicate` holds, or fail after `timeout`.
@@ -237,6 +266,55 @@ fn runtime_metadata_survives_idle_and_session_changes() {
     );
 
     assert_eq!(client.shutdown_and_exit(id + 1), 0);
+}
+
+#[test]
+fn runtime_global_completion_and_hover_use_declarative_shapes() {
+    let workspace = Workspace::create("runtime-global");
+    let listener = workspace.publish("session-global");
+    let mut client = Client::start_at_uri(&workspace.uri());
+    let source = "custom.ping; custom.loadAsync;";
+    client.open(URI, source);
+    let _ = client.wait_for_diagnostics(URI);
+    let mut stream = accept(&listener);
+
+    send_global_snapshot(&mut stream);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let items = loop {
+        let items = client.completion(300, URI, 0, 7);
+        if items.iter().any(|label| label == "ping") {
+            break items;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "global completion never arrived: {items:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(items.iter().any(|label| label == "loadAsync"));
+
+    let hover = client.hover(301, URI, 0, 9);
+    let value = hover
+        .pointer("/contents/value")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(value.contains("() => string"), "hover: {value}");
+    assert!(
+        value.contains("Pings the host."),
+        "hover documentation: {value}"
+    );
+
+    let async_hover = client.hover(303, URI, 0, source.find("loadAsync").unwrap() + 2);
+    let async_value = async_hover
+        .pointer("/contents/value")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        async_value.contains("() => Promise<unknown>"),
+        "async hover: {async_value}"
+    );
+
+    assert_eq!(client.shutdown_and_exit(302), 0);
 }
 
 #[test]

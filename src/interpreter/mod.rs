@@ -147,9 +147,11 @@ impl Interpreter {
     /// is currently executing inside a function/catch environment.
     pub(crate) fn set_global_checked(&mut self, name: &str, value: Value) -> Result<(), VmErr> {
         let mut global = self.persistent_global.borrow_mut();
-        if !global.assign(name, value.clone()) {
-            global.try_set(name, value)?;
-        }
+        // An explicit write through the global object creates or updates an
+        // own user-global binding. Do not use `assign` here: it walks into the
+        // trusted builtins parent and would mutate (for example) builtin
+        // `Math` instead of creating a user shadow.
+        global.try_set(name, value)?;
         Ok(())
     }
 

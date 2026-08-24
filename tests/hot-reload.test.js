@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { Vm } from "../index.js";
+import { VmSession } from "../runtime/session.cjs";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,6 +114,13 @@ test("removeGlobal + re-expose avoids stale references (hot-reload pattern)", ()
   expect(vm.run("getGen();")).toBe("2");
 });
 
+test("globalThis writes shadow builtins without mutating the builtin frame", () => {
+  const vm = new Vm();
+  expect(vm.run("globalThis.Math = 123; Math;")).toBe("123");
+  expect(vm.removeGlobal("Math")).toBe(true);
+  expect(vm.run("typeof Math;")).toBe("object");
+});
+
 test("VmIpc is available while a module is evaluated", async () => {
   const { VmIpc } = await import("../examples/lib/vm-ipc.ts");
   const vm = new Vm();
@@ -156,6 +164,43 @@ test("HotReloader attaches IPC before loading modules", async () => {
     ipc.detach();
     reloader.stop();
     rmSync(modulesDir, { recursive: true, force: true });
+  }
+});
+
+test("HotReloader republishes IPC metadata for each VM generation", async () => {
+  const { HotReloader } = await import("../examples/lib/hot-reload.ts");
+  const { VmIpc } = await import("../examples/lib/vm-ipc.ts");
+  const modulesDir = mkdtempSync(join(tmpdir(), "napi-vm-hot-reload-metadata-"));
+  const workspace = mkdtempSync(join(tmpdir(), "napi-vm-hot-reload-workspace-"));
+  writeFileSync(join(modulesDir, "ipc.js"), "export const commandCount = ipc.commands().length;\n");
+
+  const session = new VmSession({ workspace });
+  const ipc = new VmIpc();
+  ipc.handle("answer", () => 42);
+  const snapshots = [];
+  const reloader = new HotReloader({
+    modulesDir,
+    runtime: session,
+    onBeforeLoad: (vm, liveSession) => ipc.attach(vm, liveSession),
+    onReload: () => snapshots.push(session.snapshot()),
+  });
+
+  try {
+    const first = reloader.start();
+    expect(first.run('import { commandCount } from "ipc"; commandCount;')).toBe("1");
+    expect(snapshots[0].globals.map((global) => global.name)).toEqual(["ipc"]);
+
+    reloader.reload?.("ipc.js");
+    const second = reloader.currentVm;
+    expect(second).not.toBe(first);
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[1].globals.map((global) => global.name)).toEqual(["ipc"]);
+    expect(snapshots[1].globals[0].shape.properties.commands.kind).toBe("function");
+  } finally {
+    ipc.detach();
+    reloader.stop();
+    rmSync(modulesDir, { recursive: true, force: true });
+    rmSync(workspace, { recursive: true, force: true });
   }
 });
 

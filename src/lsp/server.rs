@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use crate::lang::{
     CompletionKind, DiagnosticSeverity, HostFunctionInfo, HostFunctionParameter, LanguageService,
+    MAX_MANIFEST_BYTES, parse_globals,
 };
 
 use super::runtime_client::{RuntimeClient, RuntimeEvent};
@@ -57,11 +58,24 @@ impl Server {
 
     fn load_manifest(&self) -> Option<Value> {
         let path = self.manifest_path()?;
+        if std::fs::metadata(&path).ok()?.len() as usize > MAX_MANIFEST_BYTES {
+            return None;
+        }
         let text = std::fs::read_to_string(path).ok()?;
+        if text.len() > MAX_MANIFEST_BYTES {
+            return None;
+        }
         serde_json::from_str(&text).ok()
     }
 
     fn register_manifest(target: &mut LanguageService, root: &Path, manifest: &Value) {
+        if let Some(globals) = manifest.get("globals")
+            && let Ok(globals) = parse_globals(globals)
+        {
+            for global in globals {
+                target.register_manifest_global(global);
+            }
+        }
         if let Some(hosts) = manifest.get("hostFunctions").and_then(Value::as_array) {
             for host in hosts {
                 register_host(target, host);
@@ -84,6 +98,13 @@ impl Server {
     }
 
     fn register_runtime(target: &mut LanguageService, snapshot: &Value) {
+        if let Some(globals) = snapshot.get("globals")
+            && let Ok(globals) = parse_globals(globals)
+        {
+            for global in globals {
+                target.register_runtime_global(global);
+            }
+        }
         if let Some(hosts) = snapshot.get("functions").and_then(Value::as_array) {
             for host in hosts {
                 register_host(target, host);

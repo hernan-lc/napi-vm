@@ -27,7 +27,12 @@ impl Client {
     /// Start the server with a workspace *URI* as its root, for callers that
     /// need percent-encoding or a non-trivial path.
     pub fn start_at_uri(root_uri: &str) -> Self {
+        Self::start_at_uri_with_args(root_uri, &[])
+    }
+
+    pub fn start_at_uri_with_args(root_uri: &str, args: &[&str]) -> Self {
         let mut child = Command::new(BINARY)
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

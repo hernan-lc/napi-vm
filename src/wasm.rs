@@ -682,6 +682,8 @@ impl WasmVm {
             exposed_functions: self.exposed_functions.clone(),
             modules: self.module_infos.clone(),
             runtime_handlers: std::collections::HashMap::new(),
+            runtime_globals: std::collections::HashMap::new(),
+            manifest_globals: std::collections::HashMap::new(),
         }
     }
 

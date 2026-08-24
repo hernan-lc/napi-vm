@@ -18,8 +18,8 @@ use crate::parser::{Parser, Statement};
 use super::catalog::{self, ProtoKind};
 use super::scope::{self, InitShape, Scope};
 use super::{
-    AnalysisContext, Completion, CompletionKind, playground_completion_module_prefix,
-    playground_module_name, playground_module_specifier,
+    AnalysisContext, Completion, CompletionKind, Document, GlobalInfo, Type,
+    playground_completion_module_prefix, playground_module_name, playground_module_specifier,
 };
 
 /// Compute completion candidates at a byte offset in the source.
@@ -30,9 +30,20 @@ pub fn complete(source: &str, offset: usize, ctx: &AnalysisContext) -> Vec<Compl
 
     let stmts = parse_lenient(source);
     let scope = scope::collect(&stmts, &ctx.runtime_handlers);
+    let globals = ctx.resolved_globals();
+    let document = Document::parse_with_context_and_runtime_and_globals(
+        source,
+        &std::collections::HashMap::new(),
+        &ctx.exposed_functions,
+        &ctx.runtime_handlers,
+        &std::collections::HashMap::new(),
+        &globals,
+    );
 
     match analyze_trigger(before) {
-        Trigger::Member { receiver, prefix } => complete_member(&receiver, &prefix, &scope, ctx),
+        Trigger::Member { receiver, prefix } => {
+            complete_member(&receiver, &prefix, &scope, ctx, &document)
+        }
         Trigger::Ident { prefix } => complete_ident(&prefix, before, &scope, ctx),
     }
 }
@@ -213,7 +224,23 @@ fn complete_ident(
         add(&d.name, d.kind, detail);
     }
 
-    // 2. Host-exposed functions.
+    // 2. Generic live runtime globals, followed by static manifest globals.
+    let mut runtime_globals: Vec<_> = ctx.runtime_globals.values().collect();
+    runtime_globals.sort_by(|a, b| a.name.cmp(&b.name));
+    for global in runtime_globals {
+        let detail = global_detail(global);
+        add(&global.name, CompletionKind::Global, detail.as_deref());
+    }
+    let mut manifest_globals: Vec<_> = ctx.manifest_globals.values().collect();
+    manifest_globals.sort_by(|a, b| a.name.cmp(&b.name));
+    for global in manifest_globals {
+        let detail = global_detail(global);
+        add(&global.name, CompletionKind::Global, detail.as_deref());
+    }
+
+    // Legacy exposed host functions are runtime globals too. Keep their
+    // existing completion kind/detail while allowing explicit generic runtime
+    // metadata above to win on a name collision.
     let mut exposed = ctx.exposed_functions.clone();
     exposed.sort_by(|a, b| a.name.cmp(&b.name));
     for function in &exposed {
@@ -274,32 +301,59 @@ fn complete_member(
     prefix: &str,
     scope: &Scope,
     ctx: &AnalysisContext,
+    document: &Document,
 ) -> Vec<Completion> {
     let mut out: Vec<Completion> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut add = |label: &str, kind: CompletionKind| {
+    let mut add = |label: &str, kind: CompletionKind, detail: Option<String>| {
         if is_member_name(label) && label.starts_with(prefix) && seen.insert(label.to_string()) {
             out.push(Completion {
                 label: label.to_string(),
                 kind,
-                detail: None,
+                detail,
             });
         }
     };
 
     let head = receiver.split('.').next().unwrap_or(receiver);
 
+    // The same resolver is used by hover. This is what makes local source
+    // bindings shadow runtime/manifest/builtin globals and lets arbitrary
+    // metadata resolve through a dotted receiver path.
+    let receiver_is_alias = matches!(receiver, "window" | "globalThis" | "self");
+    if scope.module_for_namespace(head).is_none()
+        && let Some(resolved) = document.resolve_path(receiver)
+        && (!receiver_is_alias || document.has_binding(receiver))
+    {
+        add_runtime_members(&resolved.ty, &mut add);
+        return filter_sorted(out);
+    }
+
     // The VM exposes these aliases as views of its global environment. Include
     // both catalog globals and live host functions so window completion works
     // even when the user has not yet executed the file.
     if matches!(receiver, "window" | "globalThis" | "self") {
+        let mut runtime_globals: Vec<_> = ctx.runtime_globals.values().collect();
+        runtime_globals.sort_by(|a, b| a.name.cmp(&b.name));
+        for global in runtime_globals {
+            add(&global.name, CompletionKind::Global, global_detail(global));
+        }
+        let mut manifest_globals: Vec<_> = ctx.manifest_globals.values().collect();
+        manifest_globals.sort_by(|a, b| a.name.cmp(&b.name));
+        for global in manifest_globals {
+            add(&global.name, CompletionKind::Global, global_detail(global));
+        }
         for global in catalog::GLOBALS {
             if !matches!(*global, "window" | "globalThis" | "self") {
-                add(global, CompletionKind::Global);
+                add(global, CompletionKind::Global, None);
             }
         }
         for function in &ctx.exposed_functions {
-            add(&function.name, CompletionKind::ExposedFn);
+            add(
+                &function.name,
+                CompletionKind::ExposedFn,
+                Some(function.signature()),
+            );
         }
         return filter_sorted(out);
     }
@@ -314,7 +368,11 @@ fn complete_member(
         && let Some(members) = catalog::builtin_members(global_name)
     {
         for member in members {
-            add(member, member_kind(member));
+            add(
+                member,
+                member_kind(member),
+                catalog_member_detail(global_name, member),
+            );
         }
         return filter_sorted(out);
     }
@@ -326,7 +384,7 @@ fn complete_member(
         let mut exports = info.exports.clone();
         exports.sort();
         for e in &exports {
-            add(e, CompletionKind::Property);
+            add(e, CompletionKind::Property, None);
         }
         return filter_sorted(out);
     }
@@ -338,7 +396,7 @@ fn complete_member(
         let mut exports = info.exports.clone();
         exports.sort();
         for e in &exports {
-            add(e, CompletionKind::Property);
+            add(e, CompletionKind::Property, None);
         }
         return filter_sorted(out);
     }
@@ -346,7 +404,7 @@ fn complete_member(
     // Named built-in global (Math, JSON, console, …).
     if let Some(members) = catalog::builtin_members(receiver) {
         for m in members {
-            add(m, member_kind(m));
+            add(m, member_kind(m), catalog_member_detail(receiver, m));
         }
         return filter_sorted(out);
     }
@@ -354,13 +412,13 @@ fn complete_member(
     // Literal receivers.
     if receiver.ends_with(']') {
         for m in catalog::prototype_members(ProtoKind::Array) {
-            add(m, CompletionKind::Method);
+            add(m, CompletionKind::Method, None);
         }
         return filter_sorted(out);
     }
     if receiver.ends_with('"') || receiver.ends_with('\'') {
         for m in catalog::prototype_members(ProtoKind::String) {
-            add(m, CompletionKind::Method);
+            add(m, CompletionKind::Method, None);
         }
         return filter_sorted(out);
     }
@@ -374,14 +432,14 @@ fn complete_member(
         match &decl.shape {
             Some(InitShape::Array) => {
                 for m in catalog::prototype_members(ProtoKind::Array) {
-                    add(m, CompletionKind::Method);
+                    add(m, CompletionKind::Method, None);
                 }
             }
             Some(InitShape::Object(keys)) => {
                 let mut keys = keys.clone();
                 keys.sort();
                 for k in &keys {
-                    add(k, CompletionKind::Property);
+                    add(k, CompletionKind::Property, None);
                 }
             }
             None => {}
@@ -403,30 +461,68 @@ fn runtime_receiver_type(
     Some(ty)
 }
 
-fn add_runtime_members(ty: &super::Type, add: &mut impl FnMut(&str, CompletionKind)) {
+fn add_runtime_members(ty: &Type, add: &mut impl FnMut(&str, CompletionKind, Option<String>)) {
     match ty {
         super::Type::Object(fields) => {
-            for name in fields.keys() {
-                add(name, CompletionKind::Property);
+            for (name, field) in fields {
+                let detail = type_detail(field);
+                let kind = if matches!(field, Type::Function { .. }) {
+                    CompletionKind::Method
+                } else {
+                    CompletionKind::Property
+                };
+                add(name, kind, detail);
             }
         }
         super::Type::Array(_) => {
             for name in catalog::prototype_members(ProtoKind::Array) {
-                add(name, CompletionKind::Method);
+                add(name, CompletionKind::Method, None);
             }
         }
         super::Type::String => {
             for name in catalog::prototype_members(ProtoKind::String) {
-                add(name, CompletionKind::Method);
+                add(name, CompletionKind::Method, None);
             }
         }
         super::Type::Number => {
             for name in catalog::prototype_members(ProtoKind::Number) {
-                add(name, CompletionKind::Method);
+                add(name, CompletionKind::Method, None);
+            }
+        }
+        super::Type::Promise(_) => {
+            for name in catalog::prototype_members(ProtoKind::Promise) {
+                add(name, CompletionKind::Method, None);
+            }
+        }
+        super::Type::NativeObject(receiver) => {
+            for name in catalog::builtin_members(receiver).into_iter().flatten() {
+                add(
+                    name,
+                    member_kind(name),
+                    catalog_member_detail(receiver, name),
+                );
             }
         }
         _ => {}
     }
+}
+
+fn type_detail(ty: &Type) -> Option<String> {
+    if matches!(ty, Type::Function { .. }) {
+        Some(ty.display_compact())
+    } else {
+        None
+    }
+}
+
+fn global_detail(global: &GlobalInfo) -> Option<String> {
+    let ty = Type::from_shape(&global.shape);
+    Some(ty.display_compact())
+}
+
+fn catalog_member_detail(receiver: &str, member: &str) -> Option<String> {
+    catalog::builtin_member_type(receiver, member)
+        .map(|builtin| Type::from_builtin(builtin).display_compact())
 }
 
 fn is_member_name(label: &str) -> bool {

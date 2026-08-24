@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use super::{
-    AnalysisContext, Completion, Diagnostic, Document, HostFunctionInfo, HoverInfo, ModuleInfo,
-    Symbol, Type, complete, diagnose, symbols,
+    AnalysisContext, Completion, Diagnostic, Document, GlobalInfo, HostFunctionInfo, HoverInfo,
+    ModuleInfo, Symbol, Type, complete, diagnose, metadata, symbols,
 };
 
 #[derive(Debug, Default)]
@@ -19,6 +19,8 @@ pub struct LanguageService {
     host_functions: HashMap<String, HostFunctionInfo>,
     runtime_handlers: HashMap<String, Type>,
     runtime_values: HashMap<String, String>,
+    manifest_globals: HashMap<String, GlobalInfo>,
+    runtime_globals: HashMap<String, GlobalInfo>,
 }
 
 impl LanguageService {
@@ -43,7 +45,7 @@ impl LanguageService {
 
     pub fn register_module(&mut self, name: impl Into<String>, source: &str) {
         let name = name.into();
-        let document = Document::parse_with_context(source, &self.module_sources, &self.hosts());
+        let document = self.parse_with_globals(source);
         self.modules.insert(
             name.clone(),
             ModuleInfo {
@@ -60,6 +62,31 @@ impl LanguageService {
         self.rebuild_documents();
     }
 
+    /// Register a generic global published by the live runtime. Re-registering
+    /// a name replaces the previous declaration for that runtime generation.
+    pub fn register_runtime_global(&mut self, global: GlobalInfo) {
+        self.runtime_globals.insert(global.name.clone(), global);
+        self.rebuild_documents();
+    }
+
+    /// Register a generic global from the static project manifest.
+    pub fn register_manifest_global(&mut self, global: GlobalInfo) {
+        self.manifest_globals.insert(global.name.clone(), global);
+        self.rebuild_documents();
+    }
+
+    /// Convenience alias for embedders that supply live metadata directly.
+    pub fn register_global(&mut self, global: GlobalInfo) {
+        self.register_runtime_global(global);
+    }
+
+    pub fn clear_runtime_globals(&mut self) {
+        if !self.runtime_globals.is_empty() {
+            self.runtime_globals.clear();
+            self.rebuild_documents();
+        }
+    }
+
     /// Register a JSON shape observed for a VM event handler. The shape is
     /// intentionally metadata-only: it is never executed and only improves
     /// completion/hover for the handler's first parameter.
@@ -69,12 +96,15 @@ impl LanguageService {
         shape_json: &str,
         last_value_json: Option<&str>,
     ) -> bool {
-        let Ok(shape) = serde_json::from_str::<serde_json::Value>(shape_json) else {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(shape_json) else {
+            return false;
+        };
+        let Ok(shape) = metadata::parse_shape(&value) else {
             return false;
         };
         let name = name.into();
         self.runtime_handlers
-            .insert(name.clone(), Type::from_runtime_shape(&shape));
+            .insert(name.clone(), Type::from_shape(&shape));
         if let Some(value_json) = last_value_json
             && let Ok(value) = serde_json::from_str::<serde_json::Value>(value_json)
             && let Ok(pretty) = serde_json::to_string_pretty(&value)
@@ -120,6 +150,8 @@ impl LanguageService {
             exposed_functions: self.hosts(),
             modules: self.modules.values().cloned().collect(),
             runtime_handlers: self.runtime_handlers.clone(),
+            runtime_globals: self.runtime_globals.clone(),
+            manifest_globals: self.manifest_globals.clone(),
         }
     }
 
@@ -130,13 +162,19 @@ impl LanguageService {
     }
 
     fn parse(&self, source: &str) -> Document {
-        Document::parse_with_context_and_runtime(
+        let globals = self.context().resolved_globals();
+        Document::parse_with_context_and_runtime_and_globals(
             source,
             &self.module_sources,
             &self.hosts(),
             &self.runtime_handlers,
             &self.runtime_values,
+            &globals,
         )
+    }
+
+    fn parse_with_globals(&self, source: &str) -> Document {
+        self.parse(source)
     }
 
     fn rebuild_documents(&mut self) {
@@ -155,6 +193,29 @@ impl LanguageService {
 mod tests {
     use super::*;
     use crate::lang::HostFunctionParameter;
+    use crate::lang::{ParameterInfo, PropertyInfo, Shape};
+    use std::collections::BTreeMap;
+
+    fn global(name: &str, properties: Vec<(&str, Shape, Option<&str>)>) -> GlobalInfo {
+        GlobalInfo {
+            name: name.into(),
+            shape: Shape::Object(
+                properties
+                    .into_iter()
+                    .map(|(name, shape, documentation)| {
+                        (
+                            name.into(),
+                            PropertyInfo {
+                                shape,
+                                documentation: documentation.map(str::to_string),
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+            documentation: None,
+        }
+    }
 
     #[test]
     fn document_lifecycle_rebuilds_analysis() {
@@ -260,5 +321,161 @@ mod tests {
         assert!(hover.detail.contains("parameter"));
         assert!(hover.detail.contains("platform"));
         assert!(hover.documentation.as_deref().unwrap().contains("Ada"));
+    }
+
+    #[test]
+    fn generic_globals_support_nested_completion_hover_signatures_and_docs() {
+        let mut service = LanguageService::new();
+        service.register_runtime_global(global(
+            "customApi",
+            vec![(
+                "user",
+                Shape::Object(BTreeMap::from([
+                    (
+                        "fetchUser".into(),
+                        PropertyInfo {
+                            shape: Shape::Function {
+                                params: vec![ParameterInfo {
+                                    name: "id".into(),
+                                    shape: Shape::String,
+                                }],
+                                returns: Box::new(Shape::Object(BTreeMap::from([(
+                                    "name".into(),
+                                    PropertyInfo {
+                                        shape: Shape::String,
+                                        documentation: None,
+                                    },
+                                )]))),
+                                async_fn: false,
+                            },
+                            documentation: Some("Fetches one user.".into()),
+                        },
+                    ),
+                    (
+                        "loadAsync".into(),
+                        PropertyInfo {
+                            shape: Shape::Function {
+                                params: vec![],
+                                returns: Box::new(Shape::String),
+                                async_fn: true,
+                            },
+                            documentation: None,
+                        },
+                    ),
+                    (
+                        "names".into(),
+                        PropertyInfo {
+                            shape: Shape::Array(Box::new(Shape::String)),
+                            documentation: None,
+                        },
+                    ),
+                ])),
+                None,
+            )],
+        ));
+        service.open(
+            "file:///custom.js",
+            "customApi.user.fetchUser; customApi.user.; customApi.user.loadAsync; customApi.user.names;",
+        );
+
+        let source = service.source("file:///custom.js").unwrap();
+        let nested_offset = source.find("customApi.user.").unwrap() + "customApi.user.".len();
+        let nested = service
+            .complete("file:///custom.js", nested_offset, &service.context())
+            .unwrap();
+        assert!(nested.iter().any(|item| item.label == "fetchUser"));
+        let fetch = nested
+            .iter()
+            .find(|item| item.label == "fetchUser")
+            .unwrap();
+        assert_eq!(
+            fetch.detail.as_deref(),
+            Some("(id: string) => { name: string }")
+        );
+
+        let fetch_offset = source.rfind("fetchUser").unwrap() + 2;
+        let fetch_hover = service.hover("file:///custom.js", fetch_offset).unwrap();
+        assert_eq!(
+            fetch_hover.detail,
+            "(property) fetchUser: (id: string) => { name: string }"
+        );
+        assert_eq!(
+            fetch_hover.documentation.as_deref(),
+            Some("Fetches one user.")
+        );
+
+        let async_offset = source.rfind("loadAsync").unwrap() + 2;
+        assert!(
+            service
+                .hover("file:///custom.js", async_offset)
+                .unwrap()
+                .detail
+                .contains("() => Promise<string>")
+        );
+        let names_offset = source.rfind("names").unwrap() + 2;
+        assert_eq!(
+            service
+                .hover("file:///custom.js", names_offset)
+                .unwrap()
+                .detail,
+            "(property) names: string[]"
+        );
+    }
+
+    #[test]
+    fn generic_global_precedence_is_local_then_runtime_then_manifest() {
+        let mut service = LanguageService::new();
+        service.register_manifest_global(global("api", vec![("version", Shape::String, None)]));
+        service.register_runtime_global(global("api", vec![("version", Shape::Number, None)]));
+        service.register_runtime_global(global("Math", vec![("runtimeOnly", Shape::Number, None)]));
+        service.register_runtime_global(global("ipc", vec![("runtimeOnly", Shape::Number, None)]));
+        service.open(
+            "file:///precedence.js",
+            "const Math = { custom: 1 }; Math.; const ipc = { localOnly: true }; ipc.; window.ipc.; api.version;",
+        );
+
+        let source = service.source("file:///precedence.js").unwrap();
+        let math_offset = source.find("Math.").unwrap() + "Math.".len();
+        let math = service
+            .complete("file:///precedence.js", math_offset, &service.context())
+            .unwrap();
+        assert!(math.iter().any(|item| item.label == "custom"));
+        assert!(!math.iter().any(|item| item.label == "runtimeOnly"));
+
+        let ipc_offset = source.find("ipc.").unwrap() + "ipc.".len();
+        let ipc = service
+            .complete("file:///precedence.js", ipc_offset, &service.context())
+            .unwrap();
+        assert!(ipc.iter().any(|item| item.label == "localOnly"));
+
+        let alias_offset = source.find("window.ipc.").unwrap() + "window.ipc.".len();
+        let alias = service
+            .complete("file:///precedence.js", alias_offset, &service.context())
+            .unwrap();
+        assert!(alias.iter().any(|item| item.label == "runtimeOnly"));
+        assert!(!alias.iter().any(|item| item.label == "localOnly"));
+
+        let version_offset = source.rfind("version").unwrap() + 2;
+        assert!(
+            service
+                .hover("file:///precedence.js", version_offset)
+                .unwrap()
+                .detail
+                .contains("number")
+        );
+        service.clear_runtime_globals();
+        let version_offset = service
+            .source("file:///precedence.js")
+            .unwrap()
+            .rfind("version")
+            .unwrap()
+            + 2;
+        assert!(
+            service
+                .hover("file:///precedence.js", version_offset)
+                .unwrap()
+                .detail
+                .contains("string")
+        );
     }
 }

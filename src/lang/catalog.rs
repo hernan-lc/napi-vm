@@ -19,10 +19,6 @@ pub const GLOBALS: &[&str] = &[
     "Date",
     "Symbol",
     "console",
-    // Optional host-provided IPC facade installed by the examples' VmIpc
-    // bridge. Keeping it in the shared catalog makes completion available
-    // while the user is typing before a runtime snapshot exists.
-    "ipc",
     "Error",
     "TypeError",
     "RangeError",
@@ -94,6 +90,7 @@ pub enum BuiltinType {
     Number,
     String,
     Boolean,
+    Undefined,
     Function { result: &'static str },
     NativeObject(&'static str),
 }
@@ -102,8 +99,21 @@ pub enum BuiltinType {
 /// over this catalog in the document analyzer.
 pub fn builtin_global_type(name: &str) -> Option<BuiltinType> {
     match name {
+        "Math" => Some(BuiltinType::NativeObject("Math")),
+        "JSON" => Some(BuiltinType::NativeObject("JSON")),
+        "Object" => Some(BuiltinType::NativeObject("Object")),
+        "Array" => Some(BuiltinType::NativeObject("Array")),
+        "String" => Some(BuiltinType::NativeObject("String")),
+        "Number" => Some(BuiltinType::NativeObject("Number")),
+        "Boolean" => Some(BuiltinType::NativeObject("Boolean")),
+        "Promise" => Some(BuiltinType::NativeObject("Promise")),
         "Date" => Some(BuiltinType::NativeObject("Date")),
-        "ipc" => Some(BuiltinType::NativeObject("ipc")),
+        "Symbol" => Some(BuiltinType::NativeObject("Symbol")),
+        "console" => Some(BuiltinType::NativeObject("console")),
+        "NaN" | "Infinity" => Some(BuiltinType::Number),
+        "undefined" => Some(BuiltinType::Undefined),
+        "parseInt" | "parseFloat" => Some(BuiltinType::Function { result: "number" }),
+        "isNaN" | "isFinite" => Some(BuiltinType::Function { result: "boolean" }),
         _ => None,
     }
 }
@@ -112,9 +122,6 @@ pub fn builtin_global_type(name: &str) -> Option<BuiltinType> {
 pub fn builtin_member_type(receiver: &str, member: &str) -> Option<BuiltinType> {
     match (receiver, member) {
         ("Date", "now" | "parse" | "UTC") => Some(BuiltinType::Function { result: "number" }),
-        ("ipc", "invoke" | "invokeAsync" | "send" | "commands") => {
-            Some(BuiltinType::Function { result: "unknown" })
-        }
         _ => None,
     }
 }
@@ -182,7 +189,6 @@ pub fn builtin_members(receiver: &str) -> Option<&'static [&'static str]> {
             "keyFor",
         ],
         "String" => &["fromCharCode"],
-        "ipc" => &["invoke", "invokeAsync", "send", "commands"],
         _ => return None,
     })
 }
