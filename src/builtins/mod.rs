@@ -459,18 +459,18 @@ fn arr_items(this: &Value) -> Vec<Value> {
     }
 }
 
-fn str_this(interp: &Interpreter, this: &Value) -> String {
+fn str_this(interp: &Interpreter, this: &Value) -> Result<String, VmErr> {
     match this {
-        Value::String(s) => s.clone(),
+        Value::String(s) => Ok(s.clone()),
         _ => interp.vs(this),
     }
 }
 
 /// Display a value the way `Array.prototype.join` / string coercion does:
 /// `null`/`undefined` become the empty string.
-fn join_str(interp: &Interpreter, v: &Value) -> String {
+fn join_str(interp: &Interpreter, v: &Value) -> Result<String, VmErr> {
     match v {
-        Value::Null | Value::Undefined => String::new(),
+        Value::Null | Value::Undefined => Ok(String::new()),
         _ => interp.vs(v),
     }
 }
@@ -490,17 +490,25 @@ fn global_is_finite(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
 
 /// Format console arguments the way `console.log` does: each value stringified
 /// and joined with a single space.
-fn console_fmt(interp: &Interpreter, a: &[Value]) -> String {
-    a.iter().map(|v| interp.vs(v)).collect::<Vec<_>>().join(" ")
+fn console_fmt(interp: &Interpreter, a: &[Value]) -> Result<String, VmErr> {
+    let mut output = crate::format::BoundedOutput::new(crate::value::MAX_STRING_LEN);
+    for (index, value) in a.iter().enumerate() {
+        if index > 0 {
+            output.push_char(' ')?;
+        }
+        let rendered = interp.vs(value)?;
+        output.push_str(&rendered)?;
+    }
+    Ok(output.finish())
 }
 
 fn console_out(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    println!("{}", console_fmt(interp, &a));
+    println!("{}", console_fmt(interp, &a)?);
     Ok(Value::Undefined)
 }
 
 fn console_err(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    eprintln!("{}", console_fmt(interp, &a));
+    eprintln!("{}", console_fmt(interp, &a)?);
     Ok(Value::Undefined)
 }
 
@@ -539,11 +547,14 @@ fn console_dir(_interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Val
         &a[..]
     };
 
-    let s = values
-        .iter()
-        .map(|v| crate::format::to_string_pretty_colored(v, colors))
-        .collect::<Vec<_>>()
-        .join(" ");
-    println!("{}", s);
+    let mut output = crate::format::BoundedOutput::new(crate::value::MAX_STRING_LEN);
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            output.push_char(' ')?;
+        }
+        let rendered = crate::format::try_to_string_pretty_colored(value, colors)?;
+        output.push_str(&rendered)?;
+    }
+    println!("{}", output.finish());
     Ok(Value::Undefined)
 }

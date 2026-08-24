@@ -186,7 +186,7 @@ fn array_join(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
     let sep = match a.first() {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Undefined) | None => ",".to_string(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
     };
     let mut out = String::new();
     for (index, value) in items.iter().enumerate() {
@@ -196,7 +196,7 @@ fn array_join(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
             }
             out.push_str(&sep);
         }
-        let part = join_str(interp, value);
+        let part = join_str(interp, value)?;
         if out.len().saturating_add(part.len()) > crate::value::MAX_STRING_LEN {
             return Err(crate::value::limit_err("Maximum string length exceeded"));
         }
@@ -354,7 +354,22 @@ fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
             merge_sort_values(interp, &mut sorted, &cmp)?;
         } else {
             // Default: lexicographic comparison of the stringified elements.
-            sorted.sort_by_key(|x| interp.vs(x));
+            let mut format_error = None;
+            sorted.sort_by(|left, right| {
+                if format_error.is_some() {
+                    return Ordering::Equal;
+                }
+                match (interp.vs(left), interp.vs(right)) {
+                    (Ok(left), Ok(right)) => left.cmp(&right),
+                    (Err(error), _) | (_, Err(error)) => {
+                        format_error = Some(error);
+                        Ordering::Equal
+                    }
+                }
+            });
+            if let Some(error) = format_error {
+                return Err(error);
+            }
         }
         let mut current = items.borrow_mut();
         // Sorting uses the array length captured on entry. If a comparator

@@ -72,7 +72,8 @@ fn value_to_js_d(v: &Value, depth: usize) -> Result<JsValue, VmErr> {
             // A null prototype prevents a guest-controlled `__proto__` key
             // from invoking Object.prototype's legacy setter while exporting
             // a VM object to browser JavaScript.
-            let obj = js_sys::Object::create(&JsValue::NULL);
+            let null_prototype: js_sys::Object = JsValue::NULL.unchecked_into();
+            let obj = js_sys::Object::create(&null_prototype);
             for (k, val) in props.borrow().iter() {
                 js_sys::Reflect::set(&obj, &JsValue::from_str(k), &value_to_js_d(val, depth + 1)?)
                     .map_err(|_| VmErr::Msg("failed to set object property".to_string()))?;
@@ -80,7 +81,8 @@ fn value_to_js_d(v: &Value, depth: usize) -> Result<JsValue, VmErr> {
             obj.into()
         }
         Value::Error(e) => {
-            let obj = js_sys::Object::create(&JsValue::NULL);
+            let null_prototype: js_sys::Object = JsValue::NULL.unchecked_into();
+            let obj = js_sys::Object::create(&null_prototype);
             let _ = js_sys::Reflect::set(
                 &obj,
                 &JsValue::from_str("name"),
@@ -461,8 +463,8 @@ impl WasmVm {
     /// the return value are marshalled across the boundary; a thrown error
     /// propagates into the VM as a catchable exception. The name also becomes a
     /// completion candidate.
-    pub fn expose_function(&mut self, name: &str, func: js_sys::Function) {
-        self.register_exposed_function(name, func, HostFunctionInfo::unknown(name));
+    pub fn expose_function(&mut self, name: &str, func: js_sys::Function) -> Result<(), JsValue> {
+        self.register_exposed_function(name, func, HostFunctionInfo::unknown(name))
     }
 
     /// Expose a browser function and provide language-service metadata.
@@ -475,8 +477,7 @@ impl WasmVm {
         metadata: JsValue,
     ) -> Result<(), JsValue> {
         let info = host_function_info_from_js(name, &metadata)?;
-        self.register_exposed_function(name, func, info);
-        Ok(())
+        self.register_exposed_function(name, func, info)
     }
 
     fn register_exposed_function(
@@ -484,15 +485,17 @@ impl WasmVm {
         name: &str,
         func: js_sys::Function,
         info: HostFunctionInfo,
-    ) {
+    ) -> Result<(), JsValue> {
         let id = self.bridge.register(func);
-        self.interp.global.borrow_mut().set(
+        if let Err(error) = self.interp.set_global_checked(
             name,
             Value::HostFunction {
                 name: name.into(),
                 id,
             },
-        );
+        ) {
+            return Err(JsValue::from_str(&error.to_string()));
+        }
         if let Some(existing) = self
             .exposed_functions
             .iter_mut()
@@ -502,6 +505,7 @@ impl WasmVm {
         } else {
             self.exposed_functions.push(info);
         }
+        Ok(())
     }
 
     /// Register an importable module. Its `export`s are recorded so that
@@ -549,8 +553,10 @@ impl WasmVm {
 
     /// Read a global as its pretty-printed string (`"undefined"` if absent).
     pub fn get_global(&self, name: &str) -> String {
-        match self.interp.global.borrow().get(name) {
-            Some(val) => crate::format::to_string(&val),
+        match self.interp.global_value(name) {
+            Some(val) => {
+                crate::format::try_to_string(&val).unwrap_or_else(|error| error.to_string())
+            }
             None => "undefined".to_string(),
         }
     }
@@ -681,7 +687,10 @@ impl WasmVm {
 
     fn build_run_result(&self, result: Result<Value, VmErr>) -> JsValue {
         let (ok, value, error) = match result {
-            Ok(v) => (true, crate::format::to_string(&v), String::new()),
+            Ok(v) => match crate::format::try_to_string(&v) {
+                Ok(value) => (true, value, String::new()),
+                Err(error) => (false, String::new(), error.to_string()),
+            },
             Err(e) => (false, String::new(), e.to_string()),
         };
         let obj = js_sys::Object::new();

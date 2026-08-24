@@ -190,6 +190,74 @@ test("string doubling past the cap throws a catchable RangeError", () => {
   expect(r).toContain("Maximum string length exceeded");
 });
 
+test("return formatting cannot amplify a shared graph past the string cap", () => {
+  const vm = new Vm();
+  expect(() =>
+    vm.run(`
+      let child = [];
+      for (let i = 0; i < 10000; i++) child.push(1);
+      let outer = [];
+      for (let i = 0; i < 2048; i++) outer.push(child);
+      outer;
+    `),
+  ).toThrow(/Maximum string length exceeded/);
+});
+
+test("Interpreter-style string coercion is bounded for shared arrays", () => {
+  const vm = new Vm();
+  const r = vm.run(`
+    let child = [];
+    for (let i = 0; i < 10000; i++) child.push(1);
+    let outer = [];
+    for (let i = 0; i < 2048; i++) outer.push(child);
+    try { '' + outer; } catch (e) { e.message; }
+  `);
+  expect(r).toContain("Maximum string length exceeded");
+});
+
+test("for-of over a maximum-sized string is lazy and Unicode-safe", () => {
+  const vm = new Vm();
+  expect(
+    vm.run(`
+      let s = 'x'.repeat(16 * 1024 * 1024);
+      let first = '';
+      for (const c of s) { first = c; break; }
+      first;
+    `),
+  ).toBe("x");
+  expect(vm.run(`
+    let s = 'x'.repeat(16 * 1024 * 1024);
+    let it = s[Symbol.iterator]();
+    it.next().value;
+  `)).toBe("x");
+  expect(vm.run(`
+    let out = [];
+    for (const c of 'a') out.push(c);
+    out.join('|');
+  `)).toBe("a");
+});
+
+test("dynamic global creation is bounded through all global aliases", () => {
+  for (const alias of ["globalThis", "window", "self"]) {
+    const vm = new Vm();
+    const r = vm.run(`
+      try {
+        for (let i = 0; i < 300000; i++) ${alias}['guest_' + i] = i;
+      } catch (e) { e.message; }
+    `);
+    expect(r).toContain("Maximum global binding count exceeded");
+  }
+});
+
+test("updating an existing global does not consume binding quota", () => {
+  const vm = new Vm();
+  expect(vm.run(`
+    let x = 0;
+    for (let i = 0; i < 300000; i++) x = i;
+    x;
+  `)).toBe("299999");
+});
+
 test("deeply nested value builds fine and teardown does not crash", () => {
   const vm = new Vm();
   // 300k-deep nesting: construction is iterative; the old derived Drop would

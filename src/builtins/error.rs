@@ -58,7 +58,7 @@ fn error_ctor(interp: &mut Interpreter, this: Value, args: Vec<Value>) -> Result
     };
     let msg = match args.first() {
         None | Some(Value::Undefined) => String::new(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
     };
     this.set_prop("message".to_string(), Value::String(msg))?;
     this.set_prop("name".to_string(), Value::String(name))?;

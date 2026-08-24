@@ -19,6 +19,11 @@ pub const MAX_ARRAY_LEN: usize = 262_144;
 /// strings are capped.
 pub const MAX_OBJECT_PROPS: usize = 262_144;
 
+/// Hard cap on guest-created bindings in the persistent user-global scope.
+/// Built-ins live in a separate parent environment and do not consume this
+/// quota; local function/catch frames are also intentionally unaffected.
+pub const MAX_GLOBAL_BINDINGS: usize = MAX_OBJECT_PROPS;
+
 /// Hard cap (bytes) on any string the VM produces — concatenation, `repeat`,
 /// `join`, `replaceAll`, `JSON.stringify`. Same rationale as `MAX_ARRAY_LEN`.
 pub const MAX_STRING_LEN: usize = 16 * 1024 * 1024;
@@ -50,6 +55,14 @@ pub struct FunctionData {
     /// Whether the body references `arguments`. Frames for functions that
     /// never read it skip building the (detached) arguments object.
     pub uses_arguments: bool,
+}
+
+/// Lazy state for a string iterator. The source is shared and the cursor is a
+/// UTF-8 byte offset, so `next()` creates only the one scalar value requested.
+#[derive(Debug, Clone)]
+pub struct StringIteratorData {
+    pub source: Rc<str>,
+    pub cursor: usize,
 }
 
 /// Payload of `Value::Class`, boxed so the enum itself stays small.
@@ -110,6 +123,9 @@ pub enum Value {
     },
     Generator {
         inner: Rc<RefCell<GeneratorInner>>,
+    },
+    StringIterator {
+        inner: Rc<RefCell<StringIteratorData>>,
     },
     /// Sentinel returned when an async host function is called. The interpreter
     /// recognizes this at `await` and parks the VM thread until the host
@@ -299,6 +315,7 @@ impl Value {
                 "name" => Some(Value::String(e.name.clone())),
                 _ => None,
             },
+            Value::StringIterator { .. } => None,
             _ => None,
         }
     }
@@ -351,6 +368,7 @@ impl Value {
             }
             Value::String(_) => key == "length",
             Value::Error(_) => key == "message" || key == "name",
+            Value::StringIterator { .. } => false,
             _ => false,
         }
     }
@@ -360,6 +378,7 @@ impl Value {
             Value::Bool(b) => *b,
             Value::Number(n) => *n != 0.0 && !n.is_nan(),
             Value::String(s) => !s.is_empty(),
+            Value::StringIterator { .. } => true,
             Value::Null | Value::Undefined => false,
             _ => true,
         }
@@ -376,6 +395,7 @@ impl Value {
                 }
             }
             Value::String(s) => s.parse().unwrap_or(0.0),
+            Value::StringIterator { .. } => 0.0,
             Value::Null => 0.0,
             Value::Undefined => f64::NAN,
             _ => 0.0,

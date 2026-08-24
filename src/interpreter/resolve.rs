@@ -115,6 +115,7 @@ impl Interpreter {
             | Value::Bool(_)
             | Value::Error(_)
             | Value::Generator { .. }
+            | Value::StringIterator { .. }
             | Value::HostPending { .. }
             | Value::Symbol(_) => {}
         }
@@ -135,9 +136,11 @@ impl Interpreter {
     pub(super) fn prop(&self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         match (o, p) {
             // `window.x` / `globalThis.x` / `self.x` read a real global.
-            (Value::GlobalObject, Value::String(k)) => {
-                Ok(self.global.borrow().get(k).unwrap_or(Value::Undefined))
-            }
+            (Value::GlobalObject, Value::String(k)) => Ok(self
+                .persistent_global
+                .borrow()
+                .get(k)
+                .unwrap_or(Value::Undefined)),
             (Value::Object { .. }, Value::String(k)) => {
                 let mut current = o;
                 for _ in 0..=crate::value::MAX_PROTOTYPE_DEPTH {
@@ -258,6 +261,12 @@ impl Interpreter {
                     Ok(Value::Undefined)
                 }
             }
+            (Value::StringIterator { .. }, Value::String(k)) if k == "next" => {
+                Ok(Value::NativeFunction {
+                    name: "next".into(),
+                    callable: string_iter_next,
+                })
+            }
             (Value::NativeFunction { name, .. }, Value::String(k)) => {
                 // Well-known symbols and static methods on `Symbol`. A native
                 // function cannot carry properties, so they are resolved here.
@@ -309,6 +318,12 @@ impl Interpreter {
                 Ok(Value::NativeFunction {
                     name: "[Symbol.iterator]".into(),
                     callable: generator_iter_self,
+                })
+            }
+            (Value::StringIterator { .. }, Value::Symbol(desc)) if desc == "Symbol.iterator" => {
+                Ok(Value::NativeFunction {
+                    name: "[Symbol.iterator]".into(),
+                    callable: string_iter_self,
                 })
             }
             // Object symbol-keyed lookup: `obj[Symbol.iterator]` resolves the
@@ -467,36 +482,54 @@ fn array_iter_next(
 
 /// `[Symbol.iterator]()` on a string returns a character iterator.
 fn string_iter(
-    interp: &mut super::Interpreter,
+    _interp: &mut super::Interpreter,
     this: super::Value,
     _args: Vec<super::Value>,
 ) -> Result<super::Value, crate::error::VmErr> {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    let chars: Vec<super::Value> = match &this {
-        super::Value::String(s) => s
-            .chars()
-            .map(|c| super::Value::String(c.to_string()))
-            .collect(),
-        _ => vec![],
+    let source: Rc<str> = match &this {
+        super::Value::String(s) => Rc::from(s.clone()),
+        _ => Rc::from(""),
     };
 
-    let iter_obj = super::Value::object(vec![
-        (
-            "__items__".to_string(),
-            super::Value::Array(Rc::new(RefCell::new(chars))),
-        ),
-        ("__cursor__".to_string(), super::Value::Number(0.0)),
-        (
-            "next".to_string(),
-            super::Value::NativeFunction {
-                name: "next".into(),
-                callable: array_iter_next, // same logic: walk __items__ by __cursor__
-            },
-        ),
-    ]);
+    Ok(super::Value::StringIterator {
+        inner: Rc::new(RefCell::new(crate::value::StringIteratorData {
+            source,
+            cursor: 0,
+        })),
+    })
+}
 
-    let _ = interp;
-    Ok(iter_obj)
+/// `next()` for the lazy string iterator. The cursor is a UTF-8 byte offset,
+/// but the yielded value is always one complete Unicode scalar value.
+fn string_iter_next(
+    _interp: &mut super::Interpreter,
+    this: super::Value,
+    _args: Vec<super::Value>,
+) -> Result<super::Value, crate::error::VmErr> {
+    let super::Value::StringIterator { inner } = &this else {
+        return Ok(super::call::iter_result(super::Value::Undefined, true));
+    };
+    let mut state = inner.borrow_mut();
+    let Some(rest) = state.source.get(state.cursor..) else {
+        return Ok(super::call::iter_result(super::Value::Undefined, true));
+    };
+    let Some(ch) = rest.chars().next() else {
+        return Ok(super::call::iter_result(super::Value::Undefined, true));
+    };
+    state.cursor += ch.len_utf8();
+    Ok(super::call::iter_result(
+        super::Value::String(ch.to_string()),
+        false,
+    ))
+}
+
+fn string_iter_self(
+    _interp: &mut super::Interpreter,
+    this: super::Value,
+    _args: Vec<super::Value>,
+) -> Result<super::Value, crate::error::VmErr> {
+    Ok(this)
 }

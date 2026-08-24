@@ -36,6 +36,10 @@ pub const DEFAULT_LOOP_BUDGET: u64 = 100_000_000;
 
 pub struct Interpreter {
     pub global: Env,
+    /// Persistent user-global scope. `global` temporarily points at function
+    /// and catch frames while those bodies execute, but `globalThis` aliases
+    /// and top-level binding quotas must always target this frame.
+    pub(crate) persistent_global: Env,
     pub modules: HashMap<String, Module>,
     /// Optional bridge for calling host (Node.js) functions from inside the VM.
     /// Attached by the N-API layer when functions are exposed via
@@ -79,8 +83,10 @@ impl Default for Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
+        let global = Rc::new(RefCell::new(Environment::global(None)));
         Self {
-            global: Rc::new(RefCell::new(Environment::new())),
+            global: global.clone(),
+            persistent_global: global,
             modules: HashMap::new(),
             host: None,
             cur_mod: None,
@@ -102,8 +108,54 @@ impl Interpreter {
         let mut interp = Self::new();
         let builtins = Rc::new(RefCell::new(Environment::new()));
         crate::builtins::setup_builtins(&builtins);
-        interp.global = Rc::new(RefCell::new(Environment::child(builtins)));
+        let global = Rc::new(RefCell::new(Environment::global(Some(builtins))));
+        interp.global = global.clone();
+        interp.persistent_global = global;
         interp
+    }
+
+    /// Insert or replace a binding in the currently active scope. The
+    /// persistent global frame is checked; local frames retain their fast
+    /// infallible insertion path.
+    pub(crate) fn set_binding(&mut self, name: &str, value: Value) -> Result<(), VmErr> {
+        if Rc::ptr_eq(&self.global, &self.persistent_global) {
+            self.global.borrow_mut().try_set(name, value)
+        } else {
+            self.global.borrow_mut().set(name, value);
+            Ok(())
+        }
+    }
+
+    /// Assign an identifier, creating it in the active scope when it does not
+    /// already exist. A new binding in the persistent global frame consumes
+    /// one global quota entry; updates do not.
+    pub(crate) fn assign_or_set_binding(&mut self, name: &str, value: Value) -> Result<(), VmErr> {
+        let is_persistent_global = Rc::ptr_eq(&self.global, &self.persistent_global);
+        let mut env = self.global.borrow_mut();
+        if !env.assign(name, value.clone()) {
+            if is_persistent_global {
+                env.try_set(name, value)?;
+            } else {
+                env.set(name, value);
+            }
+        }
+        Ok(())
+    }
+
+    /// Set a property through `globalThis`, `window`, or `self`. Reads and
+    /// writes always target the persistent global frame, even when guest code
+    /// is currently executing inside a function/catch environment.
+    pub(crate) fn set_global_checked(&mut self, name: &str, value: Value) -> Result<(), VmErr> {
+        let mut global = self.persistent_global.borrow_mut();
+        if !global.assign(name, value.clone()) {
+            global.try_set(name, value)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(feature = "napi", feature = "wasm"))]
+    pub(crate) fn global_value(&self, name: &str) -> Option<Value> {
+        self.persistent_global.borrow().get(name)
     }
 
     pub fn run(&mut self, stmts: &[Statement]) -> Result<Value, VmErr> {
@@ -203,7 +255,7 @@ impl Interpreter {
     /// Return all global variable names (user-defined + builtins). Used by
     /// `Object.getOwnPropertyNames(window)`.
     pub fn global_keys(&self) -> Vec<String> {
-        self.global.borrow().all_keys()
+        self.persistent_global.borrow().all_keys()
     }
 }
 
@@ -225,7 +277,7 @@ mod tests {
     fn eval_str(src: &str) -> String {
         let interp = Interpreter::new();
         match eval(src) {
-            Ok(v) => interp.vs(&v),
+            Ok(v) => interp.vs(&v).unwrap_or_else(|e| format!("ERROR: {}", e)),
             Err(e) => format!("ERROR: {}", e),
         }
     }

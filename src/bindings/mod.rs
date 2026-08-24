@@ -18,6 +18,7 @@ mod vm;
 
 pub use crate::format::{
     PrintOptions, Printer, colors_enabled, to_string, to_string_pretty, to_string_pretty_colored,
+    try_to_string, try_to_string_pretty, try_to_string_pretty_colored, try_to_string_with_limit,
 };
 pub use language_service::LanguageService;
 pub use vm::{VM, create_vm, debug_parse, run_code, run_source};

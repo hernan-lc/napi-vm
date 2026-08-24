@@ -17,7 +17,7 @@ use napi::{Env, JsValue, sys};
 use napi_derive::napi;
 
 use crate::error::VmErr;
-use crate::format::to_string;
+use crate::format::try_to_string;
 use crate::interpreter::Interpreter;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -29,7 +29,7 @@ use super::marshal::{chk, from_napi, make_str, to_napi};
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
     let mut interp = Interpreter::with_builtins();
     interp.is_main = is_main;
-    execute_source(&mut interp, source).map(|value| to_string(&value))
+    execute_source(&mut interp, source).and_then(|value| try_to_string(&value))
 }
 
 /// All interpreter and bridge state lives here. It is never cloned or exposed
@@ -190,7 +190,7 @@ impl VM {
         let state = self.state.clone();
         state.runtime.with_mut(|runtime| {
             execute_source(&mut runtime.interp, &source)
-                .map(|value| to_string(&value))
+                .and_then(|value| try_to_string(&value))
                 .map_err(|error| {
                     napi::Error::from_reason(runtime.interp.enrich_error(error, None).to_string())
                 })
@@ -234,15 +234,17 @@ impl VM {
     #[napi]
     pub fn get_global(&self, name: String) -> napi::Result<String> {
         let _busy = self.state.try_start()?;
-        Ok(self.state.runtime.with_mut(|runtime| {
-            runtime
-                .interp
-                .global
-                .borrow()
-                .get(&name)
-                .map(|value| to_string(&value))
-                .unwrap_or_else(|| "undefined".to_string())
-        }))
+        self.state
+            .runtime
+            .with_mut(|runtime| -> napi::Result<String> {
+                Ok(runtime
+                    .interp
+                    .global_value(&name)
+                    .map(|value| try_to_string(&value))
+                    .transpose()
+                    .map_err(|error| napi::Error::from_reason(error.to_string()))?
+                    .unwrap_or_else(|| "undefined".to_string()))
+            })
     }
 
     #[napi]
@@ -250,15 +252,18 @@ impl VM {
         let _busy = self.state.try_start()?;
         let value = from_napi(env.raw(), value.raw())
             .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-        self.state.runtime.with_mut(|runtime| {
-            if let Some(Value::HostFunction { id, .. }) = runtime.interp.global.borrow().get(&name)
+        self.state.runtime.with_mut(|runtime| -> napi::Result<()> {
+            if let Some(Value::HostFunction { id, .. }) = runtime.interp.global_value(&name)
                 && let Some(bridge) = Self::current_bridge(runtime)
             {
                 bridge.unregister(id);
             }
-            runtime.interp.global.borrow_mut().set(&name, value);
-        });
-        Ok(())
+            runtime
+                .interp
+                .set_global_checked(&name, value)
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+            Ok(())
+        })
     }
 
     #[napi]
@@ -302,7 +307,7 @@ impl VM {
 
         let state = self.state.clone();
         state.runtime.with_mut(|runtime| {
-            if let Some(Value::HostFunction { id, .. }) = runtime.interp.global.borrow().get(&name)
+            if let Some(Value::HostFunction { id, .. }) = runtime.interp.global_value(&name)
                 && let Some(bridge) = Self::current_bridge(runtime)
             {
                 bridge.unregister(id);
@@ -315,13 +320,16 @@ impl VM {
                 bridge.register(raw)
             }
             .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-            runtime.interp.global.borrow_mut().set(
-                &name,
-                Value::HostFunction {
-                    name: name.as_str().into(),
-                    id,
-                },
-            );
+            runtime
+                .interp
+                .set_global_checked(
+                    &name,
+                    Value::HostFunction {
+                        name: name.as_str().into(),
+                        id,
+                    },
+                )
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
             Ok(())
         })
     }
@@ -487,8 +495,8 @@ impl VM {
     pub fn remove_global(&mut self, name: String) -> napi::Result<bool> {
         let _busy = self.state.try_start()?;
         Ok(self.state.runtime.with_mut(|runtime| {
-            let old = runtime.interp.global.borrow().get(&name);
-            let removed = runtime.interp.global.borrow_mut().remove(&name);
+            let old = runtime.interp.global_value(&name);
+            let removed = runtime.interp.persistent_global.borrow_mut().remove(&name);
             if removed
                 && let Some(Value::HostFunction { id, .. }) = old
                 && let Some(bridge) = Self::current_bridge(runtime)
@@ -505,7 +513,7 @@ impl VM {
         Ok(self
             .state
             .runtime
-            .with_mut(|runtime| runtime.interp.global.borrow().has(&name)))
+            .with_mut(|runtime| runtime.interp.global_value(&name).is_some()))
     }
 
     #[napi]
@@ -530,7 +538,7 @@ impl VM {
             );
         }
         self.state.runtime.with_mut(|runtime| {
-            let callee = runtime.interp.global.borrow().get(&name).ok_or_else(|| {
+            let callee = runtime.interp.global_value(&name).ok_or_else(|| {
                 napi::Error::from_reason(format!("callFunction: '{}' is not defined", name))
             })?;
             runtime.interp.begin_execution();
@@ -565,18 +573,18 @@ fn async_result_string(value: Value) -> Result<String, String> {
         Value::Promise {
             state: PromiseState::Fulfilled,
             value,
-        } => Ok(value
+        } => value
             .as_ref()
-            .map(|value| to_string(value))
-            .unwrap_or_else(|| "undefined".to_string())),
+            .map(|value| try_to_string(value).map_err(|e| e.to_string()))
+            .unwrap_or_else(|| Ok("undefined".to_string())),
         Value::Promise {
             state: PromiseState::Rejected,
             value,
-        } => Err(value
+        } => value
             .as_ref()
-            .map(|value| to_string(value))
-            .unwrap_or_else(|| "undefined".to_string())),
-        _ => Ok(to_string(&value)),
+            .map(|value| try_to_string(value).map_err(|e| e.to_string()))
+            .unwrap_or_else(|| Err("undefined".to_string())),
+        _ => try_to_string(&value).map_err(|e| e.to_string()),
     }
 }
 

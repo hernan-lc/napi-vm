@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use smallvec::SmallVec;
 
-use crate::value::Value;
+use crate::value::{MAX_GLOBAL_BINDINGS, Value, limit_err};
 
 pub type Env = Rc<RefCell<Environment>>;
 
@@ -105,6 +105,9 @@ impl Vars {
 pub struct Environment {
     vars: Vars,
     parent: Option<Env>,
+    /// Only the persistent user-global frame has a binding quota. Local
+    /// function/catch frames and the trusted builtins frame leave this unset.
+    global_limit: Option<usize>,
 }
 
 impl std::fmt::Debug for Environment {
@@ -124,6 +127,7 @@ impl Environment {
         Self {
             vars: Vars::Small(SmallVec::new()),
             parent: None,
+            global_limit: None,
         }
     }
 
@@ -131,6 +135,18 @@ impl Environment {
         Self {
             vars: Vars::Small(SmallVec::new()),
             parent: Some(p),
+            global_limit: None,
+        }
+    }
+
+    /// Create the persistent user-global frame. Its parent is normally the
+    /// trusted builtins frame, and only this frame enforces the guest binding
+    /// quota.
+    pub fn global(parent: Option<Env>) -> Self {
+        Self {
+            vars: Vars::Small(SmallVec::new()),
+            parent,
+            global_limit: Some(MAX_GLOBAL_BINDINGS),
         }
     }
 
@@ -146,6 +162,7 @@ impl Environment {
         Self {
             vars,
             parent: Some(p),
+            global_limit: None,
         }
     }
 
@@ -165,6 +182,21 @@ impl Environment {
         if let Err(v) = self.vars.try_set(n, v) {
             self.vars.insert_new(n, v);
         }
+    }
+
+    /// Insert or replace a binding in this frame, enforcing the frame's
+    /// optional quota before allocating a new key/value slot.
+    pub fn try_set(&mut self, n: &str, v: Value) -> Result<(), crate::error::VmErr> {
+        if let Err(v) = self.vars.try_set(n, v) {
+            if self
+                .global_limit
+                .is_some_and(|limit| self.vars.len() >= limit)
+            {
+                return Err(limit_err("Maximum global binding count exceeded"));
+            }
+            self.vars.insert_new(n, v);
+        }
+        Ok(())
     }
 
     pub fn assign(&mut self, n: &str, v: Value) -> bool {
@@ -244,6 +276,28 @@ impl Environment {
     /// spawner to find the builtins frame.
     pub fn parent_env(&self) -> Option<Env> {
         self.parent.clone()
+    }
+
+    /// Whether this frame is the persistent user-global scope.
+    pub fn is_global_scope(&self) -> bool {
+        self.global_limit.is_some()
+    }
+
+    /// Find the persistent global frame in an environment chain. This is used
+    /// by generator threads, whose active frame is detached from the normal
+    /// interpreter `global` field while the body runs.
+    pub fn find_global(env: &Env) -> Option<Env> {
+        let mut current = env.clone();
+        loop {
+            let (is_global, parent) = {
+                let borrowed = current.borrow();
+                (borrowed.is_global_scope(), borrowed.parent_env())
+            };
+            if is_global {
+                return Some(current);
+            }
+            current = parent?;
+        }
     }
 
     /// Iteratively drain a scope chain into `work` for the iterative `Drop`

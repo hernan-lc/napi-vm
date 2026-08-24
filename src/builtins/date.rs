@@ -63,7 +63,7 @@ fn date_utc(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr
 fn date_parse(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = match a.first() {
         Some(Value::String(s)) => s.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => return Ok(Value::Number(f64::NAN)),
     };
     Ok(Value::Number(parse_iso(&s).unwrap_or(f64::NAN)))

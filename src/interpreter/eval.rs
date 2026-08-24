@@ -53,7 +53,7 @@ impl Interpreter {
                 if let Some(pat) = destructuring {
                     self.destructure(pat, &v)?;
                 } else {
-                    self.global.borrow_mut().set(name, v.clone());
+                    self.set_binding(name, v.clone())?;
                 }
                 Ok(v)
             }
@@ -64,7 +64,7 @@ impl Interpreter {
                 is_async,
                 is_generator,
             } => {
-                self.global.borrow_mut().set(
+                self.set_binding(
                     name,
                     Value::Function(Box::new(FunctionData {
                         name: Some(name.as_str().into()),
@@ -76,7 +76,7 @@ impl Interpreter {
                         is_generator: *is_generator,
                         uses_arguments: stmts_reference(body, "arguments"),
                     })),
-                );
+                )?;
                 Ok(Value::Undefined)
             }
             Statement::ClassDecl {
@@ -247,7 +247,7 @@ impl Interpreter {
                     statics: Rc::new(RefCell::new(statics)),
                 }));
 
-                self.global.borrow_mut().set(name, class_val);
+                self.set_binding(name, class_val)?;
                 Ok(Value::Undefined)
             }
             Statement::Return(e) => {
@@ -319,7 +319,7 @@ impl Interpreter {
                                     Some(e) => self.eval_expr(e)?,
                                     None => Value::Undefined,
                                 };
-                                self.global.borrow_mut().set(name, v);
+                                self.set_binding(name, v)?;
                             }
                         }
                         ForInit::Expr(e) => {
@@ -357,7 +357,7 @@ impl Interpreter {
                 let label = self.active_label.take();
                 for k in ks {
                     self.consume_loop()?;
-                    self.global.borrow_mut().set(name, Value::String(k));
+                    self.set_binding(name, Value::String(k))?;
                     match self.run(body) {
                         Err(VmErr::Break(None)) => break,
                         Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
@@ -369,53 +369,51 @@ impl Interpreter {
                 Ok(r)
             }
             Statement::ForOf { name, iter, body } => {
-                let a = self.eval_expr(iter)?;
-                let items: Vec<Value> = match &a {
-                    Value::Array(i) => i.borrow().clone(),
-                    Value::String(s) => s.chars().map(|c| Value::String(c.to_string())).collect(),
-                    Value::Generator { .. } => {
-                        // Drive the generator via its `next()` until done.
-                        let next_fn = self.prop(&a, &Value::String("next".to_string()))?;
-                        let mut out = Vec::new();
-                        loop {
-                            // Budgeted: an infinite generator collected into a
-                            // Vec would otherwise OOM before the body loop's
-                            // budget ever ran.
-                            self.consume_loop()?;
-                            let r = self.call_this(&next_fn, a.clone(), vec![])?;
-                            let done = r.get_prop("done").map(|v| v.is_truthy()).unwrap_or(true);
-                            let val = r.get_prop("value").unwrap_or(Value::Undefined);
-                            if done {
-                                break;
-                            }
-                            if out.len() >= crate::value::MAX_ARRAY_LEN {
-                                return Err(crate::value::limit_err(
-                                    "Maximum array length exceeded",
-                                ));
-                            }
-                            out.push(val);
+                let source = self.eval_expr(iter)?;
+                let iterator = if matches!(source, Value::String(_)) {
+                    let iter_fn =
+                        self.prop(&source, &Value::String("__symbol_iterator__".to_string()))?;
+                    self.call_this(&iter_fn, source, vec![])?
+                } else {
+                    match &source {
+                        Value::Generator { .. } => source.clone(),
+                        Value::Array(_) => {
+                            let iter_fn = self
+                                .prop(&source, &Value::String("__symbol_iterator__".to_string()))?;
+                            self.call_this(&iter_fn, source.clone(), vec![])?
                         }
-                        out
-                    }
-                    // Full iterator protocol: check for a `[Symbol.iterator]()`
-                    // method on arbitrary objects. If present, call it to obtain
-                    // an iterator, then drive it with `next()`.
-                    Value::Object { .. } => {
-                        let iter_fn =
-                            self.prop(&a, &Value::String("__symbol_iterator__".to_string()))?;
-                        if matches!(iter_fn, Value::Undefined) {
-                            return vm_err("object is not iterable (no Symbol.iterator)");
+                        Value::Object { .. } => {
+                            let iter_fn = self
+                                .prop(&source, &Value::String("__symbol_iterator__".to_string()))?;
+                            if matches!(iter_fn, Value::Undefined) {
+                                return vm_err("object is not iterable (no Symbol.iterator)");
+                            }
+                            self.call_this(&iter_fn, source.clone(), vec![])?
                         }
-                        let iterator = self.call_this(&iter_fn, a.clone(), vec![])?;
-                        self.drain_iterator(&iterator)?
+                        _ => return vm_err("for...of needs iterable"),
                     }
-                    _ => return vm_err("for...of needs iterable"),
                 };
+                let next_fn = self.prop(&iterator, &Value::String("next".to_string()))?;
+                if matches!(next_fn, Value::Undefined) {
+                    return vm_err("iterator has no next() method");
+                }
                 let mut r = Value::Undefined;
                 let label = self.active_label.take();
-                for i in items {
+                loop {
+                    // Account for the iterator's next call as well as the
+                    // body iteration. This keeps custom/infinite iterators
+                    // budgeted without eagerly collecting their output.
                     self.consume_loop()?;
-                    self.global.borrow_mut().set(name, i);
+                    let result = self.call_this(&next_fn, iterator.clone(), vec![])?;
+                    let done = result
+                        .get_prop("done")
+                        .map(|v| v.is_truthy())
+                        .unwrap_or(true);
+                    if done {
+                        break;
+                    }
+                    let value = result.get_prop("value").unwrap_or(Value::Undefined);
+                    self.set_binding(name, value)?;
                     match self.run(body) {
                         Err(VmErr::Break(None)) => break,
                         Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
@@ -548,14 +546,15 @@ impl Interpreter {
                 if let Some(md) = resolved_module
                     .as_ref()
                     .and_then(|name| self.modules.get(name))
+                    .cloned()
                 {
                     if let Some(d) = default {
                         let v = md.default.clone().unwrap_or(Value::Undefined);
-                        self.global.borrow_mut().set(d, v);
+                        self.set_binding(d, v)?;
                     }
                     for (l, i) in named {
                         let v = md.exports.get(i).cloned().unwrap_or(Value::Undefined);
-                        self.global.borrow_mut().set(l, v);
+                        self.set_binding(l, v)?;
                     }
                     if let Some(ns) = namespace {
                         let mut p: Vec<(String, Value)> = md
@@ -566,7 +565,7 @@ impl Interpreter {
                         if let Some(ref def) = md.default {
                             p.push(("_default".to_string(), def.clone()));
                         }
-                        self.global.borrow_mut().set(ns, Value::object(p));
+                        self.set_binding(ns, Value::object(p))?;
                     }
                     Ok(Value::Undefined)
                 } else {
@@ -929,10 +928,7 @@ impl Interpreter {
                                 VmErr::Msg(format!("ReferenceError: {} is not defined", n))
                             })?
                         } else {
-                            let mut env = self.global.borrow_mut();
-                            if !env.assign(n, v.clone()) {
-                                env.set(n, v.clone());
-                            }
+                            self.assign_or_set_binding(n, v.clone())?;
                             v
                         };
                         Ok(fv)
@@ -1023,7 +1019,7 @@ impl Interpreter {
                     result.push_str(q);
                     if i < exprs.len() {
                         let val = self.eval_expr(&exprs[i])?;
-                        let rendered = self.vs(&val);
+                        let rendered = self.vs(&val)?;
                         if result.len().saturating_add(rendered.len())
                             > crate::value::MAX_STRING_LEN
                         {
@@ -1091,29 +1087,5 @@ impl Interpreter {
                 }
             }
         }
-    }
-
-    /// Drive an iterator object (anything with a `next()` method returning
-    /// `{value, done}`) to completion, collecting all yielded values.
-    pub(crate) fn drain_iterator(&mut self, iterator: &Value) -> Result<Vec<Value>, VmErr> {
-        let next_fn = self.prop(iterator, &Value::String("next".to_string()))?;
-        if matches!(next_fn, Value::Undefined) {
-            return Err(VmErr::Msg("iterator has no next() method".to_string()));
-        }
-        let mut out = Vec::new();
-        loop {
-            self.consume_loop()?;
-            let r = self.call_this(&next_fn, iterator.clone(), vec![])?;
-            let done = r.get_prop("done").map(|v| v.is_truthy()).unwrap_or(true);
-            let val = r.get_prop("value").unwrap_or(Value::Undefined);
-            if done {
-                break;
-            }
-            if out.len() >= crate::value::MAX_ARRAY_LEN {
-                return Err(crate::value::limit_err("Maximum array length exceeded"));
-            }
-            out.push(val);
-        }
-        Ok(out)
     }
 }

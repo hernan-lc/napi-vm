@@ -5,7 +5,46 @@
 //! and the async bridge's error formatting.
 use std::rc::Rc;
 
-use crate::value::Value;
+use crate::error::VmErr;
+use crate::value::{MAX_STRING_LEN, Value, limit_err};
+
+/// A single output buffer shared by all guest-controlled renderers. Every
+/// append is checked before touching the allocation, so a shared object graph
+/// can spend time rendering repeated references but can never grow the host
+/// output past the configured cap.
+pub(crate) struct BoundedOutput {
+    output: String,
+    max_len: usize,
+}
+
+impl BoundedOutput {
+    pub(crate) fn new(max_len: usize) -> Self {
+        Self {
+            output: String::new(),
+            max_len,
+        }
+    }
+
+    pub(crate) fn push_str(&mut self, text: &str) -> Result<(), VmErr> {
+        if self.output.len().saturating_add(text.len()) > self.max_len {
+            return Err(limit_err("Maximum string length exceeded"));
+        }
+        self.output.push_str(text);
+        Ok(())
+    }
+
+    pub(crate) fn push_char(&mut self, ch: char) -> Result<(), VmErr> {
+        if self.output.len().saturating_add(ch.len_utf8()) > self.max_len {
+            return Err(limit_err("Maximum string length exceeded"));
+        }
+        self.output.push(ch);
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> String {
+        self.output
+    }
+}
 
 /// Maximum nesting `to_string` renders before abbreviating. Together with
 /// the visited set this makes stringifying any guest structure total:
@@ -72,252 +111,180 @@ impl Printer {
     /// Return a short string representation of `val` — the same output
     /// as the legacy `to_string` function.
     pub fn print(&mut self, val: &Value) -> String {
+        self.try_print(val)
+            .unwrap_or_else(|error| error.to_string())
+    }
+
+    pub fn try_print(&mut self, val: &Value) -> Result<String, VmErr> {
         self.visited.clear();
-        self.render_value(val, 0, false)
+        let mut output = BoundedOutput::new(MAX_STRING_LEN);
+        self.render_value(val, 0, false, &mut output)?;
+        Ok(output.finish())
     }
 
     /// Return a multi-line, indented rendering of `val` — the same output
     /// as the legacy `to_string_pretty` function.
     pub fn print_pretty(&mut self, val: &Value) -> String {
+        self.try_print_pretty(val)
+            .unwrap_or_else(|error| error.to_string())
+    }
+
+    pub fn try_print_pretty(&mut self, val: &Value) -> Result<String, VmErr> {
         self.visited.clear();
-        self.render_value(val, 0, true)
+        let mut output = BoundedOutput::new(MAX_STRING_LEN);
+        self.render_value(val, 0, true, &mut output)?;
+        Ok(output.finish())
     }
 
     /// Return a multi-line, indented, ANSI-colored rendering of `val` —
     /// equivalent to calling `to_string_pretty_colored(val, true)`.
     pub fn print_colored(&mut self, val: &Value) -> String {
+        self.try_print_colored(val)
+            .unwrap_or_else(|error| error.to_string())
+    }
+
+    pub fn try_print_colored(&mut self, val: &Value) -> Result<String, VmErr> {
         let saved = self.options.colors;
         self.options.colors = true;
-        let result = self.print_pretty(val);
+        let result = self.try_print_pretty(val);
         self.options.colors = saved;
         result
     }
 
     // ---- internal delegated rendering ------------------------------------
 
-    fn render_value(&mut self, v: &Value, depth: usize, pretty: bool) -> String {
-        if depth >= self.options.max_depth {
-            return self.painter().special(
-                match v {
-                    Value::Object { .. } => "[Object]",
-                    Value::Array(_) => "[Array]",
-                    _ => "[Object]",
-                }
-                .to_string(),
-            );
-        }
-        match v {
-            Value::Undefined => "undefined".to_string(),
-            Value::Null => "null".to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Number(n) => {
-                if n.fract() == 0.0 && n.abs() < 1e15 {
-                    format!("{:.0}", n)
-                } else {
-                    n.to_string()
-                }
-            }
-            Value::String(s) => {
-                if pretty {
-                    self.painter().string(quote(s))
-                } else {
-                    s.clone()
-                }
-            }
-            Value::Object { props, .. } => {
-                let ptr = Rc::as_ptr(props) as *const ();
-                if !self.visited.insert(ptr) {
-                    return self.painter().special("[Circular]".to_string());
-                }
-                let borrow = props.borrow();
-                let result = if borrow.is_empty() {
-                    "{}".to_string()
-                } else if pretty {
-                    self.render_object_pretty(&borrow, depth)
-                } else {
-                    self.render_object_flat(&borrow, depth)
-                };
-                drop(borrow);
-                self.visited.remove(&ptr);
-                result
-            }
-            Value::Array(i) => {
-                let ptr = Rc::as_ptr(i) as *const ();
-                if !self.visited.insert(ptr) {
-                    return self.painter().special("[Circular]".to_string());
-                }
-                let borrow = i.borrow();
-                let result = if borrow.is_empty() {
-                    "[]".to_string()
-                } else if pretty {
-                    self.render_array_pretty(&borrow, depth)
-                } else {
-                    self.render_array_flat(&borrow, depth)
-                };
-                drop(borrow);
-                self.visited.remove(&ptr);
-                result
-            }
-            Value::Function(f) => self.painter().special(format!(
-                "[Function: {}]",
-                f.name.as_deref().unwrap_or("anonymous")
-            )),
-            Value::NativeFunction { name, .. } => self
-                .painter()
-                .special(format!("[Function: {} [native]]", name)),
-            Value::HostFunction { name, .. } => self
-                .painter()
-                .special(format!("[Function: {} [native]]", name)),
-            Value::GlobalObject => self.painter().special("[object global]".to_string()),
-            Value::Class(c) => self.painter().special(format!("[class {}]", c.name)),
-            Value::Promise { .. } | Value::HostPending { .. } => {
-                self.painter().special("[object Promise]".to_string())
-            }
-            Value::Generator { .. } => self.painter().special("[object Generator]".to_string()),
-            Value::Symbol(s) => self.painter().symbol(format!("Symbol({})", s)),
-            Value::Error(e) => self.painter().special(e.message.clone()),
-        }
-    }
-
-    fn render_object_flat(
-        &self,
-        props: &std::cell::Ref<'_, Vec<(String, Value)>>,
-        _depth: usize,
-    ) -> String {
-        let entries: Vec<String> = props
-            .iter()
-            .map(|(k, v)| format!("{}: {}", key_str(k), to_string(v)))
-            .collect();
-        format!("{{{}}}", entries.join(", "))
-    }
-
-    fn render_object_pretty(
+    fn render_value(
         &mut self,
-        props: &std::cell::Ref<'_, Vec<(String, Value)>>,
+        v: &Value,
         depth: usize,
-    ) -> String {
-        let indent = " ".repeat(self.options.indent * (depth + 1));
-        let outer = " ".repeat(self.options.indent * depth);
-        let entries = props
-            .iter()
-            .map(|(k, vv)| {
-                format!(
-                    "{}{}: {}",
-                    indent,
-                    self.painter().key(key_str(k)),
-                    self.render_value(vv, depth + 1, true)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",\n");
-        format!("{{\n{}\n{}}}", entries, outer)
-    }
-
-    fn render_array_flat(&self, items: &std::cell::Ref<'_, Vec<Value>>, _depth: usize) -> String {
-        let entries: Vec<String> = items.iter().map(to_string).collect();
-        format!("[ {} ]", entries.join(", "))
-    }
-
-    fn render_array_pretty(
-        &mut self,
-        items: &std::cell::Ref<'_, Vec<Value>>,
-        depth: usize,
-    ) -> String {
-        let has_compound = items
-            .iter()
-            .any(|x| matches!(x, Value::Object { .. } | Value::Array(_)));
-        if !has_compound {
-            let entries: Vec<String> = items
-                .iter()
-                .map(|x| self.render_value(x, depth + 1, true))
-                .collect();
-            return format!("[ {} ]", entries.join(", "));
-        }
-        let indent = " ".repeat(self.options.indent * (depth + 1));
-        let outer = " ".repeat(self.options.indent * depth);
-        let entries = items
-            .iter()
-            .map(|x| format!("{}{}", indent, self.render_value(x, depth + 1, true)))
-            .collect::<Vec<_>>()
-            .join(",\n");
-        format!("[\n{}\n{}]", entries, outer)
-    }
-
-    fn painter(&self) -> Painter {
-        Painter {
-            enabled: self.options.colors,
-        }
+        pretty: bool,
+        output: &mut BoundedOutput,
+    ) -> Result<(), VmErr> {
+        let mut context = InspectContext {
+            visited: &mut self.visited,
+            output,
+            indent: self.options.indent,
+            max_depth: self.options.max_depth,
+            colors: self.options.colors,
+        };
+        render_inspect_value(v, depth, pretty, &mut context)
     }
 }
 
+/// Fallible plain rendering with the normal VM string cap.
+pub fn try_to_string(val: &Value) -> Result<String, VmErr> {
+    try_to_string_with_limit(val, MAX_STRING_LEN)
+}
+
+/// Fallible plain rendering with an explicit byte limit. The output is built
+/// directly in one checked buffer; no child `String` collection is created.
+pub fn try_to_string_with_limit(val: &Value, max_len: usize) -> Result<String, VmErr> {
+    let mut output = BoundedOutput::new(max_len);
+    let mut visited = std::collections::HashSet::new();
+    render_plain_value(val, &mut visited, 0, &mut output)?;
+    Ok(output.finish())
+}
+
+/// Compatibility wrapper for callers that historically expected an
+/// infallible formatter. VM/N-API result paths use [`try_to_string`] so a
+/// limit remains a catchable error; this wrapper still never allocates beyond
+/// the cap and returns the limit error text on overflow.
 pub fn to_string(val: &Value) -> String {
-    let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
-    fn vs(v: &Value, visited: &mut std::collections::HashSet<*const ()>, depth: usize) -> String {
-        match v {
-            Value::Undefined => "undefined".to_string(),
-            Value::Null => "null".to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Number(n) => {
-                if n.fract() == 0.0 && n.abs() < 1e15 {
-                    format!("{:.0}", n)
-                } else {
-                    n.to_string()
-                }
+    try_to_string(val).unwrap_or_else(|error| error.to_string())
+}
+
+fn render_plain_value(
+    v: &Value,
+    visited: &mut std::collections::HashSet<*const ()>,
+    depth: usize,
+    output: &mut BoundedOutput,
+) -> Result<(), VmErr> {
+    match v {
+        Value::Undefined => output.push_str("undefined"),
+        Value::Null => output.push_str("null"),
+        Value::Bool(b) => output.push_str(if *b { "true" } else { "false" }),
+        Value::Number(n) => output.push_str(&number_string(*n)),
+        Value::String(s) => output.push_str(s),
+        Value::Object { props, .. } => {
+            if depth >= MAX_PRINT_DEPTH {
+                return output.push_str("[Object]");
             }
-            Value::String(s) => s.clone(),
-            Value::Object { props, .. } => {
-                if depth >= MAX_PRINT_DEPTH {
-                    return "[Object]".to_string();
-                }
-                let ptr = Rc::as_ptr(props) as *const ();
-                if !visited.insert(ptr) {
-                    return "[Circular]".to_string();
-                }
-                let s = format!(
-                    "{{{}}}",
-                    props
-                        .borrow()
-                        .iter()
-                        .map(|(k, v)| format!("{}: {}", k, vs(v, visited, depth + 1)))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                visited.remove(&ptr);
-                s
+            let ptr = Rc::as_ptr(props) as *const ();
+            if !visited.insert(ptr) {
+                return output.push_str("[Circular]");
             }
-            Value::Array(i) => {
-                if depth >= MAX_PRINT_DEPTH {
-                    return "[Array]".to_string();
+            let result = (|| {
+                output.push_char('{')?;
+                let props = props.borrow();
+                for (index, (key, value)) in props.iter().enumerate() {
+                    if index > 0 {
+                        output.push_str(", ")?;
+                    }
+                    output.push_str(key)?;
+                    output.push_str(": ")?;
+                    render_plain_value(value, visited, depth + 1, output)?;
                 }
-                let ptr = Rc::as_ptr(i) as *const ();
-                if !visited.insert(ptr) {
-                    return "[Circular]".to_string();
-                }
-                let s = format!(
-                    "[{}]",
-                    i.borrow()
-                        .iter()
-                        .map(|v| vs(v, visited, depth + 1))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                visited.remove(&ptr);
-                s
-            }
-            Value::Function(f) => {
-                format!("[Function: {}]", f.name.as_deref().unwrap_or("anonymous"))
-            }
-            Value::NativeFunction { name, .. } => format!("[Function: {} [native]]", name),
-            Value::HostFunction { name, .. } => format!("[Function: {} [native]]", name),
-            Value::GlobalObject => "[object global]".to_string(),
-            Value::Class(c) => format!("[class {}]", c.name),
-            Value::Promise { .. } | Value::HostPending { .. } => "[object Promise]".to_string(),
-            Value::Generator { .. } => "[object Generator]".to_string(),
-            Value::Symbol(s) => format!("Symbol({})", s),
-            Value::Error(e) => e.message.clone(),
+                output.push_char('}')
+            })();
+            visited.remove(&ptr);
+            result
         }
+        Value::Array(items) => {
+            if depth >= MAX_PRINT_DEPTH {
+                return output.push_str("[Array]");
+            }
+            let ptr = Rc::as_ptr(items) as *const ();
+            if !visited.insert(ptr) {
+                return output.push_str("[Circular]");
+            }
+            let result = (|| {
+                output.push_char('[')?;
+                let items = items.borrow();
+                for (index, value) in items.iter().enumerate() {
+                    if index > 0 {
+                        output.push_str(", ")?;
+                    }
+                    render_plain_value(value, visited, depth + 1, output)?;
+                }
+                output.push_char(']')
+            })();
+            visited.remove(&ptr);
+            result
+        }
+        Value::Function(f) => {
+            output.push_str("[Function: ")?;
+            output.push_str(f.name.as_deref().unwrap_or("anonymous"))?;
+            output.push_char(']')
+        }
+        Value::NativeFunction { name, .. } | Value::HostFunction { name, .. } => {
+            output.push_str("[Function: ")?;
+            output.push_str(name)?;
+            output.push_str(" [native]]")
+        }
+        Value::GlobalObject => output.push_str("[object global]"),
+        Value::Class(c) => {
+            output.push_str("[class ")?;
+            output.push_str(&c.name)?;
+            output.push_char(']')
+        }
+        Value::Promise { .. } | Value::HostPending { .. } => output.push_str("[object Promise]"),
+        Value::Generator { .. } => output.push_str("[object Generator]"),
+        Value::StringIterator { .. } => output.push_str("[object String Iterator]"),
+        Value::Symbol(s) => {
+            output.push_str("Symbol(")?;
+            output.push_str(s)?;
+            output.push_char(')')
+        }
+        Value::Error(e) => output.push_str(&e.message),
     }
-    vs(val, &mut visited, 0)
+}
+
+fn number_string(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        format!("{:.0}", n)
+    } else {
+        n.to_string()
+    }
 }
 
 /// Pretty, multi-line, indented rendering of a value — the sandbox-native
@@ -326,18 +293,34 @@ pub fn to_string(val: &Value) -> String {
 /// and arrays that contain objects/arrays) break across indented lines.
 /// Cycle- and depth-safe by the same visited-set + `MAX_PRINT_DEPTH` scheme
 /// as `to_string`.
+pub fn try_to_string_pretty(val: &Value) -> Result<String, VmErr> {
+    try_to_string_pretty_colored(val, false)
+}
+
 pub fn to_string_pretty(val: &Value) -> String {
-    let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
-    pretty(val, &mut visited, 0, &Painter::PLAIN)
+    try_to_string_pretty(val).unwrap_or_else(|error| error.to_string())
 }
 
 /// Like `to_string_pretty`, but with ANSI type colors when `colors` is on:
 /// keys cyan, strings green, numbers blue, booleans yellow, and
 /// `null`/`undefined`/circular markers dimmed — the same broad scheme
 /// Node's `util.inspect({ colors: true })` uses.
+pub fn try_to_string_pretty_colored(val: &Value, colors: bool) -> Result<String, VmErr> {
+    let mut visited = std::collections::HashSet::new();
+    let mut output = BoundedOutput::new(MAX_STRING_LEN);
+    let mut context = InspectContext {
+        visited: &mut visited,
+        output: &mut output,
+        indent: 2,
+        max_depth: MAX_PRINT_DEPTH,
+        colors,
+    };
+    render_inspect_value(val, 0, true, &mut context)?;
+    Ok(output.finish())
+}
+
 pub fn to_string_pretty_colored(val: &Value, colors: bool) -> String {
-    let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
-    pretty(val, &mut visited, 0, &Painter { enabled: colors })
+    try_to_string_pretty_colored(val, colors).unwrap_or_else(|error| error.to_string())
 }
 
 /// Whether ANSI colors should be emitted: stdout must be a TTY unless
@@ -364,181 +347,268 @@ pub(crate) struct Painter {
 }
 
 impl Painter {
-    const PLAIN: Painter = Painter { enabled: false };
-
-    fn wrap(&self, code: &str, s: String) -> String {
+    fn write_wrapped(
+        &self,
+        output: &mut BoundedOutput,
+        code: &str,
+        text: &str,
+    ) -> Result<(), VmErr> {
         if self.enabled {
-            format!("\x1b[{}m{}\x1b[0m", code, s)
-        } else {
-            s
+            output.push_str("\x1b[")?;
+            output.push_str(code)?;
+            output.push_str("m")?;
         }
-    }
-
-    pub(crate) fn key(&self, s: String) -> String {
-        self.wrap("36", s) // cyan
-    }
-    pub(crate) fn string(&self, s: String) -> String {
-        self.wrap("32", s) // green
-    }
-    pub(crate) fn number(&self, s: String) -> String {
-        self.wrap("34", s) // blue
-    }
-    pub(crate) fn boolean(&self, s: String) -> String {
-        self.wrap("33", s) // yellow
-    }
-    pub(crate) fn symbol(&self, s: String) -> String {
-        self.wrap("32", s) // green
-    }
-    /// `undefined`, functions, promises, depth/cycle markers.
-    pub(crate) fn special(&self, s: String) -> String {
-        self.wrap("2;37", s) // dim gray
-    }
-    pub(crate) fn null(&self, s: String) -> String {
-        self.wrap("1;90", s) // bold gray
+        output.push_str(text)?;
+        if self.enabled {
+            output.push_str("\x1b[0m")?;
+        }
+        Ok(())
     }
 }
 
-/// Quote and escape a string as a single-quoted JS literal.
-pub(crate) fn quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        match ch {
-            '\'' => out.push_str("\\'"),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c => out.push(c),
-        }
-    }
-    out.push('\'');
-    out
+struct InspectContext<'a> {
+    visited: &'a mut std::collections::HashSet<*const ()>,
+    output: &'a mut BoundedOutput,
+    indent: usize,
+    max_depth: usize,
+    colors: bool,
 }
 
-/// Render an object key bare when it is a valid JS identifier, quoted otherwise.
-pub(crate) fn key_str(k: &str) -> String {
-    let mut chars = k.chars();
-    let valid = match chars.next() {
+fn render_inspect_value(
+    v: &Value,
+    depth: usize,
+    pretty: bool,
+    context: &mut InspectContext<'_>,
+) -> Result<(), VmErr> {
+    let painter = Painter {
+        enabled: context.colors && pretty,
+    };
+    if depth >= context.max_depth {
+        return painter.write_wrapped(
+            context.output,
+            "2;37",
+            match v {
+                Value::Array(_) => "[Array]",
+                Value::Object { .. } => "[Object]",
+                _ => "[Object]",
+            },
+        );
+    }
+    match v {
+        Value::Undefined => painter.write_wrapped(context.output, "2;37", "undefined"),
+        Value::Null => painter.write_wrapped(context.output, "1;90", "null"),
+        Value::Bool(b) => {
+            painter.write_wrapped(context.output, "33", if *b { "true" } else { "false" })
+        }
+        Value::Number(n) => {
+            let s = number_string(*n);
+            painter.write_wrapped(context.output, "34", &s)
+        }
+        Value::String(s) => {
+            if !pretty {
+                return context.output.push_str(s);
+            }
+            if context.colors {
+                context.output.push_str("\x1b[32m")?;
+            }
+            write_quoted(context.output, s)?;
+            if context.colors {
+                context.output.push_str("\x1b[0m")?;
+            }
+            Ok(())
+        }
+        Value::Object { props, .. } => {
+            let ptr = Rc::as_ptr(props) as *const ();
+            if !context.visited.insert(ptr) {
+                return painter.write_wrapped(context.output, "2;37", "[Circular]");
+            }
+            let result = (|| {
+                let borrow = props.borrow();
+                if borrow.is_empty() {
+                    return context.output.push_str("{}");
+                }
+                context.output.push_char('{')?;
+                if pretty {
+                    context.output.push_char('\n')?;
+                }
+                for (index, (key, value)) in borrow.iter().enumerate() {
+                    if pretty {
+                        push_indent(context.output, context.indent, depth + 1)?;
+                        write_key(context.output, key, context.colors)?;
+                    } else {
+                        write_key(context.output, key, false)?;
+                    }
+                    context.output.push_str(": ")?;
+                    if pretty {
+                        render_inspect_value(value, depth + 1, true, context)?;
+                    } else {
+                        render_plain_value(value, context.visited, depth + 1, context.output)?;
+                    }
+                    if index + 1 < borrow.len() {
+                        context.output.push_str(if pretty { ",\n" } else { ", " })?;
+                    }
+                }
+                if pretty {
+                    context.output.push_char('\n')?;
+                    push_indent(context.output, context.indent, depth)?;
+                }
+                context.output.push_char('}')
+            })();
+            context.visited.remove(&ptr);
+            result
+        }
+        Value::Array(items) => {
+            let ptr = Rc::as_ptr(items) as *const ();
+            if !context.visited.insert(ptr) {
+                return painter.write_wrapped(context.output, "2;37", "[Circular]");
+            }
+            let result = (|| {
+                let borrow = items.borrow();
+                if borrow.is_empty() {
+                    return context.output.push_str("[]");
+                }
+                let has_compound = borrow
+                    .iter()
+                    .any(|x| matches!(x, Value::Object { .. } | Value::Array(_)));
+                context.output.push_char('[')?;
+                if pretty && has_compound {
+                    context.output.push_char('\n')?;
+                } else if !pretty {
+                    context.output.push_char(' ')?;
+                }
+                for (index, value) in borrow.iter().enumerate() {
+                    if pretty && has_compound {
+                        push_indent(context.output, context.indent, depth + 1)?;
+                    }
+                    if pretty {
+                        render_inspect_value(value, depth + 1, true, context)?;
+                    } else {
+                        render_plain_value(value, context.visited, depth + 1, context.output)?;
+                    }
+                    if index + 1 < borrow.len() {
+                        context.output.push_str(if pretty && has_compound {
+                            ",\n"
+                        } else {
+                            ", "
+                        })?;
+                    }
+                }
+                if pretty && has_compound {
+                    context.output.push_char('\n')?;
+                    push_indent(context.output, context.indent, depth)?;
+                } else if !pretty {
+                    context.output.push_char(' ')?;
+                }
+                context.output.push_char(']')
+            })();
+            context.visited.remove(&ptr);
+            result
+        }
+        Value::Function(f) => {
+            if context.colors && pretty {
+                context.output.push_str("\x1b[2;37m")?;
+            }
+            context.output.push_str("[Function: ")?;
+            context
+                .output
+                .push_str(f.name.as_deref().unwrap_or("anonymous"))?;
+            context.output.push_char(']')?;
+            if context.colors && pretty {
+                context.output.push_str("\x1b[0m")?;
+            }
+            Ok(())
+        }
+        Value::NativeFunction { name, .. } | Value::HostFunction { name, .. } => {
+            if context.colors && pretty {
+                context.output.push_str("\x1b[2;37m")?;
+            }
+            context.output.push_str("[Function: ")?;
+            context.output.push_str(name)?;
+            context.output.push_str(" [native]]")?;
+            if context.colors && pretty {
+                context.output.push_str("\x1b[0m")?;
+            }
+            Ok(())
+        }
+        Value::GlobalObject => painter.write_wrapped(context.output, "2;37", "[object global]"),
+        Value::Class(c) => {
+            if context.colors && pretty {
+                context.output.push_str("\x1b[2;37m")?;
+            }
+            context.output.push_str("[class ")?;
+            context.output.push_str(&c.name)?;
+            context.output.push_char(']')?;
+            if context.colors && pretty {
+                context.output.push_str("\x1b[0m")?;
+            }
+            Ok(())
+        }
+        Value::Promise { .. } | Value::HostPending { .. } => {
+            painter.write_wrapped(context.output, "2;37", "[object Promise]")
+        }
+        Value::Generator { .. } => {
+            painter.write_wrapped(context.output, "2;37", "[object Generator]")
+        }
+        Value::StringIterator { .. } => {
+            painter.write_wrapped(context.output, "2;37", "[object String Iterator]")
+        }
+        Value::Symbol(s) => {
+            if context.colors && pretty {
+                context.output.push_str("\x1b[32m")?;
+            }
+            context.output.push_str("Symbol(")?;
+            context.output.push_str(s)?;
+            context.output.push_char(')')?;
+            if context.colors && pretty {
+                context.output.push_str("\x1b[0m")?;
+            }
+            Ok(())
+        }
+        Value::Error(e) => painter.write_wrapped(context.output, "2;37", &e.message),
+    }
+}
+
+fn push_indent(output: &mut BoundedOutput, indent: usize, depth: usize) -> Result<(), VmErr> {
+    let count = indent.saturating_mul(depth);
+    for _ in 0..count {
+        output.push_char(' ')?;
+    }
+    Ok(())
+}
+
+fn write_key(output: &mut BoundedOutput, key: &str, colors: bool) -> Result<(), VmErr> {
+    if colors {
+        output.push_str("\x1b[36m")?;
+    }
+    let mut chars = key.chars();
+    let bare = match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {
             chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
         }
         _ => false,
     };
-    if valid && !k.is_empty() {
-        k.to_string()
+    if bare && !key.is_empty() {
+        output.push_str(key)?;
     } else {
-        quote(k)
+        write_quoted(output, key)?;
     }
+    if colors {
+        output.push_str("\x1b[0m")?;
+    }
+    Ok(())
 }
 
-fn pretty(
-    v: &Value,
-    visited: &mut std::collections::HashSet<*const ()>,
-    depth: usize,
-    p: &Painter,
-) -> String {
-    match v {
-        Value::Undefined => p.special("undefined".to_string()),
-        Value::Null => p.null("null".to_string()),
-        Value::Bool(b) => p.boolean(b.to_string()),
-        Value::Number(n) => {
-            let s = if n.fract() == 0.0 && n.abs() < 1e15 {
-                format!("{:.0}", n)
-            } else {
-                n.to_string()
-            };
-            p.number(s)
+fn write_quoted(output: &mut BoundedOutput, value: &str) -> Result<(), VmErr> {
+    output.push_char('\'')?;
+    for ch in value.chars() {
+        match ch {
+            '\'' => output.push_str("\\'")?,
+            '\\' => output.push_str("\\\\")?,
+            '\n' => output.push_str("\\n")?,
+            '\r' => output.push_str("\\r")?,
+            '\t' => output.push_str("\\t")?,
+            c => output.push_char(c)?,
         }
-        Value::String(s) => p.string(quote(s)),
-        Value::Object { props, .. } => {
-            if depth >= MAX_PRINT_DEPTH {
-                return p.special("[Object]".to_string());
-            }
-            let ptr = Rc::as_ptr(props) as *const ();
-            if !visited.insert(ptr) {
-                return p.special("[Circular]".to_string());
-            }
-            let borrow = props.borrow();
-            if borrow.is_empty() {
-                drop(borrow);
-                visited.remove(&ptr);
-                return "{}".to_string();
-            }
-            let inner = "  ".repeat(depth + 1);
-            let outer = "  ".repeat(depth);
-            let entries = borrow
-                .iter()
-                .map(|(k, vv)| {
-                    format!(
-                        "{}{}: {}",
-                        inner,
-                        p.key(key_str(k)),
-                        pretty(vv, visited, depth + 1, p)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(",\n");
-            drop(borrow);
-            visited.remove(&ptr);
-            format!("{{\n{}\n{}}}", entries, outer)
-        }
-        Value::Array(i) => {
-            if depth >= MAX_PRINT_DEPTH {
-                return p.special("[Array]".to_string());
-            }
-            let ptr = Rc::as_ptr(i) as *const ();
-            if !visited.insert(ptr) {
-                return p.special("[Circular]".to_string());
-            }
-            let borrow = i.borrow();
-            if borrow.is_empty() {
-                drop(borrow);
-                visited.remove(&ptr);
-                return "[]".to_string();
-            }
-            // Arrays of scalars stay on one line; arrays containing compound
-            // values break across indented lines (matches `util.inspect`).
-            let has_compound = borrow
-                .iter()
-                .any(|x| matches!(x, Value::Object { .. } | Value::Array(_)));
-            if !has_compound {
-                let s = format!(
-                    "[ {} ]",
-                    borrow
-                        .iter()
-                        .map(|x| pretty(x, visited, depth + 1, p))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                drop(borrow);
-                visited.remove(&ptr);
-                return s;
-            }
-            let inner = "  ".repeat(depth + 1);
-            let outer = "  ".repeat(depth);
-            let entries = borrow
-                .iter()
-                .map(|x| format!("{}{}", inner, pretty(x, visited, depth + 1, p)))
-                .collect::<Vec<_>>()
-                .join(",\n");
-            drop(borrow);
-            visited.remove(&ptr);
-            format!("[\n{}\n{}]", entries, outer)
-        }
-        Value::Function(f) => p.special(format!(
-            "[Function: {}]",
-            f.name.as_deref().unwrap_or("anonymous")
-        )),
-        Value::NativeFunction { name, .. } => p.special(format!("[Function: {} [native]]", name)),
-        Value::HostFunction { name, .. } => p.special(format!("[Function: {} [native]]", name)),
-        Value::GlobalObject => p.special("[object global]".to_string()),
-        Value::Class(c) => p.special(format!("[class {}]", c.name)),
-        Value::Promise { .. } | Value::HostPending { .. } => {
-            p.special("[object Promise]".to_string())
-        }
-        Value::Generator { .. } => p.special("[object Generator]".to_string()),
-        Value::Symbol(s) => p.symbol(format!("Symbol({})", s)),
-        Value::Error(e) => p.special(e.message.clone()),
     }
+    output.push_char('\'')
 }

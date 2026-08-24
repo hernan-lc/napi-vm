@@ -18,7 +18,7 @@ impl Interpreter {
     pub(super) fn destructure(&mut self, pat: &Pattern, val: &Value) -> Result<Value, VmErr> {
         match pat {
             Pattern::Ident(name) => {
-                self.global.borrow_mut().set(name, val.clone());
+                self.set_binding(name, val.clone())?;
                 Ok(val.clone())
             }
             Pattern::Array(elements) => {
@@ -74,7 +74,7 @@ impl Interpreter {
                     if let Some(p) = pat {
                         self.destructure(p, &found)?;
                     } else {
-                        self.global.borrow_mut().set(key, found);
+                        self.set_binding(key, found)?;
                     }
                 }
                 Ok(val.clone())
@@ -146,10 +146,7 @@ impl Interpreter {
                 Ok(())
             }
             // `window.x = v` / `globalThis.x = v` define a real global.
-            (Value::GlobalObject, Value::String(k)) => {
-                self.global.borrow_mut().set(k, val);
-                Ok(())
-            }
+            (Value::GlobalObject, Value::String(k)) => self.set_global_checked(k, val),
             (Value::Array(items), Value::Number(i)) => {
                 if !i.is_finite() || *i < 0.0 || i.fract() != 0.0 {
                     return Err(VmErr::Msg("TypeError: Invalid array index".to_string()));
@@ -585,6 +582,7 @@ fn run_generator_thread(init: crate::value::GeneratorInit) {
 
     // Build a fresh interpreter for the generator thread. If we have a
     // builtins environment, chain to it so standard library functions work.
+    let inherited_global = closure.as_ref().and_then(super::Environment::find_global);
     let mut interp = if let Some(builtins) = builtins_env {
         let mut i = Interpreter::new();
         i.global = Rc::new(RefCell::new(Environment::child(builtins)));
@@ -592,6 +590,9 @@ fn run_generator_thread(init: crate::value::GeneratorInit) {
     } else {
         Interpreter::with_builtins()
     };
+    if let Some(global) = inherited_global {
+        interp.persistent_global = global;
+    }
 
     // Install the generator channel so `yield` expressions can communicate.
     interp.gen_channel = Some(super::GenChannel {
@@ -625,7 +626,7 @@ fn run_generator_thread(init: crate::value::GeneratorInit) {
             let msg = match &v {
                 Value::String(s) => s.clone(),
                 Value::Error(e) => e.message.clone(),
-                other => interp.vs(other),
+                other => interp.vs(other).unwrap_or_else(|e| e.to_string()),
             };
             let _ = chan.to_main.send(GenYield::Threw(msg));
         }

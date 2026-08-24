@@ -22,7 +22,7 @@ fn symbol_call(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
     let desc = match a.first() {
         None | Some(Value::Undefined) => String::new(),
         Some(Value::String(s)) => s.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
     };
     Ok(Value::Symbol(desc))
 }
@@ -36,7 +36,7 @@ pub(crate) fn symbol_for(
     let key = match a.first() {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Undefined) | None => "undefined".to_string(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
     };
     let sym = SYMBOL_REGISTRY.with(|reg| {
         let mut reg = reg.borrow_mut();

@@ -102,39 +102,64 @@ impl fmt::Display for VmErr {
 /// Render a thrown value as an error message without needing an interpreter
 /// (used when an uncaught throw crosses the NAPI boundary).
 fn throw_display(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
+    use crate::value::MAX_STRING_LEN;
+
+    fn append(out: &mut String, text: &str) -> bool {
+        if out.len().saturating_add(text.len()) > MAX_STRING_LEN {
+            return false;
+        }
+        out.push_str(text);
+        true
+    }
+
+    let mut out = String::new();
+    let ok = match v {
+        Value::String(s) => append(&mut out, s),
         Value::Error(inner) => {
-            if inner.name == "Error" {
-                inner.message.clone()
-            } else {
-                format!("{}: {}", inner.name, inner.message)
+            let mut ok = true;
+            if inner.name != "Error" {
+                ok &= append(&mut out, &inner.name);
+                ok &= append(&mut out, ": ");
             }
+            ok &= append(&mut out, &inner.message);
+            ok
         }
         Value::Object { props, .. } => {
             let borrow = props.borrow();
-            let get_str = |k: &str| {
-                borrow.iter().find_map(|(pk, pv)| {
-                    if pk == k
-                        && let Value::String(s) = pv
-                    {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                })
-            };
-            match (get_str("name"), get_str("message")) {
-                (Some(name), Some(msg)) if name != "Error" => format!("{}: {}", name, msg),
-                (_, Some(msg)) => msg,
-                _ => "Uncaught error".to_string(),
+            let name = borrow.iter().find_map(|(key, value)| {
+                (key == "name")
+                    .then_some(value)
+                    .and_then(|value| match value {
+                        Value::String(value) => Some(value.as_str()),
+                        _ => None,
+                    })
+            });
+            let message = borrow.iter().find_map(|(key, value)| {
+                (key == "message")
+                    .then_some(value)
+                    .and_then(|value| match value {
+                        Value::String(value) => Some(value.as_str()),
+                        _ => None,
+                    })
+            });
+            match (name, message) {
+                (Some(name), Some(message)) if name != "Error" => {
+                    append(&mut out, name) && append(&mut out, ": ") && append(&mut out, message)
+                }
+                (_, Some(message)) => append(&mut out, message),
+                _ => append(&mut out, "Uncaught error"),
             }
         }
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null => "null".to_string(),
-        Value::Undefined => "undefined".to_string(),
-        _ => "error".to_string(),
+        Value::Number(n) => append(&mut out, &n.to_string()),
+        Value::Bool(b) => append(&mut out, if *b { "true" } else { "false" }),
+        Value::Null => append(&mut out, "null"),
+        Value::Undefined => append(&mut out, "undefined"),
+        _ => append(&mut out, "error"),
+    };
+    if ok {
+        out
+    } else {
+        "RangeError: Maximum string length exceeded".to_string()
     }
 }
 

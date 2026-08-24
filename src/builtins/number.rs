@@ -56,7 +56,7 @@ fn number_is_finite(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
 pub(super) fn parse_int(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = match a.first() {
         Some(Value::String(s)) => s.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => return Ok(Value::Number(f64::NAN)),
     };
     let mut radix = match a.get(1) {
@@ -114,7 +114,7 @@ pub(super) fn parse_float(
 ) -> Result<Value, VmErr> {
     let s = match a.first() {
         Some(Value::String(s)) => s.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => return Ok(Value::Number(f64::NAN)),
     };
     let t = s.trim();

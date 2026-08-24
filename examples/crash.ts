@@ -171,6 +171,45 @@ const CASES: CrashCase[] = [
     note: "RangeError: Maximum string length exceeded at 16MB",
   },
   {
+    id: "shared-result-formatting",
+    title: "Shared graph result-formatting amplification",
+    code: `
+      let child = [];
+      for (let i = 0; i < 10000; i++) child.push(1);
+      let outer = [];
+      for (let i = 0; i < 2048; i++) outer.push(child);
+      outer;
+    `,
+    opts: { memLimitKb: 2_097_152, timeoutMs: 30_000 },
+    expected: "THROWN",
+    note: "bounded incremental rendering raises RangeError before output amplification can OOM",
+  },
+  {
+    id: "large-string-early-break",
+    title: "Maximum-sized string, first iterator item only",
+    code: `
+      let s = 'x'.repeat(16 * 1024 * 1024);
+      let first = '';
+      for (const c of s) { first = c; break; }
+      first;
+    `,
+    opts: { memLimitKb: 2_097_152, timeoutMs: 30_000 },
+    expected: "SURVIVED",
+    note: "lazy Unicode-scalar iterator does not build a character array",
+  },
+  {
+    id: "global-binding-exhaustion",
+    title: "Dynamic global binding exhaustion",
+    code: `
+      try {
+        for (let i = 0; i < 300000; i++) globalThis['guest_' + i] = i;
+      } catch (e) { e.message; }
+    `,
+    opts: { memLimitKb: 2_097_152, timeoutMs: 30_000 },
+    expected: "SURVIVED",
+    note: "persistent global scope raises a catchable binding-count RangeError",
+  },
+  {
     id: "indexed-array-cap",
     title: "Indexed assignment beyond the array cap",
     code: "let a = []; a[1000000000] = 1;",

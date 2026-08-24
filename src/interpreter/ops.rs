@@ -60,7 +60,7 @@ impl Interpreter {
                         Value::checked_string(s)?
                     }
                     (Value::String(a), _) => {
-                        let rb = self.vs(r);
+                        let rb = self.vs(r)?;
                         if a.len().saturating_add(rb.len()) > MAX_STRING_LEN {
                             return Err(crate::value::limit_err("Maximum string length exceeded"));
                         }
@@ -70,7 +70,7 @@ impl Interpreter {
                         Value::checked_string(s)?
                     }
                     (_, Value::String(b)) => {
-                        let lb = self.vs(l);
+                        let lb = self.vs(l)?;
                         if lb.len().saturating_add(b.len()) > MAX_STRING_LEN {
                             return Err(crate::value::limit_err("Maximum string length exceeded"));
                         }
@@ -188,7 +188,10 @@ impl Interpreter {
                     Value::Bool(_) => "boolean",
                     Value::Number(_) => "number",
                     Value::String(_) => "string",
-                    Value::Object { .. } | Value::Array(_) | Value::GlobalObject => "object",
+                    Value::Object { .. }
+                    | Value::Array(_)
+                    | Value::GlobalObject
+                    | Value::StringIterator { .. } => "object",
                     Value::Function(_)
                     | Value::NativeFunction { .. }
                     | Value::HostFunction { .. }
@@ -277,13 +280,15 @@ impl Interpreter {
         }
     }
 
-    pub fn vs(&self, v: &Value) -> String {
+    pub fn vs(&self, v: &Value) -> Result<String, VmErr> {
         // Only arrays recurse here (objects print opaquely), so the cycle and
         // depth guards only need to cover the array branch — but both are
         // load-bearing: a cyclic (`a.push(a)`) or million-deep array would
         // otherwise overflow the native stack during stringification.
-        let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
-        self.vs_rec(v, &mut visited, 0)
+        let mut visited = std::collections::HashSet::new();
+        let mut output = crate::format::BoundedOutput::new(crate::value::MAX_STRING_LEN);
+        self.vs_rec(v, &mut visited, 0, &mut output)?;
+        Ok(output.finish())
     }
 
     /// Maximum array nesting rendered by `vs`; deeper levels print as `...`.
@@ -294,49 +299,70 @@ impl Interpreter {
         v: &Value,
         visited: &mut std::collections::HashSet<*const ()>,
         depth: usize,
-    ) -> String {
+        output: &mut crate::format::BoundedOutput,
+    ) -> Result<(), VmErr> {
         match v {
-            Value::Undefined => "undefined".to_string(),
-            Value::Null => "null".to_string(),
-            Value::Bool(b) => b.to_string(),
+            Value::Undefined => output.push_str("undefined"),
+            Value::Null => output.push_str("null"),
+            Value::Bool(b) => output.push_str(if *b { "true" } else { "false" }),
             Value::Number(n) => {
                 if n.fract() == 0.0 && n.abs() < 1e15 {
-                    format!("{:.0}", n)
+                    output.push_str(&format!("{:.0}", n))
                 } else {
-                    n.to_string()
+                    output.push_str(&n.to_string())
                 }
             }
-            Value::String(s) => s.clone(),
-            Value::Object { .. } => "[object Object]".to_string(),
-            Value::GlobalObject => "[object global]".to_string(),
+            Value::String(s) => output.push_str(s),
+            Value::Object { .. } => output.push_str("[object Object]"),
+            Value::GlobalObject => output.push_str("[object global]"),
             Value::Array(i) => {
                 if depth >= Self::MAX_PRINT_DEPTH {
-                    return "...".to_string();
+                    return output.push_str("...");
                 }
                 // Path-based cycle detection (Rc pointer identity): insert
                 // on the way down, remove on the way up, so shared-but-acyclic
                 // references still print fully.
                 let ptr = Rc::as_ptr(i) as *const ();
                 if !visited.insert(ptr) {
-                    return "[Circular]".to_string();
+                    return output.push_str("[Circular]");
                 }
-                let s = i
-                    .borrow()
-                    .iter()
-                    .map(|x| self.vs_rec(x, visited, depth + 1))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let result = (|| {
+                    let items = i.borrow();
+                    for (index, item) in items.iter().enumerate() {
+                        if index > 0 {
+                            output.push_char(',')?;
+                        }
+                        self.vs_rec(item, visited, depth + 1, output)?;
+                    }
+                    Ok(())
+                })();
                 visited.remove(&ptr);
-                s
+                result
             }
-            Value::Function(f) => format!("function {}", f.name.as_deref().unwrap_or("")),
-            Value::NativeFunction { name, .. } => format!("function {} [native]", name),
-            Value::HostFunction { name, .. } => format!("function {} [native]", name),
-            Value::Class(c) => format!("class {}", c.name),
-            Value::Promise { .. } | Value::HostPending { .. } => "[object Promise]".to_string(),
-            Value::Generator { .. } => "[object Generator]".to_string(),
-            Value::Symbol(s) => format!("Symbol({})", s),
-            Value::Error(e) => e.message.clone(),
+            Value::Function(f) => {
+                output.push_str("function ")?;
+                output.push_str(f.name.as_deref().unwrap_or(""))
+            }
+            Value::NativeFunction { name, .. } | Value::HostFunction { name, .. } => {
+                output.push_str("function ")?;
+                output.push_str(name)?;
+                output.push_str(" [native]")
+            }
+            Value::Class(c) => {
+                output.push_str("class ")?;
+                output.push_str(&c.name)
+            }
+            Value::Promise { .. } | Value::HostPending { .. } => {
+                output.push_str("[object Promise]")
+            }
+            Value::Generator { .. } => output.push_str("[object Generator]"),
+            Value::StringIterator { .. } => output.push_str("[object String Iterator]"),
+            Value::Symbol(s) => {
+                output.push_str("Symbol(")?;
+                output.push_str(s)?;
+                output.push_char(')')
+            }
+            Value::Error(e) => output.push_str(&e.message),
         }
     }
 

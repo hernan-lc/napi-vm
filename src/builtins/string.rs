@@ -58,16 +58,16 @@ pub fn string_method(name: &str) -> Option<Value> {
 }
 
 fn string_to_upper(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
-    bounded_string(str_this(interp, &this).to_uppercase())
+    bounded_string(str_this(interp, &this)?.to_uppercase())
 }
 fn string_to_lower(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
-    bounded_string(str_this(interp, &this).to_lowercase())
+    bounded_string(str_this(interp, &this)?.to_lowercase())
 }
 fn string_trim(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
-    bounded_string(str_this(interp, &this).trim().to_string())
+    bounded_string(str_this(interp, &this)?.trim().to_string())
 }
 fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let chars: Vec<char> = s.chars().collect();
     let len = chars.len() as i64;
     let norm = |v: f64| -> i64 {
@@ -88,7 +88,7 @@ fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
     bounded_string(chars[start as usize..end as usize].iter().collect())
 }
 fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     match a.first() {
         Some(Value::String(sep)) => {
             let limit = match a.get(1) {
@@ -111,19 +111,19 @@ fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
     }
 }
 fn string_includes(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => String::new(),
     };
     Ok(Value::Bool(s.contains(&needle)))
 }
 fn string_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => String::new(),
     };
     Ok(Value::Number(
@@ -131,7 +131,7 @@ fn string_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resu
     ))
 }
 fn string_char_at(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let idx = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
     Ok(Value::String(
         s.chars()
@@ -145,25 +145,25 @@ fn string_starts_with(
     this: Value,
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => String::new(),
     };
     Ok(Value::Bool(s.starts_with(&needle)))
 }
 fn string_ends_with(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => String::new(),
     };
     Ok(Value::Bool(s.ends_with(&needle)))
 }
 fn string_repeat(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let n = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
     if s.len().saturating_mul(n) > crate::value::MAX_STRING_LEN {
         return Err(crate::value::limit_err("Maximum string length exceeded"));
@@ -171,15 +171,15 @@ fn string_repeat(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result
     Value::checked_string(s.repeat(n))
 }
 fn string_replace(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let from = match a.first() {
         Some(Value::String(n)) => n.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => return Ok(Value::String(s)),
     };
     let to = match a.get(1) {
         Some(Value::String(n)) => n.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => String::new(),
     };
     let replaces: usize = if from.is_empty() || s.contains(&from) {
@@ -204,15 +204,15 @@ fn string_replace_all(
     this: Value,
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let from = match a.first() {
         Some(Value::String(n)) => n.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => return Ok(Value::String(s)),
     };
     let to = match a.get(1) {
         Some(Value::String(n)) => n.clone(),
-        Some(v) => interp.vs(v),
+        Some(v) => interp.vs(v)?,
         None => String::new(),
     };
     // Estimate the result size before allocating: replacing millions of
@@ -237,7 +237,7 @@ fn string_char_code_at(
     this: Value,
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let idx = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
     match s.chars().nth(idx) {
         Some(ch) => Ok(Value::Number(ch as u32 as f64)),
@@ -245,7 +245,7 @@ fn string_char_code_at(
     }
 }
 fn string_substring(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this);
+    let s = str_this(interp, &this)?;
     let chars: Vec<char> = s.chars().collect();
     let len = chars.len() as i64;
     let norm = |v: f64| -> i64 {
