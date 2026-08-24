@@ -23,6 +23,12 @@ bun examples/crash.ts
 | Generator misuse | Safe completion | Scoped generator execution and controlled suspension |
 | Runtime/host errors | Catchable error objects | Error propagation into guest `catch` |
 
+Host capabilities are opt-in and enforced host-side. The plugin host in
+`plugins/` shows the intended shape: a manifest *requests* filesystem access,
+the host policy decides, and every privileged call canonicalizes its path —
+resolving `..` and symlinks — before matching it against the granted patterns.
+See [Plugins](plugins.md).
+
 The in-process VM is not a complete operating-system security boundary. CPU
 time is bounded per execution but synchronous code blocks the Node event loop,
 and allocation caps are not an aggregate heap quota. For strict CPU or memory
