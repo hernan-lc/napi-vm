@@ -49,6 +49,7 @@ lets it become stale) when the session ends. The LSP polls this file every
   "workspaceId": "a3f1b9c4e82d67f0ab12",
   "sessionId": "550e8400-e29b-41d4-a716-446655440000",
   "pid": 12345,
+  "authToken": "a-256-bit-random-capability-token",
   "transport": {
     "kind": "unix",
     "address": "/tmp/napi-vm-a3f1b9c4.sock"
@@ -62,6 +63,7 @@ lets it become stale) when the session ends. The LSP polls this file every
 | `workspaceId`     | `string` | SHA-256 of the realpath of the workspace root, first 20 hex chars. |
 | `sessionId`       | `string` | Unique opaque ID regenerated for every process start.   |
 | `pid`             | `number` | OS process ID of the application. Used to detect stale sessions. |
+| `authToken`       | `string` | Random capability required in the first client frame. Treat as secret. |
 | `transport.kind`  | `string` | `"unix"` or `"named-pipe"`.                             |
 | `transport.address` | `string` | Socket path or named-pipe path.                       |
 
@@ -111,9 +113,10 @@ fn workspace_id(root: &Path) -> std::io::Result<String> {
 { "kind": "unix", "address": "/tmp/napi-vm-<workspaceId>.sock" }
 ```
 
-The application creates a Unix domain socket and accepts exactly one
-connection (from the LSP). The LSP connects, and messages flow server→client
-as newline-delimited JSON until the socket is closed.
+The application creates a Unix domain socket with mode `0600`. The LSP
+connects, authenticates, and messages flow server→client as newline-delimited
+JSON until the socket is closed. The server accepts at most 16 simultaneous
+clients and ignores unauthenticated clients when publishing snapshots.
 
 ### Windows — Named pipe
 
@@ -122,14 +125,26 @@ as newline-delimited JSON until the socket is closed.
 ```
 
 Same semantics, different transport. The application creates the named pipe;
-the LSP opens it for reading.
+the LSP opens it for reading. The capability token remains required because
+named-pipe ACL behavior varies by host and Node version.
 
 ---
 
 ## Encoding
 
 All messages are **UTF-8 newline-delimited JSON** (`\n` terminated).
-Each line is one complete JSON object. Empty lines are ignored.
+Each line is one complete JSON object. Empty lines are ignored. Frames are
+limited to 1 MiB and clients that exceed the limit are disconnected.
+
+The first frame from every client must be an authentication message:
+
+```json
+{"type":"auth","token":"<authToken>"}
+```
+
+The server sends the first snapshot only after the token matches. Clients
+that do not authenticate within five seconds are disconnected. Implementations
+should compare capability tokens in constant time and must never log them.
 
 ---
 
@@ -288,6 +303,8 @@ application starts
     │   (LSP polls, detects new session, connects)
     │
     ├─ accept connection
+    ├─ receive `{ "type": "auth", "token": "…" }`
+    ├─ verify capability
     ├─ send snapshot
     │
     │   (functions / modules / handlers change)
@@ -306,11 +323,13 @@ application stops (or crashes)
 
 - The `workspaceId` field prevents one project's locator from being used by
   another project's LSP instance.
+- The `authToken` is a per-session capability. It prevents another local
+  process that discovers the socket path from reading runtime metadata.
 - Socket and pipe paths are scoped to the session and regenerated on restart.
-- The protocol carries only metadata (types, names, shapes). No guest script
-  bytecode or host secrets are transmitted.
-- Only the local LSP process reads from the socket. No network listeners are
-  opened.
+- The protocol carries module source as well as metadata, so the locator and
+  token files must be protected (`.napi-vm` mode `0700`, locator mode `0600`).
+- The protocol is local-only; no network listeners are opened. Authentication
+  is an additional capability check, not an OS security boundary.
 
 ---
 

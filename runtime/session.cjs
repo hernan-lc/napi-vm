@@ -14,6 +14,17 @@ const MAX_LAST_VALUE_DEPTH = 6;
 const MAX_LAST_VALUE_PROPERTIES = 64;
 const MAX_LAST_VALUE_STRING = 512;
 const LAST_VALUE_PUBLISH_DELAY = 150;
+const MAX_FRAME_BYTES = 1024 * 1024;
+const MAX_CLIENTS = 16;
+const MAX_MODULE_SOURCE_BYTES = 256 * 1024;
+const AUTH_TIMEOUT_MS = 5000;
+
+function tokenMatches(left, right) {
+  if (typeof left !== "string" || typeof right !== "string") return false;
+  const a = Buffer.from(left, "utf8");
+  const b = Buffer.from(right, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
 function workspaceId(workspace) {
   const resolved = fs.realpathSync(workspace);
@@ -26,6 +37,10 @@ function runtimePath(workspace) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function dataObject() {
+  return Object.create(null);
 }
 
 function inferJsonShape(value, depth = 0) {
@@ -44,7 +59,7 @@ function inferJsonShape(value, depth = 0) {
     case "boolean": return { kind: "boolean" };
     case "undefined": return { kind: "undefined" };
     case "object": {
-      const properties = {};
+      const properties = dataObject();
       for (const name of Object.keys(value).sort().slice(0, MAX_SHAPE_PROPERTIES)) {
         properties[name] = inferJsonShape(value[name], depth + 1);
       }
@@ -60,7 +75,7 @@ function mergeShapes(left, right) {
   if (left.kind !== right.kind) return { kind: "unknown" };
 
   if (left.kind === "object") {
-    const properties = {};
+    const properties = dataObject();
     const names = new Set([
       ...Object.keys(left.properties || {}),
       ...Object.keys(right.properties || {}),
@@ -94,7 +109,7 @@ function snapshotJsonValue(value, depth = 0) {
     return items;
   }
   if (value && typeof value === "object") {
-    const result = {};
+    const result = dataObject();
     const names = Object.keys(value).sort();
     for (const name of names.slice(0, MAX_LAST_VALUE_PROPERTIES)) {
       result[name] = snapshotJsonValue(value[name], depth + 1);
@@ -118,10 +133,12 @@ class VmSession {
     this.sessionId = options.sessionId || crypto.randomUUID();
     this.id = workspaceId(this.workspace);
     this.runtimeFile = runtimePath(this.workspace);
+    this.authToken = crypto.randomBytes(32).toString("hex");
     this.vm = options.vm || null;
     this.server = null;
     this.address = null;
     this.clients = new Set();
+    this.authenticatedClients = new Set();
     this.hostFunctions = new Map();
     this.modules = new Map();
     this.handlerShapes = new Map();
@@ -195,6 +212,9 @@ class VmSession {
   }
 
   registerModule(name, source) {
+    if (Buffer.byteLength(source, "utf8") > MAX_MODULE_SOURCE_BYTES) {
+      throw new Error("runtime module source exceeds the maximum size");
+    }
     this.requireVm().registerModule(name, source);
     this.modules.set(name, { name, source });
     this.publish("module");
@@ -254,8 +274,12 @@ class VmSession {
       : path.join(os.tmpdir(), `napi-vm-${this.id}-${process.pid}-${this.sessionId}.sock`);
     this.address = endpoint;
     this.server = net.createServer((socket) => this.accept(socket));
-    this.server.listen(endpoint);
-    this.writeLocator();
+    this.server.listen(endpoint, () => {
+      if (process.platform !== "win32") {
+        try { fs.chmodSync(endpoint, 0o600); } catch {}
+      }
+      this.writeLocator();
+    });
     return this;
   }
 
@@ -264,6 +288,7 @@ class VmSession {
     this.stopped = true;
     for (const socket of this.clients) socket.destroy();
     this.clients.clear();
+    this.authenticatedClients.clear();
     this.server?.close();
     this.server = null;
     this.clearLastValueTimers();
@@ -299,29 +324,54 @@ class VmSession {
   }
 
   accept(socket) {
+    if (this.clients.size >= MAX_CLIENTS) {
+      socket.destroy();
+      return;
+    }
     this.clients.add(socket);
+    let authenticated = false;
     let buffer = "";
     socket.setEncoding("utf8");
+    socket.setTimeout(AUTH_TIMEOUT_MS, () => socket.destroy());
     socket.on("data", (chunk) => {
       buffer += chunk;
+      if (Buffer.byteLength(buffer, "utf8") > MAX_FRAME_BYTES) {
+        socket.destroy();
+        return;
+      }
       let newline;
       while ((newline = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, newline).trim();
         buffer = buffer.slice(newline + 1);
         if (!line) continue;
         try {
-          this.handleMessage(socket, JSON.parse(line));
+          const message = JSON.parse(line);
+          if (!authenticated) {
+            if (message.type !== "auth" || !tokenMatches(message.token, this.authToken)) {
+              socket.destroy();
+              return;
+            }
+            authenticated = true;
+            this.authenticatedClients.add(socket);
+            socket.setTimeout(0);
+            this.send(socket, "snapshot");
+            continue;
+          }
+          this.handleMessage(socket, message);
         } catch (error) {
-          socket.write(`${JSON.stringify({
+          this.sendError(socket, {
             type: "error",
             message: error.message || String(error),
-          })}\n`);
+          });
         }
       }
     });
-    socket.on("close", () => this.clients.delete(socket));
-    socket.on("error", () => this.clients.delete(socket));
-    this.send(socket, "snapshot");
+    const removeClient = () => {
+      this.clients.delete(socket);
+      this.authenticatedClients.delete(socket);
+    };
+    socket.on("close", removeClient);
+    socket.on("error", removeClient);
   }
 
   handleMessage(socket, message) {
@@ -330,28 +380,47 @@ class VmSession {
   }
 
   publish(reason) {
-    if (!this.server) return;
+    if (!this.server || !this.server.listening) return;
     this.generation += 1;
     this.writeLocator();
-    for (const socket of this.clients) this.send(socket, "snapshot", reason);
+    for (const socket of this.authenticatedClients) this.send(socket, "snapshot", reason);
   }
 
   send(socket, type, reason) {
-    socket.write(`${JSON.stringify({
+    const encoded = JSON.stringify({
       type,
       reason,
       payload: this.snapshot(),
-    })}\n`);
+    });
+    if (Buffer.byteLength(encoded, "utf8") > MAX_FRAME_BYTES) {
+      socket.destroy();
+      return false;
+    }
+    socket.write(`${encoded}\n`);
+    return true;
+  }
+
+  sendError(socket, payload) {
+    const encoded = JSON.stringify(payload);
+    if (Buffer.byteLength(encoded, "utf8") > MAX_FRAME_BYTES) {
+      socket.destroy();
+      return;
+    }
+    socket.write(`${encoded}\n`);
   }
 
   writeLocator() {
     const directory = path.dirname(this.runtimeFile);
-    fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(directory, 0o700); } catch {}
+    }
     const locator = {
       protocolVersion: PROTOCOL_VERSION,
       workspaceId: this.id,
       sessionId: this.sessionId,
       pid: process.pid,
+      authToken: this.authToken,
       startedAt: this.startedAt,
       generation: this.generation,
       transport: {
@@ -360,7 +429,13 @@ class VmSession {
       },
     };
     const temporary = `${this.runtimeFile}.${process.pid}.${this.sessionId}.tmp`;
-    fs.writeFileSync(temporary, `${JSON.stringify(locator, null, 2)}\n`, "utf8");
+    fs.writeFileSync(temporary, `${JSON.stringify(locator, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(temporary, 0o600); } catch {}
+    }
     fs.renameSync(temporary, this.runtimeFile);
   }
 

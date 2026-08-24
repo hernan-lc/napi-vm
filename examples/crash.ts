@@ -54,6 +54,8 @@ interface CrashCase {
   title: string;
   /** The adversarial guest code (run inside `vm.run` in the child). */
   code: string;
+  /** Execute the case through the worker-thread `runAsync` bridge. */
+  asyncRun?: boolean;
   opts?: CaseOpts;
   expected: "SURVIVED" | "THROWN" | "CRASHED" | "HANG";
   note: string;
@@ -79,6 +81,14 @@ const CASES: CrashCase[] = [
     code: "function a() { return b(); } function b() { return a(); } a();",
     expected: "THROWN",
     note: "same call-depth guard, two functions",
+  },
+  {
+    id: "async-worker-recursion",
+    title: "Recursion on the runAsync worker",
+    code: "async function main() { function f(n) { return n ? f(n - 1) : 0; } return f(300); } main();",
+    asyncRun: true,
+    expected: "THROWN",
+    note: "the worker uses the same call-depth guard with an 8MB stack",
   },
   {
     id: "deep-parse",
@@ -160,6 +170,28 @@ const CASES: CrashCase[] = [
     expected: "THROWN",
     note: "RangeError: Maximum string length exceeded at 16MB",
   },
+  {
+    id: "indexed-array-cap",
+    title: "Indexed assignment beyond the array cap",
+    code: "let a = []; a[1000000000] = 1;",
+    expected: "THROWN",
+    note: "RangeError before any sparse-array resize or allocator pressure",
+  },
+  {
+    id: "iterative-flat",
+    title: "100k-deep Array.prototype.flat",
+    code: "let a = [0]; for (let i = 0; i < 100000; i++) { a = [a]; } a.flat(100000);",
+    opts: { timeoutMs: 30_000 },
+    expected: "SURVIVED",
+    note: "flat uses an explicit work stack instead of native recursion",
+  },
+  {
+    id: "sort-reentry",
+    title: "Array.sort comparator mutates its array",
+    code: "let a = [3, 2, 1]; a.sort((x, y) => { a.push(4); return x - y; }); a.length;",
+    expected: "SURVIVED",
+    note: "sort releases the RefCell borrow while calling guest comparators",
+  },
 
   // ── Cases the VM already survives ──────────────────────────────────
   // These document containment that works today, so a regression shows
@@ -196,7 +228,7 @@ const CASES: CrashCase[] = [
 
 // ── Child mode: run one case and report ──────────────────────────────
 
-function runChild(caseId: string): void {
+async function runChild(caseId: string): Promise<void> {
   const c = CASES.find((x) => x.id === caseId);
   if (!c) {
     console.error(`unknown case: ${caseId}`);
@@ -213,7 +245,7 @@ function runChild(caseId: string): void {
       const r = vm.run("try { boom(); } catch (e) { 'caught: ' + e.message; }");
       console.log(`RESULT: SURVIVED (${r})`);
     } else {
-      const r = vm.run(c.code);
+      const r = c.asyncRun ? await vm.runAsync(c.code) : vm.run(c.code);
       console.log(`RESULT: SURVIVED (${String(r).slice(0, 60)})`);
     }
   } catch (e) {
@@ -245,7 +277,7 @@ const SIGNALS: Record<number, string> = {
 
 /**
  * The child runner: plain CJS piped into `node -e`. It reads one JSON line
- * from stdin ({ id, code, hostThrow }), executes it in a fresh Vm, and prints
+ * from stdin ({ id, code, hostThrow, asyncRun }), executes it in a fresh Vm, and prints
  * `RESULT: SURVIVED|THROWN (…)`. If the process dies before printing, the
  * parent knows the guest code killed it.
  */
@@ -253,8 +285,8 @@ const RUNNER_JS = `
 const { Vm } = require(process.env.VM_INDEX);
 let data = "";
 process.stdin.on("data", (d) => (data += d));
-process.stdin.on("end", () => {
-  const { code, hostThrow } = JSON.parse(data);
+process.stdin.on("end", async () => {
+  const { code, hostThrow, asyncRun } = JSON.parse(data);
   const vm = new Vm();
   try {
     if (hostThrow) {
@@ -262,7 +294,7 @@ process.stdin.on("end", () => {
       const r = vm.run("try { boom(); } catch (e) { 'caught: ' + e.message; }");
       console.log("RESULT: SURVIVED (" + r + ")");
     } else {
-      const r = vm.run(code);
+      const r = asyncRun ? await vm.runAsync(code) : vm.run(code);
       console.log("RESULT: SURVIVED (" + String(r).slice(0, 60) + ")");
     }
   } catch (e) {
@@ -298,7 +330,14 @@ function runCase(c: CrashCase): Promise<Row> {
     // The guest code is passed via stdin (env vars have a ~128KB cap and the
     // deep-parse case is 200KB of parentheses).
     child.stdin.on("error", () => {}); // EPIPE if the child dies before reading
-    child.stdin.end(JSON.stringify({ id: c.id, code: c.code, hostThrow: c.code === "__HOST_CASE__" }));
+    child.stdin.end(
+      JSON.stringify({
+        id: c.id,
+        code: c.code,
+        hostThrow: c.code === "__HOST_CASE__",
+        asyncRun: c.asyncRun === true,
+      }),
+    );
 
     let out = "";
     child.stdout.on("data", (d) => (out += d));
@@ -396,7 +435,7 @@ if (args[0] === "--case" && args[1]) {
   // CRASHED case will kill this process (that is the point), and bun's
   // SIGSEGV handler may turn crashes into hangs; use `node` + gdb for
   // serious triage, e.g.:  gdb --args node -e "$RUNNER" < case.json
-  runChild(args[1]);
+  void runChild(args[1]);
 } else if (args[0] === "--list") {
   for (const c of CASES) console.log(`${c.id.padEnd(28)} ${c.title}`);
 } else {

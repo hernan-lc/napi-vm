@@ -156,6 +156,66 @@ test("exposeFunction is callable via window", () => {
   expect(vm.run("globalThis.triple(4);")).toBe("12");
 });
 
+test("guest object keys are own data properties at the N-API boundary", () => {
+  const payload = { own: 1 };
+  Object.defineProperty(payload, "__proto__", {
+    value: { polluted: true },
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  const vm = new Vm();
+  vm.setGlobal("payload", payload);
+  expect(vm.run("payload.own;" )).toBe("1");
+  expect(vm.run("payload.__proto__.polluted;" )).toBe("true");
+  expect(vm.run("payload.polluted;" )).toBe("undefined");
+});
+
+test("runAsync dispatches an ordinary exposed function on Node's main thread", async () => {
+  const vm = new Vm();
+  vm.exposeFunction("add", (a, b) => a + b);
+  await expect(vm.runAsync("add(1, 2);" )).resolves.toBe("3");
+});
+
+test("runAsync rejects overlapping operations on one VM", async () => {
+  const vm = new Vm();
+  vm.exposeAsyncFunction("wait", () => new Promise((resolve) => setTimeout(() => resolve(1), 10)));
+  const running = vm.runAsync("await wait();" );
+  expect(() => vm.runAsync("1;" )).toThrow(/busy/i);
+  await expect(running).resolves.toBe("1");
+});
+
+test("runAsync owns the VM state until a dropped VM's worker finishes", async () => {
+  let vm = new Vm();
+  const running = vm.runAsync("let a = [0]; for (let i = 0; i < 10000; i++) { a = [a]; } 'done';" );
+  vm = null;
+  await expect(running).resolves.toBe("done");
+});
+
+test("async host arguments are deep-copied before the VM continues", async () => {
+  const vm = new Vm();
+  vm.setGlobal("obj", { n: 1 });
+  vm.exposeAsyncFunction(
+    "read",
+    (value) => new Promise((resolve) => setTimeout(() => resolve(value.n), 10)),
+  );
+  await expect(
+    vm.runAsync("let value = obj; let pending = read(value); value.n = 2; await pending;" ),
+  ).resolves.toBe("1");
+});
+
+test("host thenables settle only once", async () => {
+  const vm = new Vm();
+  vm.exposeAsyncFunction("badThenable", () => ({
+    then(resolve, reject) {
+      resolve(7);
+      resolve(8);
+      reject(new Error("late rejection"));
+    },
+  }));
+  await expect(vm.runAsync("await badThenable();" )).resolves.toBe("7");
+});
+
 test("writing via window defines a real global", () => {
   const vm = new Vm();
   expect(vm.run("window.foo = 99; foo;")).toBe("99");

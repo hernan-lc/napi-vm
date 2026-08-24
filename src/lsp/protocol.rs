@@ -27,6 +27,10 @@ pub struct RuntimeLocator {
     pub workspace_id: String,
     pub session_id: String,
     pub pid: u32,
+    /// Random capability required in the first line of every transport
+    /// connection. The locator is already workspace-scoped; this prevents a
+    /// same-user process that discovers the path from reading runtime data.
+    pub auth_token: String,
     pub transport: Transport,
 }
 

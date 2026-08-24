@@ -96,6 +96,27 @@ test("array growth past the cap throws a catchable RangeError", () => {
   expect(r).toContain("Maximum array length exceeded");
 });
 
+test("indexed array assignment enforces the hard cap", () => {
+  const vm = new Vm();
+  const r = vm.run("let a = []; try { a[1000000000] = 1; } catch (e) { e.message; }");
+  expect(r).toContain("Maximum array length exceeded");
+});
+
+test("deep Array.prototype.flat is iterative and bounded", () => {
+  const vm = new Vm();
+  const r = vm.run(
+    "let a = [0]; for (let i = 0; i < 100000; i++) { a = [a]; } a.flat(100000);",
+  );
+  expect(r).toBe("[0]");
+});
+
+test("Array.sort does not hold a RefCell borrow across a comparator", () => {
+  const vm = new Vm();
+  expect(
+    vm.run("let a = [3, 2, 1]; a.sort((x, y) => { a.push(4); return x - y; }); a.length;"),
+  ).toBe("3");
+});
+
 test("string doubling past the cap throws a catchable RangeError", () => {
   const vm = new Vm();
   const r = vm.run(

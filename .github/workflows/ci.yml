@@ -16,15 +16,16 @@ jobs:
     name: Linux x86_64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -34,7 +35,7 @@ jobs:
           key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -83,17 +84,19 @@ jobs:
           cargo build --manifest-path zed-extension/Cargo.toml --target wasm32-wasip2 --release
 
       - name: Run JS tests
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
       - run: bun test
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-linux-x64
           path: "*.node"
 
       - name: Upload LSP artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-lsp-linux-x64
           path: target/release/napi-vm-lsp
@@ -103,15 +106,16 @@ jobs:
     name: Linux aarch64
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: aarch64-unknown-linux-gnu
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -121,7 +125,7 @@ jobs:
           key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -138,7 +142,7 @@ jobs:
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-linux-arm64
           path: "*.node"
@@ -148,15 +152,16 @@ jobs:
     name: macOS aarch64
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: aarch64-apple-darwin
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -166,7 +171,7 @@ jobs:
           key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -183,7 +188,7 @@ jobs:
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-darwin-arm64
           path: "*.node"
@@ -193,15 +198,16 @@ jobs:
     name: macOS x86_64
     runs-on: macos-15-intel
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: x86_64-apple-darwin
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -211,7 +217,7 @@ jobs:
           key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -228,7 +234,7 @@ jobs:
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-darwin-x64
           path: "*.node"
@@ -238,15 +244,16 @@ jobs:
     name: Windows x86_64
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -256,7 +263,7 @@ jobs:
           key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -276,13 +283,13 @@ jobs:
         run: cargo build --release --no-default-features --bin napi-vm-lsp
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-win-x64
           path: "*.node"
 
       - name: Upload LSP artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-lsp-win-x64
           path: target/release/napi-vm-lsp.exe
@@ -292,15 +299,16 @@ jobs:
     name: Windows aarch64
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: aarch64-pc-windows-msvc
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -310,7 +318,7 @@ jobs:
           key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -324,8 +332,7 @@ jobs:
         run: cargo build --release --no-default-features --bin napi-vm-lsp --target aarch64-pc-windows-msvc
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-win-arm64
           path: "*.node"
-

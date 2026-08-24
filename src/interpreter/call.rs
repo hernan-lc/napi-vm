@@ -139,6 +139,11 @@ impl Interpreter {
                         return Ok(());
                     }
                 }
+                if props.len() >= crate::value::MAX_OBJECT_PROPS {
+                    return Err(crate::value::limit_err(
+                        "Maximum object property count exceeded",
+                    ));
+                }
                 props.push((k.clone(), val));
                 Ok(())
             }
@@ -148,14 +153,20 @@ impl Interpreter {
                 Ok(())
             }
             (Value::Array(items), Value::Number(i)) => {
-                let mut items = items.borrow_mut();
+                if !i.is_finite() || *i < 0.0 || i.fract() != 0.0 {
+                    return Err(VmErr::Msg("TypeError: Invalid array index".to_string()));
+                }
+                if *i >= crate::value::MAX_ARRAY_LEN as f64 {
+                    return Err(crate::value::limit_err("Maximum array length exceeded"));
+                }
                 let idx = *i as usize;
+                let mut items = items.borrow_mut();
                 if idx < items.len() {
                     items[idx] = val;
                 } else {
-                    while items.len() < idx {
-                        items.push(Value::Undefined);
-                    }
+                    // `resize` performs the bounded growth without a
+                    // guest-visible native loop or an unchecked index.
+                    items.resize(idx, Value::Undefined);
                     items.push(val);
                 }
                 Ok(())
@@ -505,23 +516,23 @@ pub(crate) fn spawn_generator_thread(
     std::sync::mpsc::Sender<crate::value::GenResume>,
     std::sync::mpsc::Receiver<crate::value::GenYield>,
 ) {
-    use crate::value::{GenResume, GenYield, SendGenInit};
+    use crate::value::{GenResume, GenYield, GeneratorInit, GeneratorValue};
 
     let (to_gen_tx, to_gen_rx) = std::sync::mpsc::channel::<GenResume>();
     let (from_gen_tx, from_gen_rx) = std::sync::mpsc::channel::<GenYield>();
 
-    // Bundle everything the thread needs into a single `Send` wrapper.
-    let init = SendGenInit {
+    // Bundle everything the thread needs into the generator-only transfer type.
+    let init = GeneratorInit {
         body,
         closure,
         params,
-        args,
+        args: args.into_iter().map(GeneratorValue).collect(),
         to_gen_rx,
         from_gen_tx,
         builtins_env,
     };
 
-    // Use a function boundary so the compiler sees only `SendGenInit` (which is
+    // Use a function boundary so the compiler sees only `GeneratorInit` (which is
     // `Send`) crossing the thread boundary, not the individual `Rc` fields.
     //
     // The thread gets an 8MB stack to match the main thread's: the recursion
@@ -551,10 +562,10 @@ pub(crate) fn spawn_generator_thread(
 /// then runs the generator body to completion, communicating yields and the
 /// final return value over the channel.
 #[cfg(not(target_arch = "wasm32"))]
-fn run_generator_thread(init: crate::value::SendGenInit) {
-    use crate::value::{GenResume, GenYield, SendValue};
+fn run_generator_thread(init: crate::value::GeneratorInit) {
+    use crate::value::{GenResume, GenYield, GeneratorValue};
 
-    let crate::value::SendGenInit {
+    let crate::value::GeneratorInit {
         body,
         closure,
         params,
@@ -591,7 +602,10 @@ fn run_generator_thread(init: crate::value::SendGenInit) {
     let parent_env = closure.unwrap_or_else(|| interp.global.clone());
     let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
     for (i, p) in params.iter().enumerate() {
-        let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
+        let arg = args
+            .get(i)
+            .map(|value| value.0.clone())
+            .unwrap_or(Value::Undefined);
         fe.borrow_mut().set(p, arg);
     }
 
@@ -604,7 +618,7 @@ fn run_generator_thread(init: crate::value::SendGenInit) {
     let chan = interp.gen_channel.as_ref().unwrap();
     match result {
         Ok(v) | Err(VmErr::Ret(v)) => {
-            let _ = chan.to_main.send(GenYield::Returned(SendValue(v).0));
+            let _ = chan.to_main.send(GenYield::Returned(GeneratorValue(v)));
         }
         Err(VmErr::Throw(v)) => {
             let msg = match &v {
@@ -672,19 +686,19 @@ pub(crate) fn generator_next(
     let sent = args.first().cloned();
     let to_gen = inner.to_gen.as_ref().unwrap();
     to_gen
-        .send(GenResume::Next(sent))
+        .send(GenResume::Next(sent.map(crate::value::GeneratorValue)))
         .map_err(|_| VmErr::Msg("generator thread terminated".to_string()))?;
 
     // Wait for the generator to yield or finish.
     let from_gen = inner.from_gen.as_ref().unwrap();
     match from_gen.recv() {
-        Ok(GenYield::Yielded(v)) => Ok(iter_result(v, false)),
+        Ok(GenYield::Yielded(v)) => Ok(iter_result(v.0, false)),
         Ok(GenYield::Returned(v)) => {
             inner.done = true;
-            inner.return_value = Some(v.clone());
+            inner.return_value = Some(v.0.clone());
             inner.to_gen = None;
             inner.from_gen = None;
-            Ok(iter_result(v, true))
+            Ok(iter_result(v.0, true))
         }
         Ok(GenYield::Threw(msg)) => {
             inner.done = true;

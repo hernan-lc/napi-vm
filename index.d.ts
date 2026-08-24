@@ -18,75 +18,23 @@ export declare class Vm {
   run(source: string): string
   registerModule(name: string, source: string): void
   setImportMetaMain(isMain: boolean): void
-  /**
-   * Cap the number of loop iterations a single execution may perform
-   * (default 100M). When the budget runs out, the VM throws a catchable
-   * `RangeError` instead of freezing the host event loop forever.
-   */
+  /** Cap the number of loop iterations in a single execution. */
   setLoopLimit(n: number): void
   getGlobal(name: string): string
-  /**
-   * Define a global variable in the VM from a structured Node value. The
-   * value is reachable both as a bare identifier and (once the global
-   * aliases are wired) via `window`/`globalThis`/`self`.
-   */
   setGlobal(name: string, value: unknown): void
-  /**
-   * Expose a Node function to the VM as a global. VM code can then call it
-   * by name; arguments and the return value are marshalled across the
-   * boundary, and a thrown error propagates into the VM as a catchable
-   * exception.
-   */
   exposeFunction(name: string, func: unknown): void
-  /**
-   * Expose an async Node function to the VM. Unlike `exposeFunction`, the
-   * function may return a Promise. VM code must `await` the call (use
-   * `runAsync` to execute code that awaits). The VM thread parks until the
-   * Promise settles on the Node event loop.
-   */
   exposeAsyncFunction(name: string, func: unknown): void
   /**
-   * Execute code that may `await` async host functions. Returns a Promise
-   * that resolves with the stringified result once the VM finishes.
-   *
-   * Internally, the VM runs on a dedicated thread so that `await` can park
-   * without blocking the Node event loop. Async host calls are dispatched
-   * back to the main thread via a ThreadsafeFunction.
-   *
-   * **Throughput caveat:** each call spawns a new OS thread. Under
-   * sustained high-frequency use (>100 calls/sec for extended periods),
-   * the thread spawn/cleanup cycle can exhaust native resources and crash
-   * the process. For high-frequency event handlers (chat messages, ticks),
-   * prefer the synchronous `run()` which completes in microseconds for
-   * typical workloads and never spawns a thread. Reserve `runAsync` for
-   * genuinely heavy or long-running computation where blocking the event
-   * loop is unacceptable.
-   *
-   * The caller must not call `run`/`runAsync` concurrently on the same VM.
+   * Execute code that may await host functions. The worker captures only
+   * the `Arc<VMState>`; the interpreter itself remains under `RuntimeCell`'s
+   * mutex and is never accessed concurrently with a Node method.
    */
   runAsync(source: string): Promise<string>
-  /**
-   * Remove a previously registered module so its exports are no longer
-   * importable. Essential for hot-reload: call this before re-registering
-   * a changed module to avoid stale export state.
-   */
   removeModule(name: string): boolean
-  /** Check whether a module with the given name is registered. */
   hasModule(name: string): boolean
-  /** Return the names of all registered modules. */
   listModules(): Array<string>
-  /**
-   * Remove a global binding (including exposed host functions). Returns
-   * `true` if the binding existed. Use before re-exposing a function on
-   * hot-reload to avoid leaking stale references.
-   */
   removeGlobal(name: string): boolean
-  /** Check whether a global binding exists. */
   hasGlobal(name: string): boolean
-  /**
-   * Call a function defined in the VM (e.g. via a prior `run`) from Node,
-   * marshalling arguments in and the return value out.
-   */
   callFunction(name: string, args: Array<unknown>): unknown
 }
 export type VM = Vm

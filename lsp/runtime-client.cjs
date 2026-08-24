@@ -4,6 +4,8 @@ const net = require("node:net");
 const path = require("node:path");
 
 const PROTOCOL_VERSION = 1;
+const MAX_FRAME_BYTES = 1024 * 1024;
+const AUTH_TIMEOUT_MS = 5000;
 
 function workspaceId(root) {
   const resolved = fs.realpathSync(root);
@@ -56,6 +58,9 @@ class RuntimeClient {
       locator = JSON.parse(fs.readFileSync(locatorPath(this.root), "utf8"));
       if (locator.protocolVersion !== PROTOCOL_VERSION) throw new Error("protocol mismatch");
       if (locator.workspaceId !== workspaceId(this.root)) throw new Error("workspace mismatch");
+      if (typeof locator.authToken !== "string" || locator.authToken.length === 0 || locator.authToken.length > 256) {
+        throw new Error("invalid runtime capability token");
+      }
       if (!processAlive(locator.pid)) throw new Error("stale process");
     } catch {
       if (this.sessionId) {
@@ -74,9 +79,18 @@ class RuntimeClient {
     const socket = net.createConnection(locator.transport.address);
     this.socket = socket;
     let buffer = "";
+    let authenticated = false;
     socket.setEncoding("utf8");
+    socket.setTimeout(AUTH_TIMEOUT_MS, () => socket.destroy());
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify({ type: "auth", token: locator.authToken })}\n`);
+    });
     socket.on("data", (chunk) => {
       buffer += chunk;
+      if (Buffer.byteLength(buffer, "utf8") > MAX_FRAME_BYTES) {
+        socket.destroy();
+        return;
+      }
       let newline;
       while ((newline = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, newline).trim();
@@ -84,6 +98,13 @@ class RuntimeClient {
         if (!line) continue;
         try {
           const message = JSON.parse(line);
+          if (!authenticated) {
+            if (message.type !== "snapshot") {
+              throw new Error("runtime authentication failed");
+            }
+            authenticated = true;
+            socket.setTimeout(0);
+          }
           if (message.type === "snapshot") this.callbacks.onSnapshot(message.payload);
         } catch (error) {
           this.callbacks.onError(error);

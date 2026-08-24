@@ -8,7 +8,7 @@ const path = require("node:path");
 const { Vm } = require("../index.js");
 const { VmSession, runtimePath } = require("./session.cjs");
 
-function connect(address) {
+function connect(address, authToken) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(address);
     const timer = setTimeout(() => {
@@ -18,6 +18,7 @@ function connect(address) {
     socket.once("connect", () => {
       clearTimeout(timer);
       socket.setEncoding("utf8");
+      socket.write(`${JSON.stringify({ type: "auth", token: authToken })}\n`);
       resolve(socket);
     });
     socket.once("error", (error) => {
@@ -48,6 +49,45 @@ function nextMessage(socket) {
   });
 }
 
+function assertUnauthorized(address) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(address);
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("unauthorized runtime client was not closed"));
+    }, 3000);
+    socket.setEncoding("utf8");
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify({ type: "auth", token: "wrong-token" })}\n`);
+    });
+    socket.on("data", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      reject(new Error("unauthorized runtime client received data"));
+    });
+    socket.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    socket.on("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+async function readLocatorWhenReady(workspace) {
+  const file = runtimePath(workspace);
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      return JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error("VmSession did not publish its locator");
+}
+
 async function main() {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "napi-vm-runtime-"));
   const vm = new Vm();
@@ -68,8 +108,9 @@ async function main() {
       documentation: "Returns a test timestamp.",
     });
 
-    const locator = JSON.parse(fs.readFileSync(runtimePath(workspace), "utf8"));
-    socket = await connect(locator.transport.address);
+    const locator = await readLocatorWhenReady(workspace);
+    await assertUnauthorized(locator.transport.address);
+    socket = await connect(locator.transport.address, locator.authToken);
     const first = await nextMessage(socket);
     assert.equal(first.type, "snapshot");
     assert.equal(first.payload.functions[0].name, "hostNow");

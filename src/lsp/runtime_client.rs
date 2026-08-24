@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,7 +17,12 @@ use super::protocol::{
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// Read timeout on the runtime socket. This exists only so the reader thread
 /// wakes up to check its stop flag — a timeout is *not* a disconnect.
+#[cfg(unix)]
 const READ_TIMEOUT: Duration = Duration::from_millis(250);
+/// Maximum encoded JSON frame accepted from the runtime channel. The runtime
+/// metadata is intentionally bounded; an authenticated peer can still be
+/// buggy or compromised, so authentication is not a substitute for framing.
+const MAX_FRAME_BYTES: usize = 1024 * 1024;
 /// After a connection to a session drops, wait this long before dialing the
 /// same session id again so a repeatedly failing socket cannot spin.
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(2);
@@ -184,6 +189,9 @@ fn read_locator(root: &Path) -> Result<RuntimeLocator, String> {
     if locator.workspace_id != expected {
         return Err("workspace mismatch".into());
     }
+    if locator.auth_token.is_empty() || locator.auth_token.len() > 256 {
+        return Err("invalid runtime capability token".into());
+    }
     if !process_alive(locator.pid) {
         return Err("stale process".into());
     }
@@ -210,10 +218,20 @@ fn read_transport(
     session_id: &str,
 ) -> Result<(), String> {
     match locator.transport.kind {
-        TransportKind::Unix => read_unix(&locator.transport.address, stop, tx, session_id),
-        TransportKind::NamedPipe => {
-            read_named_pipe(&locator.transport.address, stop, tx, session_id)
-        }
+        TransportKind::Unix => read_unix(
+            &locator.transport.address,
+            &locator.auth_token,
+            stop,
+            tx,
+            session_id,
+        ),
+        TransportKind::NamedPipe => read_named_pipe(
+            &locator.transport.address,
+            &locator.auth_token,
+            stop,
+            tx,
+            session_id,
+        ),
     }
 }
 
@@ -229,24 +247,35 @@ fn consume_lines<R: Read>(
     tx: &Sender<ConnectionMessage>,
     session_id: &str,
 ) {
-    let mut reader = BufReader::new(reader);
     // Bytes rather than a String: a timeout can land mid-character, and
     // `read_line` would reject the partial UTF-8 sequence and drop it.
+    let mut reader = reader;
     let mut buffer: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
     while !stop.load(Ordering::SeqCst) {
-        match reader.read_until(b'\n', &mut buffer) {
+        match reader.read(&mut chunk) {
             Ok(0) => break, // real EOF
-            Ok(_) => {
-                if !buffer.ends_with(b"\n") {
-                    // Partial line, keep accumulating.
-                    continue;
+            Ok(read) => {
+                let mut oversized = false;
+                for byte in &chunk[..read] {
+                    if *byte == b'\n' {
+                        let line = String::from_utf8_lossy(&buffer).trim().to_string();
+                        buffer.clear();
+                        if !line.is_empty() && handle_line(&line, tx, session_id).is_err() {
+                            return;
+                        }
+                    } else if buffer.len() < MAX_FRAME_BYTES {
+                        buffer.push(*byte);
+                    } else {
+                        oversized = true;
+                        break;
+                    }
                 }
-                let line = String::from_utf8_lossy(&buffer).trim().to_string();
-                buffer.clear();
-                if line.is_empty() {
-                    continue;
-                }
-                if handle_line(&line, tx, session_id).is_err() {
+                if oversized {
+                    let _ = tx.send(ConnectionMessage::Event(
+                        session_id.to_string(),
+                        RuntimeEvent::Error("runtime frame exceeds maximum size".into()),
+                    ));
                     break;
                 }
             }
@@ -287,12 +316,17 @@ fn handle_line(line: &str, tx: &Sender<ConnectionMessage>, session_id: &str) -> 
 #[cfg(unix)]
 fn read_unix(
     address: &str,
+    auth_token: &str,
     stop: Arc<AtomicBool>,
     tx: &Sender<ConnectionMessage>,
     session_id: &str,
 ) -> Result<(), String> {
     let stream = std::os::unix::net::UnixStream::connect(address).map_err(|e| e.to_string())?;
-    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+    stream
+        .set_read_timeout(Some(READ_TIMEOUT))
+        .map_err(|e| e.to_string())?;
+    let mut writer = stream.try_clone().map_err(|e| e.to_string())?;
+    authenticate(&mut writer, auth_token)?;
     consume_lines(stream, stop, tx, session_id);
     Ok(())
 }
@@ -300,6 +334,7 @@ fn read_unix(
 #[cfg(not(unix))]
 fn read_unix(
     _address: &str,
+    _auth_token: &str,
     _stop: Arc<AtomicBool>,
     _tx: &Sender<ConnectionMessage>,
     _session_id: &str,
@@ -309,17 +344,33 @@ fn read_unix(
 
 fn read_named_pipe(
     address: &str,
+    auth_token: &str,
     stop: Arc<AtomicBool>,
     tx: &Sender<ConnectionMessage>,
     session_id: &str,
 ) -> Result<(), String> {
-    let file = std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(address)
         .map_err(|e| e.to_string())?;
+    authenticate(&mut file, auth_token)?;
     consume_lines(file, stop, tx, session_id);
     Ok(())
+}
+
+fn authenticate<W: Write>(writer: &mut W, token: &str) -> Result<(), String> {
+    if token.is_empty() || token.len() > 256 {
+        return Err("invalid runtime capability token".into());
+    }
+    let message = serde_json::json!({"type": "auth", "token": token});
+    let encoded = serde_json::to_vec(&message).map_err(|e| e.to_string())?;
+    if encoded.len() > MAX_FRAME_BYTES {
+        return Err("runtime authentication frame is too large".into());
+    }
+    writer.write_all(&encoded).map_err(|e| e.to_string())?;
+    writer.write_all(b"\n").map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())
 }
 
 /// Write a single newline-delimited JSON value to a writer. Used by smoke
@@ -427,6 +478,32 @@ mod tests {
         // The trailing line has no newline; EOF flushes nothing but must not
         // hang, and the loop must terminate.
         assert!(snapshots(&rx).is_empty());
+    }
+
+    #[test]
+    fn oversized_runtime_frames_are_rejected() {
+        let (tx, rx) = mpsc::channel();
+        let reader = Cursor::new(vec![b'x'; MAX_FRAME_BYTES + 1]);
+        consume_lines(reader, Arc::new(AtomicBool::new(false)), &tx, "session-1");
+        assert!(rx.try_iter().any(|message| {
+            matches!(
+                message,
+                ConnectionMessage::Event(_, RuntimeEvent::Error(error))
+                    if error.contains("maximum size")
+            )
+        }));
+    }
+
+    #[test]
+    fn authentication_is_bounded_and_newline_delimited() {
+        let mut output = Vec::new();
+        authenticate(&mut output, "secret-token").unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output[..output.len() - 1]).unwrap(),
+            serde_json::json!({"type": "auth", "token": "secret-token"})
+        );
+        assert!(authenticate(&mut output, "").is_err());
+        assert!(authenticate(&mut output, &"x".repeat(257)).is_err());
     }
 
     #[test]

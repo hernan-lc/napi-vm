@@ -11,6 +11,7 @@
 //! Each marshalling helper is a *safe* function that confines all FFI to a
 //! single `unsafe` block around its body; the `env` handle always
 //! originates from a live N-API callback, so the operations are sound.
+use std::collections::HashSet;
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ptr;
@@ -18,7 +19,7 @@ use std::ptr;
 use napi::sys;
 
 use crate::error::VmErr;
-use crate::value::Value;
+use crate::value::{MAX_ARRAY_LEN, MAX_STRING_LEN, Value};
 
 #[inline]
 pub(super) fn chk(status: sys::napi_status) -> Result<(), VmErr> {
@@ -50,12 +51,33 @@ fn set_str_prop(
     key: &str,
     val: &str,
 ) -> Result<(), VmErr> {
-    unsafe {
-        let sv = make_str(env, val)?;
-        let ck =
-            CString::new(key).map_err(|_| VmErr::Msg("object key contains NUL".to_string()))?;
-        chk(sys::napi_set_named_property(env, obj, ck.as_ptr(), sv))
-    }
+    let sv = make_str(env, val)?;
+    define_named_property(env, obj, key, sv)
+}
+
+/// Define an own data property. Unlike ordinary `[[Set]]`, this does not
+/// invoke the legacy `Object.prototype.__proto__` setter for guest-controlled
+/// keys.
+fn define_named_property(
+    env: sys::napi_env,
+    obj: sys::napi_value,
+    key: &str,
+    value: sys::napi_value,
+) -> Result<(), VmErr> {
+    let key = CString::new(key).map_err(|_| VmErr::Msg("object key contains NUL".to_string()))?;
+    let descriptor = sys::napi_property_descriptor {
+        utf8name: key.as_ptr(),
+        name: ptr::null_mut(),
+        method: None,
+        getter: None,
+        setter: None,
+        value,
+        attributes: sys::PropertyAttributes::writable
+            | sys::PropertyAttributes::enumerable
+            | sys::PropertyAttributes::configurable,
+        data: ptr::null_mut(),
+    };
+    chk(unsafe { sys::napi_define_properties(env, obj, 1, &descriptor) })
 }
 
 /// Maximum nesting marshalled across the NAPI boundary in either direction.
@@ -64,14 +86,19 @@ fn set_str_prop(
 const MAX_MARSHAL_DEPTH: usize = 512;
 
 pub(super) fn to_napi(env: sys::napi_env, v: &Value) -> Result<sys::napi_value, VmErr> {
-    to_napi_d(env, v, 0)
+    to_napi_d(env, v, 0, &mut HashSet::new())
 }
 
 /// Marshal a VM `Value` into a raw N-API value.
 ///
 /// Functions, promises, generators and other VM-only values have no faithful
 /// representation in this direction yet and are surfaced as `undefined`.
-fn to_napi_d(env: sys::napi_env, v: &Value, depth: usize) -> Result<sys::napi_value, VmErr> {
+fn to_napi_d(
+    env: sys::napi_env,
+    v: &Value,
+    depth: usize,
+    active: &mut HashSet<usize>,
+) -> Result<sys::napi_value, VmErr> {
     if depth > MAX_MARSHAL_DEPTH {
         return Err(VmErr::Msg("value is too deep to marshal".to_string()));
     }
@@ -82,28 +109,59 @@ fn to_napi_d(env: sys::napi_env, v: &Value, depth: usize) -> Result<sys::napi_va
             Value::Null => chk(sys::napi_get_null(env, &mut out))?,
             Value::Bool(b) => chk(sys::napi_get_boolean(env, *b, &mut out))?,
             Value::Number(n) => chk(sys::napi_create_double(env, *n, &mut out))?,
-            Value::String(s) => return make_str(env, s),
+            Value::String(s) => {
+                if s.len() > MAX_STRING_LEN {
+                    return Err(VmErr::Msg(
+                        "RangeError: Maximum string length exceeded".to_string(),
+                    ));
+                }
+                return make_str(env, s);
+            }
             Value::Array(items) => {
+                let identity = std::rc::Rc::as_ptr(items) as usize;
+                if !active.insert(identity) {
+                    return Err(VmErr::Msg(
+                        "TypeError: Cannot marshal a cyclic VM value".to_string(),
+                    ));
+                }
                 let items = items.borrow();
+                if items.len() > MAX_ARRAY_LEN {
+                    active.remove(&identity);
+                    return Err(VmErr::Msg(
+                        "RangeError: Maximum array length exceeded".to_string(),
+                    ));
+                }
                 chk(sys::napi_create_array_with_length(
                     env,
                     items.len(),
                     &mut out,
                 ))?;
                 for (i, item) in items.iter().enumerate() {
-                    let ev = to_napi_d(env, item, depth + 1)?;
+                    let ev = to_napi_d(env, item, depth + 1, active)?;
                     chk(sys::napi_set_element(env, out, i as u32, ev))?;
                 }
+                active.remove(&identity);
             }
             Value::Object { props, .. } => {
+                let identity = std::rc::Rc::as_ptr(props) as usize;
+                if !active.insert(identity) {
+                    return Err(VmErr::Msg(
+                        "TypeError: Cannot marshal a cyclic VM value".to_string(),
+                    ));
+                }
                 chk(sys::napi_create_object(env, &mut out))?;
                 let props = props.borrow();
-                for (k, val) in props.iter() {
-                    let ev = to_napi_d(env, val, depth + 1)?;
-                    let ck = CString::new(k.as_str())
-                        .map_err(|_| VmErr::Msg("object key contains NUL".to_string()))?;
-                    chk(sys::napi_set_named_property(env, out, ck.as_ptr(), ev))?;
+                if props.len() > MAX_ARRAY_LEN {
+                    active.remove(&identity);
+                    return Err(VmErr::Msg(
+                        "RangeError: Maximum object property count exceeded".to_string(),
+                    ));
                 }
+                for (k, val) in props.iter() {
+                    let ev = to_napi_d(env, val, depth + 1, active)?;
+                    define_named_property(env, out, k, ev)?;
+                }
+                active.remove(&identity);
             }
             Value::Error(e) => {
                 chk(sys::napi_create_object(env, &mut out))?;
@@ -164,14 +222,19 @@ pub(super) fn get_named_str(
 }
 
 pub(super) fn from_napi(env: sys::napi_env, raw: sys::napi_value) -> Result<Value, VmErr> {
-    from_napi_d(env, raw, 0)
+    from_napi_d(env, raw, 0, &mut HashSet::new())
 }
 
 /// Marshal a raw N-API value into a VM `Value`.
 ///
 /// JavaScript functions are not marshalled into callable VM values here; use
 /// `Vm.exposeFunction` to make a Node function callable from the VM.
-fn from_napi_d(env: sys::napi_env, raw: sys::napi_value, depth: usize) -> Result<Value, VmErr> {
+fn from_napi_d(
+    env: sys::napi_env,
+    raw: sys::napi_value,
+    depth: usize,
+    active: &mut HashSet<usize>,
+) -> Result<Value, VmErr> {
     if depth > MAX_MARSHAL_DEPTH {
         return Err(VmErr::Msg("value is too deep to marshal".to_string()));
     }
@@ -194,7 +257,15 @@ fn from_napi_d(env: sys::napi_env, raw: sys::napi_value, depth: usize) -> Result
                 chk(sys::napi_get_value_double(env, raw, &mut n))?;
                 Value::Number(n)
             }
-            sys::ValueType::napi_string => Value::String(read_string(env, raw)?),
+            sys::ValueType::napi_string => {
+                let value = read_string(env, raw)?;
+                if value.len() > MAX_STRING_LEN {
+                    return Err(VmErr::Msg(
+                        "RangeError: Maximum string length exceeded".to_string(),
+                    ));
+                }
+                Value::String(value)
+            }
             sys::ValueType::napi_object => {
                 // A JS `Error` carries its `message` as a *non-enumerable*
                 // property, so the generic enumerable-key walk below would drop
@@ -211,6 +282,18 @@ fn from_napi_d(env: sys::napi_env, raw: sys::napi_value, depth: usize) -> Result
                         ("message".to_string(), Value::String(message)),
                     ]));
                 }
+
+                // N-API values are allowed to be cyclic. Keep an identity set
+                // while walking a single object graph so a host object such as
+                // `const a = {}; a.self = a` becomes a catchable boundary
+                // error instead of recursing until the native stack overflows.
+                let identity = raw as usize;
+                if !active.insert(identity) {
+                    return Err(VmErr::Msg(
+                        "TypeError: Cannot marshal a cyclic host value".to_string(),
+                    ));
+                }
+
                 let mut is_array = false;
                 chk(sys::napi_is_array(env, raw, &mut is_array))?;
                 if is_array {
@@ -226,23 +309,37 @@ fn from_napi_d(env: sys::napi_env, raw: sys::napi_value, depth: usize) -> Result
                         }
                         let mut ev = ptr::null_mut();
                         chk(sys::napi_get_element(env, raw, i, &mut ev))?;
-                        items.push(from_napi_d(env, ev, depth + 1)?);
+                        items.push(from_napi_d(env, ev, depth + 1, active)?);
                     }
+                    active.remove(&identity);
                     Value::array(items)
                 } else {
                     let mut names = ptr::null_mut();
                     chk(sys::napi_get_property_names(env, raw, &mut names))?;
                     let mut len: u32 = 0;
                     chk(sys::napi_get_array_length(env, names, &mut len))?;
+                    if len as usize > MAX_ARRAY_LEN {
+                        active.remove(&identity);
+                        return Err(VmErr::Msg(
+                            "RangeError: Maximum object property count exceeded".to_string(),
+                        ));
+                    }
                     let mut props = Vec::with_capacity(len as usize);
                     for i in 0..len {
                         let mut key = ptr::null_mut();
                         chk(sys::napi_get_element(env, names, i, &mut key))?;
                         let key_str = read_string(env, key)?;
+                        if key_str.len() > MAX_STRING_LEN {
+                            active.remove(&identity);
+                            return Err(VmErr::Msg(
+                                "RangeError: Maximum property name length exceeded".to_string(),
+                            ));
+                        }
                         let mut pv = ptr::null_mut();
                         chk(sys::napi_get_property(env, raw, key, &mut pv))?;
-                        props.push((key_str, from_napi_d(env, pv, depth + 1)?));
+                        props.push((key_str, from_napi_d(env, pv, depth + 1, active)?));
                     }
+                    active.remove(&identity);
                     Value::object(props)
                 }
             }
@@ -252,13 +349,130 @@ fn from_napi_d(env: sys::napi_env, raw: sys::napi_value, depth: usize) -> Result
     }
 }
 
-/// Wrapper asserting a raw pointer can be sent across threads. Used by
-/// `run_async` to move the interpreter pointer and TSFN handle to the VM
-/// thread. Safety: the channel/TSFN protocol guarantees mutual exclusion —
-/// only one thread accesses the pointed-to data at a time.
+/// An owned, thread-safe representation used by the N-API host bridge.
 ///
-/// Stores the pointer as `usize` to sidestep the compiler's auto-trait
-/// analysis on raw pointers (which are `!Send` by default).
-#[derive(Clone, Copy)]
-pub(super) struct SendPtr(pub(super) usize);
-unsafe impl Send for SendPtr {}
+/// `Value` deliberately remains a single-threaded type: it contains `Rc` and
+/// `RefCell` and is never sent to the worker thread. The bridge copies a value
+/// into this representation while it still owns the interpreter lock, then
+/// reconstructs a fresh VM value on the receiving side. This is also where
+/// cycle, depth, string, array, and property-count limits are enforced.
+#[derive(Debug, Clone)]
+pub(super) enum WireValue {
+    Undefined,
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<WireValue>),
+    Object(Vec<(String, WireValue)>),
+    Error { name: String, message: String },
+}
+
+impl WireValue {
+    pub(super) fn from_value(value: &Value) -> Result<Self, VmErr> {
+        let mut active = HashSet::new();
+        Self::from_value_d(value, 0, &mut active)
+    }
+
+    fn from_value_d(
+        value: &Value,
+        depth: usize,
+        active: &mut HashSet<usize>,
+    ) -> Result<Self, VmErr> {
+        if depth > MAX_MARSHAL_DEPTH {
+            return Err(VmErr::Msg("value is too deep to marshal".to_string()));
+        }
+
+        match value {
+            Value::Undefined => Ok(Self::Undefined),
+            Value::Null => Ok(Self::Null),
+            Value::Bool(value) => Ok(Self::Bool(*value)),
+            Value::Number(value) => Ok(Self::Number(*value)),
+            Value::String(value) => {
+                if value.len() > MAX_STRING_LEN {
+                    return Err(VmErr::Msg(
+                        "RangeError: Maximum string length exceeded".to_string(),
+                    ));
+                }
+                Ok(Self::String(value.clone()))
+            }
+            Value::Array(items) => {
+                let identity = std::rc::Rc::as_ptr(items) as usize;
+                if !active.insert(identity) {
+                    return Err(VmErr::Msg(
+                        "TypeError: Cannot marshal a cyclic VM value".to_string(),
+                    ));
+                }
+                let items = items.borrow();
+                if items.len() > MAX_ARRAY_LEN {
+                    active.remove(&identity);
+                    return Err(VmErr::Msg(
+                        "RangeError: Maximum array length exceeded".to_string(),
+                    ));
+                }
+                let result = items
+                    .iter()
+                    .map(|item| Self::from_value_d(item, depth + 1, active))
+                    .collect::<Result<Vec<_>, _>>();
+                active.remove(&identity);
+                result.map(Self::Array)
+            }
+            Value::Object { props, .. } => {
+                let identity = std::rc::Rc::as_ptr(props) as usize;
+                if !active.insert(identity) {
+                    return Err(VmErr::Msg(
+                        "TypeError: Cannot marshal a cyclic VM value".to_string(),
+                    ));
+                }
+                let props = props.borrow();
+                if props.len() > MAX_ARRAY_LEN {
+                    active.remove(&identity);
+                    return Err(VmErr::Msg(
+                        "RangeError: Maximum object property count exceeded".to_string(),
+                    ));
+                }
+                let result = props
+                    .iter()
+                    .map(|(key, value)| {
+                        if key.len() > MAX_STRING_LEN {
+                            return Err(VmErr::Msg(
+                                "RangeError: Maximum property name length exceeded".to_string(),
+                            ));
+                        }
+                        Ok((key.clone(), Self::from_value_d(value, depth + 1, active)?))
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+                active.remove(&identity);
+                result.map(Self::Object)
+            }
+            Value::Error(error) => Ok(Self::Error {
+                name: error.name.clone(),
+                message: error.message.clone(),
+            }),
+            // VM-only callable/stateful values do not have a safe wire form.
+            // Preserve the existing boundary behavior by exposing them as
+            // `undefined` rather than moving their Rc-backed internals.
+            _ => Ok(Self::Undefined),
+        }
+    }
+
+    pub(super) fn into_value(self) -> Value {
+        match self {
+            Self::Undefined => Value::Undefined,
+            Self::Null => Value::Null,
+            Self::Bool(value) => Value::Bool(value),
+            Self::Number(value) => Value::Number(value),
+            Self::String(value) => Value::String(value),
+            Self::Array(values) => Value::array(values.into_iter().map(Self::into_value).collect()),
+            Self::Object(values) => Value::object(
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key, value.into_value()))
+                    .collect(),
+            ),
+            Self::Error { name, message } => {
+                Value::Error(Box::new(crate::value::ErrorData { name, message }))
+            }
+        }
+    }
+}

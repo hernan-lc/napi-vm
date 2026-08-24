@@ -49,4 +49,4 @@ regression suite. Run `npm test` to see the current verified count.
 
 ## License
 
-No license specified.
+MIT — see [LICENSE](LICENSE).

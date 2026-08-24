@@ -267,12 +267,17 @@ fn array_reverse(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Valu
 fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     if let Value::Array(items) = &this {
         let cmp = a.first().cloned().unwrap_or(Value::Undefined);
+        // Never hold the array's RefCell borrow while invoking guest code.
+        // Comparators are allowed to re-enter the array (for example by
+        // calling `push`), and keeping the RefMut across the callback used to
+        // turn that normal JavaScript re-entry into a Rust RefCell panic.
+        let mut sorted = items.borrow().clone();
         if matches!(
             cmp,
             Value::Function(_) | Value::NativeFunction { .. } | Value::HostFunction { .. }
         ) {
             // Comparator callback: negative/positive/zero ordering.
-            items.borrow_mut().sort_by(|x, y| {
+            sorted.sort_by(|x, y| {
                 let n = interp
                     .call_this(&cmp, Value::Undefined, vec![x.clone(), y.clone()])
                     .map(|v| v.to_number())
@@ -281,8 +286,9 @@ fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
             });
         } else {
             // Default: lexicographic comparison of the stringified elements.
-            items.borrow_mut().sort_by_key(|x| interp.vs(x));
+            sorted.sort_by_key(|x| interp.vs(x));
         }
+        *items.borrow_mut() = sorted;
     }
     Ok(this)
 }
@@ -292,24 +298,49 @@ fn array_flat(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, 
     let depth = a.first().map(|v| v.to_number()).unwrap_or(1.0);
     let depth = if depth.is_nan() { 0.0 } else { depth };
 
-    fn flatten(items: &[Value], depth: f64, out: &mut Vec<Value>) -> Result<(), VmErr> {
-        for it in items {
-            if depth > 0.0
-                && let Value::Array(inner) = it
-            {
-                flatten(&inner.borrow(), depth - 1.0, out)?;
-            } else {
-                out.push(it.clone());
-            }
-            if out.len() > crate::value::MAX_ARRAY_LEN {
-                return Err(crate::value::limit_err("Maximum array length exceeded"));
-            }
-        }
-        Ok(())
+    // Use an explicit work stack. Guest code can construct deeply nested
+    // arrays dynamically, so parser and call-depth limits do not protect the
+    // recursive implementation that used to live here.
+    enum Work {
+        Value(Value, f64),
+        Leave(usize),
     }
 
+    let mut work = Vec::with_capacity(items.len());
+    for item in items.into_iter().rev() {
+        work.push(Work::Value(item, depth));
+    }
+    let mut active = std::collections::HashSet::new();
     let mut out = Vec::new();
-    flatten(&items, depth, &mut out)?;
+    while let Some(entry) = work.pop() {
+        match entry {
+            Work::Leave(identity) => {
+                active.remove(&identity);
+            }
+            Work::Value(value, remaining) => {
+                if remaining > 0.0
+                    && let Value::Array(inner) = &value
+                {
+                    let identity = std::rc::Rc::as_ptr(inner) as usize;
+                    // A cyclic array cannot be expanded forever. Treat the
+                    // back-edge as a leaf, matching the boundary's other
+                    // cycle-safe representations.
+                    if active.insert(identity) {
+                        work.push(Work::Leave(identity));
+                        let children = inner.borrow().clone();
+                        for child in children.into_iter().rev() {
+                            work.push(Work::Value(child, remaining - 1.0));
+                        }
+                        continue;
+                    }
+                }
+                out.push(value);
+                if out.len() > crate::value::MAX_ARRAY_LEN {
+                    return Err(crate::value::limit_err("Maximum array length exceeded"));
+                }
+            }
+        }
+    }
     Ok(Value::array(out))
 }
 

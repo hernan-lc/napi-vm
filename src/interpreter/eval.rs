@@ -580,7 +580,12 @@ impl Interpreter {
     pub(crate) fn eval_expr(&mut self, e: &Expr) -> Result<Value, VmErr> {
         match e {
             Expr::Number(n) => Ok(Value::Number(*n)),
-            Expr::String(s) => Ok(Value::String(s.clone())),
+            Expr::String(s) => {
+                if s.len() > crate::value::MAX_STRING_LEN {
+                    return Err(crate::value::limit_err("Maximum string length exceeded"));
+                }
+                Ok(Value::String(s.clone()))
+            }
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Null => Ok(Value::Null),
             Expr::Undefined => Ok(Value::Undefined),
@@ -689,6 +694,11 @@ impl Interpreter {
                                 o.extend(sprops.borrow().iter().cloned());
                             }
                         }
+                    }
+                    if o.len() > crate::value::MAX_OBJECT_PROPS {
+                        return Err(crate::value::limit_err(
+                            "Maximum object property count exceeded",
+                        ));
                     }
                 }
                 Ok(Value::object(o))
@@ -971,6 +981,9 @@ impl Interpreter {
                         result.push_str(&self.vs(&val));
                     }
                 }
+                if result.len() > crate::value::MAX_STRING_LEN {
+                    return Err(crate::value::limit_err("Maximum string length exceeded"));
+                }
                 Ok(Value::String(result))
             }
             Expr::Super => vm_err("'super' must be called as a function"),
@@ -1012,11 +1025,13 @@ impl Interpreter {
                 if let Some(chan) = self.gen_channel.as_ref() {
                     use crate::value::{GenResume, GenYield};
                     chan.to_main
-                        .send(GenYield::Yielded(v))
+                        .send(GenYield::Yielded(crate::value::GeneratorValue(v)))
                         .map_err(|_| VmErr::Msg("generator receiver dropped".to_string()))?;
                     // Block until the main thread calls next() again.
                     match chan.from_main.recv() {
-                        Ok(GenResume::Next(sent)) => Ok(sent.unwrap_or(Value::Undefined)),
+                        Ok(GenResume::Next(sent)) => {
+                            Ok(sent.map(|v| v.0).unwrap_or(Value::Undefined))
+                        }
                         Err(_) => {
                             // Main thread dropped the generator; stop execution.
                             vm_ret(Value::Undefined)

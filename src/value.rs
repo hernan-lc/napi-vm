@@ -14,6 +14,11 @@ use crate::parser::Statement;
 /// worst-case guest allocations survivable for the host.
 pub const MAX_ARRAY_LEN: usize = 262_144;
 
+/// Hard cap on the number of own properties in a guest object. Object
+/// assignment is another unbounded allocation path even when arrays and
+/// strings are capped.
+pub const MAX_OBJECT_PROPS: usize = 262_144;
+
 /// Hard cap (bytes) on any string the VM produces — concatenation, `repeat`,
 /// `join`, `replaceAll`, `JSON.stringify`. Same rationale as `MAX_ARRAY_LEN`.
 pub const MAX_STRING_LEN: usize = 16 * 1024 * 1024;
@@ -127,15 +132,15 @@ pub enum PromiseState {
 /// Messages sent from the main thread to the generator thread.
 pub enum GenResume {
     /// Resume execution, optionally passing a value into the `yield` expression.
-    Next(Option<Value>),
+    Next(Option<GeneratorValue>),
 }
 
 /// Messages sent from the generator thread back to the main thread.
 pub enum GenYield {
     /// The generator yielded a value and is now suspended.
-    Yielded(Value),
+    Yielded(GeneratorValue),
     /// The generator returned (body finished). Carries the return value.
-    Returned(Value),
+    Returned(GeneratorValue),
     /// The generator threw an uncaught error.
     Threw(String),
 }
@@ -178,27 +183,31 @@ impl std::fmt::Debug for GeneratorInner {
     }
 }
 
-/// A wrapper asserting that a `Value` can be sent across threads.
+/// A generator-only wrapper for values transferred at a suspension point.
 ///
 /// # Safety
 /// The generator thread and the main thread never access shared `Rc<RefCell<_>>`
 /// state concurrently: the channel protocol guarantees mutual exclusion (the
 /// main thread blocks on `recv()` while the generator runs, and vice versa).
-pub struct SendValue(pub Value);
-unsafe impl Send for SendValue {}
+pub struct GeneratorValue(pub Value);
+unsafe impl Send for GeneratorValue {}
 
-/// A wrapper asserting that the generator's initial state can be sent to its
-/// thread. Same safety argument as `SendValue`.
-pub struct SendGenInit {
+/// Generator state transferred once to its dedicated execution thread.
+///
+/// This type is deliberately private to the generator implementation. It must
+/// not be used for host calls or general VM work: the generator protocol is the
+/// only place where the channel guarantees that the two sides do not access
+/// the wrapped reference-counted values concurrently.
+pub struct GeneratorInit {
     pub body: Rc<Vec<Statement>>,
     pub closure: Option<Env>,
     pub params: Rc<Vec<Rc<str>>>,
-    pub args: Vec<Value>,
+    pub args: Vec<GeneratorValue>,
     pub to_gen_rx: mpsc::Receiver<GenResume>,
     pub from_gen_tx: mpsc::Sender<GenYield>,
     pub builtins_env: Option<Env>,
 }
-unsafe impl Send for SendGenInit {}
+unsafe impl Send for GeneratorInit {}
 
 impl Value {
     pub fn object(props: Vec<(String, Value)>) -> Self {

@@ -149,11 +149,15 @@ impl Interpreter {
             }
             (Value::Array(items), Value::Number(i)) => {
                 let items = items.borrow();
-                let idx = *i as usize;
-                if idx < items.len() {
-                    Ok(items[idx].clone())
-                } else {
+                if !i.is_finite() || *i < 0.0 || i.fract() != 0.0 {
                     Ok(Value::Undefined)
+                } else {
+                    let idx = *i as usize;
+                    if idx < items.len() {
+                        Ok(items[idx].clone())
+                    } else {
+                        Ok(Value::Undefined)
+                    }
                 }
             }
             (Value::Array(items), Value::String(k)) => {

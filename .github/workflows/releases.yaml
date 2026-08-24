@@ -11,20 +11,70 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The release is published only after the exact tagged commit passes the
+  # native, core-only, JavaScript, and subprocess crash-safety suites.
+  verify:
+    name: Verify tagged commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify checkout is the tagged SHA
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
+        with:
+          toolchain: 1.96.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build native module
+        run: npx napi build --platform --release
+
+      - name: Run Rust tests
+        run: cargo test --release
+
+      - name: Run core-only Rust tests
+        run: cargo test --release --no-default-features
+
+      - name: Run Rust lint checks
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run JavaScript tests
+        run: bun test
+
+      - name: Run subprocess crash catalogue
+        run: bun examples/crash.ts
+
   # ── Linux x86_64 ──────────────────────────────────────────────────────
   linux-x64:
     name: Linux x86_64
     runs-on: ubuntu-latest
+    needs: verify
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -34,7 +84,7 @@ jobs:
           key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -67,7 +117,7 @@ jobs:
           tar czf napi-vm-lsp-linux-x64-musl.tar.gz -C lsp-dist napi-vm-lsp
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-linux-x64
           path: "*.node"
@@ -76,7 +126,7 @@ jobs:
       # files: the release job consumes these artifacts instead of copying
       # whatever happens to be committed in a fresh checkout.
       - name: Upload npm runtime files
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-runtime
           path: |
@@ -84,7 +134,7 @@ jobs:
             index.d.ts
 
       - name: Upload LSP archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-lsp-linux-x64
           path: napi-vm-lsp-linux-x64*.tar.gz
@@ -93,16 +143,18 @@ jobs:
   linux-arm64:
     name: Linux aarch64
     runs-on: ubuntu-24.04-arm
+    needs: verify
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: aarch64-unknown-linux-gnu
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -112,7 +164,7 @@ jobs:
           key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -142,13 +194,13 @@ jobs:
           tar czf napi-vm-lsp-linux-arm64-musl.tar.gz -C lsp-dist napi-vm-lsp
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-linux-arm64
           path: "*.node"
 
       - name: Upload LSP archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-lsp-linux-arm64
           path: napi-vm-lsp-linux-arm64*.tar.gz
@@ -157,16 +209,18 @@ jobs:
   darwin-arm64:
     name: macOS aarch64
     runs-on: macos-15
+    needs: verify
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: aarch64-apple-darwin
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -176,7 +230,7 @@ jobs:
           key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -197,13 +251,13 @@ jobs:
           tar czf ../napi-vm-lsp-darwin-arm64.tar.gz napi-vm-lsp
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-darwin-arm64
           path: "*.node"
 
       - name: Upload LSP archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-lsp-darwin-arm64
           path: napi-vm-lsp-darwin-arm64.tar.gz
@@ -212,16 +266,18 @@ jobs:
   darwin-x64:
     name: macOS x86_64
     runs-on: macos-15-intel
+    needs: verify
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: x86_64-apple-darwin
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -231,7 +287,7 @@ jobs:
           key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -252,13 +308,13 @@ jobs:
           tar czf ../napi-vm-lsp-darwin-x64.tar.gz napi-vm-lsp
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-darwin-x64
           path: "*.node"
 
       - name: Upload LSP archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-lsp-darwin-x64
           path: napi-vm-lsp-darwin-x64.tar.gz
@@ -267,16 +323,18 @@ jobs:
   win-x64:
     name: Windows x86_64
     runs-on: windows-latest
+    needs: verify
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -286,7 +344,7 @@ jobs:
           key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -307,13 +365,13 @@ jobs:
           Compress-Archive -Path lsp-dist/napi-vm-lsp.exe -DestinationPath napi-vm-lsp-windows-x64.zip
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-win-x64
           path: "*.node"
 
       - name: Upload LSP archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-lsp-windows-x64
           path: napi-vm-lsp-windows-x64.zip
@@ -322,16 +380,18 @@ jobs:
   win-arm64:
     name: Windows aarch64
     runs-on: windows-latest
+    needs: verify
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
         with:
+          toolchain: 1.96.0
           targets: aarch64-pc-windows-msvc
 
       - name: Cache cargo
-        uses: actions/cache@v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry/index/
@@ -341,7 +401,7 @@ jobs:
           key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
 
@@ -362,13 +422,13 @@ jobs:
           Compress-Archive -Path lsp-dist/napi-vm-lsp.exe -DestinationPath napi-vm-lsp-windows-arm64.zip
 
       - name: Upload .node artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-win-arm64
           path: "*.node"
 
       - name: Upload LSP archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: napi-vm-lsp-windows-arm64
           path: napi-vm-lsp-windows-arm64.zip
@@ -383,7 +443,7 @@ jobs:
       # artifacts, so a stale generated `index.js` in the repository can never
       # end up in a release.
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
           merge-multiple: true
@@ -429,7 +489,7 @@ jobs:
           done
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v3.0.2
         with:
           files: release/*
           generate_release_notes: true

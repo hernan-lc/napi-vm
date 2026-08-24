@@ -69,7 +69,10 @@ fn value_to_js_d(v: &Value, depth: usize) -> Result<JsValue, VmErr> {
             arr.into()
         }
         Value::Object { props, .. } => {
-            let obj = js_sys::Object::new();
+            // A null prototype prevents a guest-controlled `__proto__` key
+            // from invoking Object.prototype's legacy setter while exporting
+            // a VM object to browser JavaScript.
+            let obj = js_sys::Object::create(&JsValue::NULL);
             for (k, val) in props.borrow().iter() {
                 js_sys::Reflect::set(&obj, &JsValue::from_str(k), &value_to_js_d(val, depth + 1)?)
                     .map_err(|_| VmErr::Msg("failed to set object property".to_string()))?;
@@ -77,7 +80,7 @@ fn value_to_js_d(v: &Value, depth: usize) -> Result<JsValue, VmErr> {
             obj.into()
         }
         Value::Error(e) => {
-            let obj = js_sys::Object::new();
+            let obj = js_sys::Object::create(&JsValue::NULL);
             let _ = js_sys::Reflect::set(
                 &obj,
                 &JsValue::from_str("name"),
