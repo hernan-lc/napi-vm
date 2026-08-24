@@ -17,6 +17,18 @@ export declare class Vm {
   constructor()
   run(source: string): string
   registerModule(name: string, source: string): void
+  /**
+   * Register a module whose exports are host functions.
+   *
+   * This is the generic half of `exposeFunction` + `registerModule`: the
+   * core bridges each function to a hidden global and generates the wrapper
+   * module that re-exports it. What those functions *do* — including any
+   * permission checks — stays entirely on the host side.
+   *
+   * Returns the generated global names so the host can tear them down with
+   * `removeGlobal` when it removes the module.
+   */
+  registerHostModule(name: string, exports: Record<string, Function>, options?: { async?: Array<string> }): Array<string>
   setImportMetaMain(isMain: boolean): void
   /** Cap the number of loop iterations in a single execution. */
   setLoopLimit(n: number): void

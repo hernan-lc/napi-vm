@@ -4,6 +4,10 @@
 use super::{AssignOp, BinOp, ClassMember, Expr, Parser, Statement, VarKind};
 use crate::lexer::Token;
 
+/// Binding name synthesized for an anonymous `export default class`/`function`.
+/// Not a valid JavaScript identifier, so guest code can never reference it.
+const DEFAULT_BINDING: &str = "*default*";
+
 /// Collect the bound identifier names from a variable declaration statement
 /// (which may be a single `VarDecl` or a block of them for `let a, b`).
 fn declared_names(stmt: &Statement) -> Vec<String> {
@@ -23,9 +27,34 @@ fn decl_name(stmt: &Statement) -> Vec<String> {
 }
 
 impl Parser {
+    /// Consume `tok` only when it acts as a class-member modifier — that is,
+    /// when it is not itself the member name (`get() {}`, `static = 1`).
+    fn eat_modifier(&mut self, tok: &Token) -> bool {
+        if matches!(self.cur(), t if t == tok)
+            && !matches!(
+                self.peek(),
+                Token::LParen | Token::Equal | Token::Semicolon | Token::RBrace
+            )
+        {
+            self.adv();
+            return true;
+        }
+        false
+    }
+
     pub(super) fn class_decl(&mut self) -> Option<Statement> {
+        self.class_decl_named(None)
+    }
+
+    /// Parse a class declaration whose name may be omitted (`export default
+    /// class { … }`), in which case `fallback` supplies the binding name.
+    pub(crate) fn class_decl_named(&mut self, fallback: Option<&str>) -> Option<Statement> {
         self.adv();
-        let n = self.ident()?;
+        let n = match (self.cur(), fallback) {
+            (Token::Identifier(_), _) => self.ident()?,
+            (_, Some(name)) => name.to_string(),
+            _ => return None,
+        };
         let sc = if self.eat(&Token::KwExtends) {
             Some(Box::new(self.expr()?))
         } else {
@@ -37,9 +66,11 @@ impl Parser {
             if self.eof() {
                 break;
             }
-            let st = self.eat(&Token::KwStatic);
-            let is_getter = self.eat(&Token::KwGet);
-            let is_setter = self.eat(&Token::KwSet);
+            // `static` / `get` / `set` are modifiers only when a member name
+            // follows; `get() {}` and `set = 1` declare members named `get`.
+            let st = self.eat_modifier(&Token::KwStatic);
+            let is_getter = self.eat_modifier(&Token::KwGet);
+            let is_setter = self.eat_modifier(&Token::KwSet);
             let mn = match self.cur() {
                 Token::Identifier(x) => {
                     let v = x.clone();
@@ -49,6 +80,18 @@ impl Parser {
                 Token::KwConstructor => {
                     self.adv();
                     "constructor".to_string()
+                }
+                Token::KwStatic => {
+                    self.adv();
+                    "static".to_string()
+                }
+                Token::KwGet => {
+                    self.adv();
+                    "get".to_string()
+                }
+                Token::KwSet => {
+                    self.adv();
+                    "set".to_string()
                 }
                 _ => return None,
             };
@@ -107,6 +150,25 @@ impl Parser {
     pub(super) fn export(&mut self) -> Option<Statement> {
         self.adv();
         if self.eat(&Token::KwDefault) {
+            // `export default class …` / `export default function …` are
+            // *declarations*, not expressions: bind the (possibly synthesized)
+            // name first, then export that binding as the default.
+            let decl = match self.cur() {
+                Token::KwClass => self.class_decl_named(Some(DEFAULT_BINDING)),
+                Token::KwFunction => self.fn_decl_named(false, Some(DEFAULT_BINDING)),
+                Token::KwAsync if matches!(self.peek(), Token::KwFunction) => {
+                    self.adv();
+                    self.fn_decl_named(true, Some(DEFAULT_BINDING))
+                }
+                _ => None,
+            };
+            if let Some(decl) = decl {
+                let name = decl_name(&decl).pop()?;
+                return Some(Statement::Block(vec![
+                    decl,
+                    Statement::ExportDefault(Box::new(Expr::Identifier(name))),
+                ]));
+            }
             let e = self.expr()?;
             self.semi();
             Some(Statement::ExportDefault(Box::new(e)))
