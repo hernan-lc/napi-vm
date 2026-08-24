@@ -1,5 +1,5 @@
 import { test, expect, afterEach } from "bun:test";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { cleanup, makeHost, makePlugin, manifestWith } from "./helpers";
@@ -183,6 +183,72 @@ test("a throwing onLoad marks the plugin as errored", () => {
   const host = makeHost();
   expect(() => host.load(dir)).toThrow(/failed in onLoad: .*boom/s);
   expect(host.get("test-plugin")?.status).toBe("error");
+});
+
+test("a throwing onLoad revokes the capabilities immediately", () => {
+  const dir = makePlugin({
+    manifest: manifestWith({ fs: { read: "./**" }, path: true }),
+    entry: `export default { onLoad() { throw new Error("boom"); } };`,
+  });
+  const host = makeHost();
+  expect(() => host.load(dir)).toThrow(/boom/);
+
+  const plugin = host.get("test-plugin");
+  expect(plugin?.status).toBe("error");
+  const vm = plugin!.vm;
+  expect(vm.hasModule("napi:fs")).toBe(false);
+  expect(vm.hasModule("napi:path")).toBe(false);
+  expect(vm.hasModule("plugin:test-plugin")).toBe(false);
+  expect(vm.hasGlobal("__cap_fs_readText")).toBe(false);
+  expect(vm.hasGlobal("__cap_fs_writeText")).toBe(false);
+  expect(vm.hasGlobal("__cap_fs_exists")).toBe(false);
+  expect(vm.hasGlobal("__cap_path_join")).toBe(false);
+  expect(vm.hasGlobal("__plugin_onLoad")).toBe(false);
+});
+
+test("a throwing onReload revokes the new VM's capabilities", () => {
+  const dir = makePlugin({
+    manifest: manifestWith({ fs: { read: "./**" }, path: true }),
+    entry: `export default { onLoad() {}, onReload() { throw new Error("boom"); } };`,
+  });
+  const host = makeHost();
+  const first = host.load(dir);
+  expect(() => host.reload("test-plugin")).toThrow(/boom/);
+
+  const plugin = host.get("test-plugin");
+  expect(plugin?.status).toBe("error");
+  expect(plugin?.vm).not.toBe(first.vm);
+  expect(plugin!.vm.hasModule("napi:fs")).toBe(false);
+  expect(plugin!.vm.hasGlobal("__cap_fs_readText")).toBe(false);
+  // The VM replaced by the reload is gone too.
+  expect(first.vm.hasModule("napi:fs")).toBe(false);
+});
+
+test("a throwing onUnload still unloads the plugin", () => {
+  const dir = makePlugin({
+    manifest: manifestWith({ fs: { read: "./**" } }),
+    entry: `export default { onLoad() {}, onUnload() { throw new Error("boom"); } };`,
+  });
+  const host = makeHost();
+  const plugin = host.load(dir);
+  expect(() => host.unload("test-plugin")).toThrow(/boom/);
+
+  expect(host.get("test-plugin")).toBeUndefined();
+  expect(plugin.vm.hasModule("napi:fs")).toBe(false);
+  expect(plugin.vm.hasGlobal("__cap_fs_readText")).toBe(false);
+});
+
+test("an errored plugin can still be reloaded after a fix", () => {
+  const dir = makePlugin({
+    manifest: manifestWith({}),
+    entry: `export default { onLoad() { throw new Error("boom"); } };`,
+  });
+  const host = makeHost();
+  expect(() => host.load(dir)).toThrow(/boom/);
+
+  writeFileSync(join(dir, "plugin.js"), `export default { onReload() { return "fixed"; } };`);
+  expect(host.reload("test-plugin").loadResult).toBe("fixed");
+  expect(host.get("test-plugin")?.vm.hasModule("napi:fs")).toBe(true);
 });
 
 test("a directory without plugin.json is refused", () => {

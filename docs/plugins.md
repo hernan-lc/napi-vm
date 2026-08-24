@@ -171,7 +171,10 @@ is discarded, and everything is rebuilt from disk — so edited source *and*
 edited permissions both take effect.
 
 Unload calls `onUnload`, then detaches the capabilities: the modules and the
-bridge globals are removed from the VM.
+bridge globals are removed from the VM. A lifecycle hook that throws revokes
+them immediately as well — an errored plugin never keeps a live `napi:fs` — and
+a failed `onUnload` still unloads the plugin. The registry keeps the errored
+entry so `reload()` can rebuild it from disk.
 
 ## Swapping the filesystem
 

@@ -140,11 +140,19 @@ export class PluginHost {
     if (!plugin) throw new PluginLoadError(`plugin "${name}" is not loaded`);
 
     let state: unknown;
+    let failure: unknown;
     if (plugin.status === "loaded") {
-      state = this.callUnload(plugin, "unload");
+      // A broken `onUnload` must not keep the plugin loaded: tear down first,
+      // then report the failure.
+      try {
+        state = this.callUnload(plugin, "unload");
+      } catch (error) {
+        failure = error;
+      }
     }
     this.dispose(plugin);
     this.plugins.delete(name);
+    if (failure) throw failure;
     return state;
   }
 
@@ -260,7 +268,14 @@ export class PluginHost {
     );
   }
 
-  /** Call a lifecycle wrapper, recording failures on the plugin entry. */
+  /**
+   * Call a lifecycle wrapper, recording failures on the plugin entry.
+   *
+   * A hook that throws leaves the VM in an unknown state, so its capabilities
+   * are revoked immediately — an errored plugin must not keep a live `napi:fs`
+   * around waiting for some later cleanup. The registry entry survives (with
+   * `status: "error"`) so the plugin can still be reloaded.
+   */
   private invoke(
     plugin: LoadedPlugin,
     fn: string,
@@ -272,6 +287,7 @@ export class PluginHost {
     } catch (error) {
       plugin.status = "error";
       plugin.error = asError(error);
+      this.dispose(plugin);
       throw wrapLoadError(plugin.manifest.name, hook, error);
     }
   }

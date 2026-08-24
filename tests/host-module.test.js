@@ -22,20 +22,73 @@ test("registerHostModule exposes host functions as module exports", () => {
 test("registerHostModule returns the globals it created", () => {
   const vm = new Vm();
   const globals = vm.registerHostModule("napi:fs", { readText: () => "x" });
-  expect(globals).toEqual(["__hostmod_napi_fs_readText"]);
-  expect(vm.hasGlobal("__hostmod_napi_fs_readText")).toBe(true);
+  // `:` is hex-encoded so two module names can never share a prefix.
+  expect(globals).toEqual(["__hostmod_napi_3afs_readText"]);
+  expect(vm.hasGlobal("__hostmod_napi_3afs_readText")).toBe(true);
 });
 
-test("the module appears in listModules and can be removed", () => {
+test("removeModule revokes the module's bridge globals", () => {
   const vm = new Vm();
   const globals = vm.registerHostModule("napi:demo", { ping: () => "pong" });
   expect(vm.hasModule("napi:demo")).toBe(true);
   expect(vm.listModules()).toContain("napi:demo");
 
+  // Removing the module revokes the capability, not just the wrapper source.
   expect(vm.removeModule("napi:demo")).toBe(true);
-  for (const name of globals) expect(vm.removeGlobal(name)).toBe(true);
   expect(vm.hasModule("napi:demo")).toBe(false);
-  expect(vm.hasGlobal(globals[0])).toBe(false);
+  for (const name of globals) expect(vm.hasGlobal(name)).toBe(false);
+});
+
+test("module names that differ only in punctuation get separate namespaces", () => {
+  const vm = new Vm();
+  const first = vm.registerHostModule("a:b", { who: () => "colon" });
+  const second = vm.registerHostModule("a/b", { who: () => "slash" });
+  expect(first).not.toEqual(second);
+
+  // Each module reaches its own bridge, so neither can call the other's.
+  expect(vm.run(`${first[0]}();`)).toBe("colon");
+  expect(vm.run(`${second[0]}();`)).toBe("slash");
+
+  // Removing one must not disturb the other.
+  vm.removeModule("a:b");
+  for (const name of first) expect(vm.hasGlobal(name)).toBe(false);
+  for (const name of second) expect(vm.hasGlobal(name)).toBe(true);
+});
+
+test("re-registering with fewer exports revokes the dropped bridge global", () => {
+  const vm = new Vm();
+  const before = vm.registerHostModule("napi:fs", {
+    read: () => "r",
+    write: () => "w",
+  });
+  const writeGlobal = before.find((name) => name.endsWith("_write"));
+  expect(vm.hasGlobal(writeGlobal)).toBe(true);
+
+  const after = vm.registerHostModule("napi:fs", { read: () => "r" });
+  expect(after).not.toContain(writeGlobal);
+  expect(vm.hasGlobal(writeGlobal)).toBe(false);
+  expect(vm.run(`typeof ${writeGlobal};`)).toBe("undefined");
+
+  // The surviving export still works, and `write` is gone from the module.
+  vm.registerModule("app", `import { read } from "napi:fs";
+    export function go() { return read(); }`);
+  expect(vm.run(`import { go } from "app"; go();`)).toBe("r");
+  vm.registerModule("bad", `import { write } from "napi:fs";
+    export function go() { return write(); }`);
+  expect(() => vm.run(`import { go } from "bad"; go();`)).toThrow(/write/);
+});
+
+test("a failed re-registration leaves the previous exports intact", () => {
+  const vm = new Vm();
+  const before = vm.registerHostModule("napi:demo", { ping: () => "pong" });
+  expect(() =>
+    vm.registerHostModule("napi:demo", { ping: () => "pong", bad: 1 }),
+  ).toThrow(/must be a function/);
+  for (const name of before) expect(vm.hasGlobal(name)).toBe(true);
+
+  vm.registerModule("app", `import { ping } from "napi:demo";
+    export function go() { return ping(); }`);
+  expect(vm.run(`import { go } from "app"; go();`)).toBe("pong");
 });
 
 test("exports receive every argument and can return objects", () => {

@@ -39,9 +39,14 @@ const globals = vm.registerHostModule(
 
 vm.run(`import { readText } from "napi:fs"; readText("./config.json");`);
 
-vm.removeModule("napi:fs");
-for (const name of globals) vm.removeGlobal(name);
+vm.removeModule("napi:fs");   // also revokes the module's bridge globals
 ```
+
+Revocation is tracked per module: `removeModule` revokes the globals the
+module created, and re-registering with fewer exports revokes the ones that
+disappeared — a dropped export cannot stay callable through its old global.
+Module names are encoded injectively, so `a:b` and `a/b` never share a
+namespace. A failed registration leaves the previous one untouched.
 
 Export names must be plain identifiers and every value must be a function. The
 core stays generic on purpose: permission checks, path resolution and policy
