@@ -13,6 +13,8 @@ export interface ModuleEntry {
 
 export interface HotReloadOptions {
   modulesDir: string;
+  /** Called after a VM is created, before any module is evaluated. */
+  onBeforeLoad?: (vm: Vm, session?: VmSession) => void;
   /** Called after every successful reload with the fresh VM + bus. */
   onReload?: (vm: Vm, bus: VmEventBus, session?: VmSession) => void;
   /** Optional live runtime channel consumed by the workspace LSP. */
@@ -46,7 +48,8 @@ export class HotReloader {
   private moduleSources = new Map<string, string>();
   private runtime: VmSession | null;
   private stopped = false;
-  private opts: Omit<HotReloadOptions, "onReload" | "debounceMs"> & {
+  private opts: Omit<HotReloadOptions, "onBeforeLoad" | "onReload" | "debounceMs"> & {
+    onBeforeLoad: NonNullable<HotReloadOptions["onBeforeLoad"]>;
     onReload: NonNullable<HotReloadOptions["onReload"]>;
     debounceMs: number;
   };
@@ -54,6 +57,7 @@ export class HotReloader {
   constructor(opts: HotReloadOptions) {
     this.runtime = opts.runtime || null;
     this.opts = {
+      onBeforeLoad: () => {},
       onReload: () => {},
       debounceMs: 100,
       ...opts,
@@ -69,12 +73,9 @@ export class HotReloader {
   /** Build the initial VM, register modules, attach the bus. */
   start(): Vm {
     this.stopped = false;
+    this.runtime?.start();
     const vm = this.buildVm();
     this.vm = vm;
-    this.runtime?.start();
-    this.runtime?.attach(vm, {
-      modules: [...this.moduleSources.entries()].map(([name, source]) => ({ name, source })),
-    });
     this.bus.attach(vm);
     this.opts.onReload(vm, this.bus, this.runtime || undefined);
     return vm;
@@ -130,9 +131,6 @@ export class HotReloader {
       this.teardown();
       const vm = this.buildVm();
       this.vm = vm;
-      this.runtime?.attach(vm, {
-        modules: [...this.moduleSources.entries()].map(([name, source]) => ({ name, source })),
-      });
       this.bus.attach(vm);
       this.opts.onReload(vm, this.bus, this.runtime || undefined);
       console.log("[hot-reload] rebuild complete\n");
@@ -168,6 +166,14 @@ export class HotReloader {
     const vm = new Vm();
     const sources = this.readModules();
     this.moduleSources = sources;
+
+    // registerModule evaluates top-level code immediately. Attach the live
+    // runtime metadata and host bridge first so modules may safely use IPC at
+    // module scope (for example, `ipc.commands()` in ipc.js).
+    this.runtime?.attach(vm, {
+      modules: [...sources.entries()].map(([name, source]) => ({ name, source })),
+    });
+    this.opts.onBeforeLoad(vm, this.runtime || undefined);
 
     // Deterministic load order: utils first (other modules import it).
     const sorted = [...sources.entries()].sort(([a], [b]) => {

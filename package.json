@@ -7,6 +7,7 @@
   "type": "commonjs",
   "files": [
     "index.js",
+    "index.mjs",
     "index.d.ts",
     "*.node",
     "docs",
@@ -14,11 +15,11 @@
     "runtime"
   ],
   "scripts": {
-    "build": "npx napi build --platform --release",
+    "build": "npx napi build --platform --release --js index.js",
     "build:all": "bun run build:esm && bun run build:commonjs",
-    "build:esm": "npx napi build --platform --release --esm",
-    "build:commonjs": "npx napi build --platform --release --js cjs",
-    "build:debug": "npx napi build --platform",
+    "build:esm": "npx napi build --platform --release --esm --js index.mjs",
+    "build:commonjs": "npx napi build --platform --release --js index.js",
+    "build:debug": "npx napi build --platform --js index.js",
     "lint:rust": "cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings",
     "test": "bun test",
     "bench": "node bench/bench.js",

@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
 import { Vm } from "../index.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // ── removeModule / hasModule / listModules ───────────────────────────
 
@@ -108,6 +111,52 @@ test("removeGlobal + re-expose avoids stale references (hot-reload pattern)", ()
   generation = 2;
   vm.exposeFunction("getGen", () => generation);
   expect(vm.run("getGen();")).toBe("2");
+});
+
+test("VmIpc is available while a module is evaluated", async () => {
+  const { VmIpc } = await import("../examples/lib/vm-ipc.ts");
+  const vm = new Vm();
+  const ipc = new VmIpc();
+  ipc.handle("answer", () => 42);
+  ipc.attach(vm);
+
+  vm.registerModule(
+    "ipc-module",
+    `export const count = ipc.commands().length;
+     export const answer = ipc.invoke("answer");`,
+  );
+  vm.run('import { count, answer } from "ipc-module";');
+
+  expect(vm.run("count;")).toBe("1");
+  expect(vm.run("answer;")).toBe("42");
+  ipc.detach();
+});
+
+test("HotReloader attaches IPC before loading modules", async () => {
+  const { HotReloader } = await import("../examples/lib/hot-reload.ts");
+  const { VmIpc } = await import("../examples/lib/vm-ipc.ts");
+  const modulesDir = mkdtempSync(join(tmpdir(), "napi-vm-hot-reload-"));
+  writeFileSync(
+    join(modulesDir, "ipc.js"),
+    'export const commandCount = ipc.commands().length;\n',
+  );
+
+  const ipc = new VmIpc();
+  ipc.handle("answer", () => 42);
+  const reloader = new HotReloader({
+    modulesDir,
+    onBeforeLoad: (vm) => ipc.attach(vm),
+  });
+
+  try {
+    const vm = reloader.start();
+    vm.run('import { commandCount } from "ipc";');
+    expect(vm.run("commandCount;")).toBe("1");
+  } finally {
+    ipc.detach();
+    reloader.stop();
+    rmSync(modulesDir, { recursive: true, force: true });
+  }
 });
 
 // ── hot-reload full cycle ────────────────────────────────────────────

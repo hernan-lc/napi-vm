@@ -97,8 +97,10 @@ console.log(runtimeSession
 const reloader = new HotReloader({
   modulesDir: MODULES_DIR,
   ...(runtimeSession ? { runtime: runtimeSession } : {}),
-  onReload: (vm, _bus, session) => {
+  onBeforeLoad: (vm, session) => {
     ipc.attach(vm, session);
+  },
+  onReload: (vm) => {
     vm.run(VM_SETUP_SOURCE);
   },
 });

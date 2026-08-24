@@ -166,6 +166,23 @@ fn utf16_positions_locate_completion_and_hover_after_astral_characters() {
 }
 
 #[test]
+fn ipc_facade_completion_is_available_without_a_runtime_snapshot() {
+    let uri = "file:///tmp/napi-vm-ipc.js";
+    let mut client = Client::start(&temp_root());
+    client.open(uri, "ipc.");
+
+    let items = client.completion(14, uri, 0, 4);
+    for expected in ["invoke", "invokeAsync", "send", "commands"] {
+        assert!(
+            items.iter().any(|label| label == expected),
+            "missing {expected} in IPC completion: {items:?}"
+        );
+    }
+
+    assert_eq!(client.shutdown_and_exit(15), 0);
+}
+
+#[test]
 fn exit_without_shutdown_returns_one() {
     let mut client = Client::start(&temp_root());
     client.notify("exit", json!({}));
