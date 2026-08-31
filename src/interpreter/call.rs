@@ -10,6 +10,8 @@ use super::{Environment, Interpreter};
 use crate::error::{RuntimeErrorData, VmErr, vm_err};
 use crate::parser::{Pattern, Statement};
 use crate::span::Span;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::value::{GenOutcome, GenResume};
 use crate::value::{GeneratorInner, PromiseState, Value};
 
 type Key = Rc<str>;
@@ -99,8 +101,12 @@ impl Interpreter {
         if let Some((p, cb)) = catch {
             let ce = Rc::new(RefCell::new(Environment::child(self.global.clone())));
             ce.borrow_mut().set(p, err_val);
+            // The catch parameter lives in its own scope, and the catch block
+            // is a block: its lexical declarations belong to that scope too.
             let s = std::mem::replace(&mut self.global, ce);
-            let r = self.run(cb);
+            // Only lexical hoisting here: a `var` inside `catch` belongs to
+            // the enclosing function scope, where it was already hoisted.
+            let r = self.run_hoisted_here(cb);
             self.global = s;
             r
         } else {
@@ -189,10 +195,8 @@ impl Interpreter {
                         closure: fd.closure.clone(),
                         params: fd.params.clone(),
                         args,
-                        to_gen: None,
-                        from_gen: None,
                         #[cfg(not(target_arch = "wasm32"))]
-                        thread: None,
+                        coroutine: None,
                         started: false,
                         done: false,
                         return_value: None,
@@ -297,7 +301,9 @@ impl Interpreter {
                     .clone()
                     .unwrap_or_else(|| Rc::<str>::from("<anonymous>"));
                 self.push_frame(fname, Span::unknown());
-                let r = self.run(&fd.body);
+                // A function body is a fresh variable scope: `var` and
+                // function declarations hoist to it, lexical ones dead-zone.
+                let r = self.run_program_body(&fd.body);
                 // Convert a bare message into a located runtime error *before*
                 // popping the frame, so the snapshot carries the full call
                 // chain. Only the error path pays for the snapshot — the
@@ -474,7 +480,7 @@ impl Interpreter {
                 };
 
                 let s = std::mem::replace(&mut self.global, fe);
-                let r = self.run(&fd.body);
+                let r = self.run_program_body(&fd.body);
                 self.global = s;
                 match r {
                     Err(VmErr::Ret(v)) => match v {
@@ -501,259 +507,185 @@ impl Interpreter {
     }
 }
 
-/// Spawn the generator thread. The thread runs the generator body in its own
-/// interpreter, blocking at each `yield` to send the value back and wait for a
-/// resume signal. This gives true mid-body suspension: infinite generators work
-/// correctly, and yields inside loops/conditionals/try-finally all behave as
-/// specified.
-/// Channel endpoints for a spawned generator, plus its join handle.
+/// Stack size for a generator coroutine.
 ///
-/// The handle is what lets a caller order the generator thread's exit before
-/// the main thread continues; `wasm32` has no OS threads, so there is nothing
-/// to join there.
+/// Matched to the main thread's typical 8MB: `MAX_CALL_DEPTH` is calibrated
+/// against that, and a smaller stack would overflow before the guest-visible
+/// recursion limit could turn it into a catchable `RangeError`. The stack is
+/// allocated with a guard page, so an overflow faults rather than corrupting
+/// neighbouring memory.
 #[cfg(not(target_arch = "wasm32"))]
-type GeneratorHandles = (
-    std::sync::mpsc::Sender<crate::value::GenResume>,
-    std::sync::mpsc::Receiver<crate::value::GenYield>,
-    Option<std::thread::JoinHandle<()>>,
-);
-#[cfg(target_arch = "wasm32")]
-type GeneratorHandles = (
-    std::sync::mpsc::Sender<crate::value::GenResume>,
-    std::sync::mpsc::Receiver<crate::value::GenYield>,
-);
+const GENERATOR_STACK_SIZE: usize = 8 * 1024 * 1024;
 
-pub(crate) fn spawn_generator_thread(
+/// Build the coroutine that runs a generator body.
+///
+/// The body executes on its own stack but on the *calling thread*, switching
+/// back to the caller at each `yield`. Returns `None` if the stack could not
+/// be allocated, which the caller reports as an immediately-completed
+/// generator rather than a crash.
+#[cfg(not(target_arch = "wasm32"))]
+fn make_generator_coroutine(
     body: Rc<Vec<Statement>>,
     closure: Option<super::Env>,
     params: Rc<Vec<Rc<str>>>,
     args: Vec<Value>,
     builtins_env: Option<super::Env>,
-) -> GeneratorHandles {
-    use crate::value::{GenResume, GenYield, GeneratorInit, GeneratorValue};
+    gen_depth: u32,
+) -> Option<crate::value::GenCoroutine> {
+    use corosensei::Coroutine;
+    use corosensei::stack::DefaultStack;
 
-    let (to_gen_tx, to_gen_rx) = std::sync::mpsc::channel::<GenResume>();
-    let (from_gen_tx, from_gen_rx) = std::sync::mpsc::channel::<GenYield>();
+    let stack = DefaultStack::new(GENERATOR_STACK_SIZE).ok()?;
 
-    // Bundle everything the thread needs into the generator-only transfer type.
-    let init = GeneratorInit {
-        body,
-        closure,
-        params,
-        args: args.into_iter().map(GeneratorValue).collect(),
-        to_gen_rx,
-        from_gen_tx,
-        builtins_env,
-    };
-
-    // Use a function boundary so the compiler sees only `GeneratorInit` (which is
-    // `Send`) crossing the thread boundary, not the individual `Rc` fields.
-    //
-    // The thread gets an 8MB stack to match the main thread's: the recursion
-    // limit (`MAX_CALL_DEPTH`) is calibrated against 8MB, and the default 2MB
-    // thread stack would overflow well before the limit kicks in. If the
-    // spawn fails, `init` is dropped, both channels close, and the main
-    // thread's `recv()` sees a disconnect, which it already handles as a
-    // completed generator.
-    // The handle is kept so the caller can order this thread's exit -- and the
-    // release of the `Rc`s it holds -- before the main thread continues. See
-    // `crate::generator_transfer`, invariant 3.
-    #[cfg(not(target_arch = "wasm32"))]
-    let handle = std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
-        .spawn(move || run_generator_thread(init))
-        .ok();
-
-    // `wasm32-unknown-unknown` has no OS threads. Dropping `init` closes the
-    // generator-side channel endpoints, so the driver observes a disconnect and
-    // treats the generator as immediately completed — graceful degradation
-    // (an empty iterator) rather than a panic. True suspension would require
-    // the wasm threads proposal or a CPS transform of generator bodies.
-    #[cfg(target_arch = "wasm32")]
-    drop(init);
-
-    #[cfg(not(target_arch = "wasm32"))]
-    return (to_gen_tx, from_gen_rx, handle);
-    #[cfg(target_arch = "wasm32")]
-    (to_gen_tx, from_gen_rx)
-}
-
-/// Entry point for the generator thread. Waits for the first resume signal
-/// (matching JS semantics: the body does not execute until the first `next()`),
-/// then runs the generator body to completion, communicating yields and the
-/// final return value over the channel.
-#[cfg(not(target_arch = "wasm32"))]
-fn run_generator_thread(init: crate::value::GeneratorInit) {
-    use crate::value::{GenResume, GenYield, GeneratorValue};
-
-    let crate::value::GeneratorInit {
-        body,
-        closure,
-        params,
-        args,
-        to_gen_rx,
-        from_gen_tx,
-        builtins_env,
-    } = init;
-
-    // Wait for the first `next()` call before executing any of the body.
-    // This matches JS semantics where `function*` bodies are lazy.
-    match to_gen_rx.recv() {
-        Ok(GenResume::Next(_)) => {}
-        Err(_) => return, // Main thread dropped the generator without calling next().
-    }
-
-    // Build a fresh interpreter for the generator thread. If we have a
-    // builtins environment, chain to it so standard library functions work.
-    let inherited_global = closure.as_ref().and_then(super::Environment::find_global);
-    let mut interp = if let Some(builtins) = builtins_env {
-        let mut i = Interpreter::new();
-        i.global = Rc::new(RefCell::new(Environment::child(builtins)));
-        i
-    } else {
-        Interpreter::with_builtins()
-    };
-    if let Some(global) = inherited_global {
-        interp.persistent_global = global;
-    }
-
-    // Install the generator channel so `yield` expressions can communicate.
-    interp.gen_channel = Some(super::GenChannel {
-        to_main: from_gen_tx,
-        from_main: to_gen_rx,
-    });
-
-    // Set up the function environment with bound parameters.
-    let parent_env = closure.unwrap_or_else(|| interp.global.clone());
-    let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
-    for (i, p) in params.iter().enumerate() {
-        let arg = args
-            .get(i)
-            .map(|value| value.0.clone())
-            .unwrap_or(Value::Undefined);
-        fe.borrow_mut().set(p, arg);
-    }
-
-    interp.global = fe;
-
-    // Run the body. Yields are handled via the channel inside eval_expr.
-    let result = interp.run(&body);
-
-    // Signal completion or error to the main thread.
-    let chan = interp.gen_channel.as_ref().unwrap();
-    match result {
-        Ok(v) | Err(VmErr::Ret(v)) => {
-            let _ = chan.to_main.send(GenYield::Returned(GeneratorValue(v)));
-        }
-        Err(VmErr::Throw(v)) => {
-            let msg = match &v {
-                Value::String(s) => s.clone(),
-                Value::Error(e) => e.message.clone(),
-                other => interp.vs(other).unwrap_or_else(|e| e.to_string()),
+    // The first `next()` only starts the body; JS discards its argument, since
+    // there is no `yield` expression yet for it to become the value of.
+    Some(Coroutine::with_stack(
+        stack,
+        move |yielder, _first_resume| {
+            // A fresh interpreter for the body, chained to the builtins so the
+            // standard library is reachable, and to the defining scope so closures
+            // resolve as they would at the definition site.
+            let inherited_global = closure.as_ref().and_then(super::Environment::find_global);
+            let mut interp = if let Some(builtins) = builtins_env {
+                let mut i = Interpreter::new();
+                i.global = Rc::new(RefCell::new(Environment::child(builtins)));
+                i
+            } else {
+                Interpreter::with_builtins()
             };
-            let _ = chan.to_main.send(GenYield::Threw(msg));
-        }
-        Err(VmErr::Msg(m)) => {
-            let _ = chan.to_main.send(GenYield::Threw(m));
-        }
-        Err(VmErr::RuntimeError(e)) => {
-            let _ = chan.to_main.send(GenYield::Threw(e.message.clone()));
-        }
-        // A break/continue that escapes the generator body is a runtime error.
-        Err(e @ (VmErr::Break(_) | VmErr::Continue(_))) => {
-            let _ = chan.to_main.send(GenYield::Threw(format!("{}", e)));
-        }
-    }
+            if let Some(global) = inherited_global {
+                interp.persistent_global = global;
+            }
+            // Carried so recursion *through* generators stays bounded: each
+            // body runs on a fresh interpreter whose call stack starts empty,
+            // so `MAX_CALL_DEPTH` alone never sees it.
+            interp.gen_depth = gen_depth;
+
+            // SAFETY: `yielder` is borrowed from this coroutine's own stack frame
+            // and stays alive for the whole closure. `interp` is created here and
+            // dropped when this closure returns or unwinds, so the handle cannot
+            // outlive its referent, and `GenYielder` is `!Send`, so it cannot
+            // leave this thread. See `crate::value::GenYielder`.
+            interp.gen_yielder = Some(unsafe { crate::value::GenYielder::new(yielder) });
+
+            // Bind parameters in a child of the defining scope.
+            let parent_env = closure.unwrap_or_else(|| interp.global.clone());
+            let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
+            for (i, p) in params.iter().enumerate() {
+                let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
+                fe.borrow_mut().set(p, arg);
+            }
+            interp.global = fe;
+
+            match interp.run_program_body(&body) {
+                Ok(v) | Err(VmErr::Ret(v)) => GenOutcome::Returned(v),
+                Err(VmErr::Throw(v)) => {
+                    let msg = match &v {
+                        Value::String(s) => s.clone(),
+                        Value::Error(e) => e.message.clone(),
+                        other => interp.vs(other).unwrap_or_else(|e| e.to_string()),
+                    };
+                    GenOutcome::Threw(msg)
+                }
+                Err(VmErr::Msg(m)) => GenOutcome::Threw(m),
+                Err(VmErr::RuntimeError(e)) => GenOutcome::Threw(e.message.clone()),
+                // A break/continue escaping the generator body is a runtime error.
+                Err(e @ (VmErr::Break(_) | VmErr::Continue(_))) => {
+                    GenOutcome::Threw(format!("{}", e))
+                }
+            }
+        },
+    ))
 }
 
-/// `Generator.prototype.next`: resumes the generator thread (spawning it on
-/// first call), waits for the next yielded or returned value, and produces a
-/// `{ value, done }` result object.
+/// `Generator.prototype.next`: resumes the generator (starting it on the first
+/// call), and produces a `{ value, done }` result object.
+#[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
 pub(crate) fn generator_next(
     interp: &mut Interpreter,
     this: Value,
     args: Vec<Value>,
 ) -> Result<Value, VmErr> {
-    use crate::value::{GenResume, GenYield};
-
     let inner_rc = match &this {
         Value::Generator { inner } => inner.clone(),
         _ => return Ok(iter_result(Value::Undefined, true)),
     };
 
-    let mut inner = inner_rc.borrow_mut();
-
-    if inner.done {
-        let rv = inner.return_value.clone().unwrap_or(Value::Undefined);
-        return Ok(iter_result(rv, true));
-    }
-
-    // Spawn the thread on first call.
-    if !inner.started {
+    // `wasm32` has no stack-switching support, so generators degrade to empty
+    // iterators there rather than failing at runtime. Real suspension would
+    // need the threads proposal or a CPS transform of generator bodies.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut inner = inner_rc.borrow_mut();
         inner.started = true;
-
-        // Find the builtins environment (the parent of the current global) so
-        // the generator thread has access to standard library functions.
-        let builtins_env = interp.global.borrow().parent_env();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let (tx, rx, handle) = spawn_generator_thread(
-            inner.body.clone(),
-            inner.closure.clone(),
-            inner.params.clone(),
-            inner.args.clone(),
-            builtins_env,
-        );
-        #[cfg(target_arch = "wasm32")]
-        let (tx, rx) = spawn_generator_thread(
-            inner.body.clone(),
-            inner.closure.clone(),
-            inner.params.clone(),
-            inner.args.clone(),
-            builtins_env,
-        );
-        inner.to_gen = Some(tx);
-        inner.from_gen = Some(rx);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            inner.thread = handle;
-        }
+        inner.done = true;
+        return Ok(iter_result(Value::Undefined, true));
     }
 
-    // Send the resume signal with the optional sent value.
-    let sent = args.first().cloned();
-    let to_gen = inner.to_gen.as_ref().unwrap();
-    to_gen
-        .send(GenResume::Next(sent.map(crate::value::GeneratorValue)))
-        .map_err(|_| VmErr::Msg("generator thread terminated".to_string()))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // The coroutine is moved *out* of the shared cell for the duration of
+        // the resume. Holding a `RefCell` borrow across it would panic if the
+        // body reached back in via `next()`; taking it instead leaves an
+        // observable `None`, which is how re-entrancy is detected below.
+        let mut coroutine = {
+            let mut inner = inner_rc.borrow_mut();
 
-    // Wait for the generator to yield or finish.
-    let from_gen = inner.from_gen.as_ref().unwrap();
-    match from_gen.recv() {
-        Ok(GenYield::Yielded(v)) => Ok(iter_result(v.0, false)),
-        // Every terminal outcome joins *before* this thread touches the
-        // returned value. Sending the last message is not the end of the
-        // generator thread's life: it then drops its interpreter, the closure
-        // environment and every intermediate value, all of which are `Rc`s the
-        // main thread also holds. Cloning `v.0` or building the result object
-        // before the join would race that teardown on a non-atomic refcount --
-        // which is exactly what ThreadSanitizer reports if these are reordered.
-        Ok(GenYield::Returned(v)) => {
-            inner.done = true;
-            inner.join_thread();
-            inner.return_value = Some(v.0.clone());
-            Ok(iter_result(v.0, true))
-        }
-        Ok(GenYield::Threw(msg)) => {
-            inner.done = true;
-            inner.join_thread();
-            Err(VmErr::Msg(msg))
-        }
-        Err(_) => {
-            // Channel closed: the thread panicked or was dropped.
-            inner.done = true;
-            inner.join_thread();
-            Ok(iter_result(Value::Undefined, true))
+            if inner.done {
+                let rv = inner.return_value.clone().unwrap_or(Value::Undefined);
+                return Ok(iter_result(rv, true));
+            }
+
+            if !inner.started {
+                if interp.gen_depth >= super::MAX_GENERATOR_DEPTH {
+                    return Err(crate::value::limit_err(
+                        "Maximum generator nesting exceeded",
+                    ));
+                }
+                inner.started = true;
+                // The builtins scope is the parent of the driver's global.
+                let builtins_env = interp.global.borrow().parent_env();
+                inner.coroutine = make_generator_coroutine(
+                    inner.body.clone(),
+                    inner.closure.clone(),
+                    inner.params.clone(),
+                    inner.args.clone(),
+                    builtins_env,
+                    interp.gen_depth + 1,
+                );
+                if inner.coroutine.is_none() {
+                    // Stack allocation failed; report an exhausted generator.
+                    inner.done = true;
+                    return Ok(iter_result(Value::Undefined, true));
+                }
+            }
+
+            match inner.coroutine.take() {
+                Some(coroutine) => coroutine,
+                // Absent but not finished: the body called `next()` on itself.
+                None => {
+                    return vm_err("TypeError: Generator is already running");
+                }
+            }
+        };
+
+        let outcome = coroutine.resume(GenResume::Next(args.first().cloned()));
+
+        let mut inner = inner_rc.borrow_mut();
+        match outcome {
+            corosensei::CoroutineResult::Yield(value) => {
+                inner.coroutine = Some(coroutine);
+                Ok(iter_result(value, false))
+            }
+            corosensei::CoroutineResult::Return(GenOutcome::Returned(value)) => {
+                inner.done = true;
+                inner.return_value = Some(value.clone());
+                Ok(iter_result(value, true))
+            }
+            corosensei::CoroutineResult::Return(GenOutcome::Threw(message)) => {
+                inner.done = true;
+                Err(VmErr::Msg(message))
+            }
         }
     }
 }

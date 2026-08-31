@@ -53,10 +53,9 @@ Rust 1.96+, Node.js 18+, and [Bun](https://bun.sh) for the main test suite.
 
 ## Sanitizers
 
-Generators run their body on a dedicated OS thread and move `Rc`-bearing state
-across it under `unsafe impl Send`. `tests/generator_stress.rs` exercises that
-boundary; ThreadSanitizer is the only thing that meaningfully checks it, since
-a refcount race is not reliably observable by running the program.
+Generators run their body on a dedicated stack via a stackful coroutine, on the
+calling thread. `tests/generator_stress.rs` exercises that lifecycle, and
+ThreadSanitizer is worth running after any change to it:
 
 ```bash
 rustup component add rust-src --toolchain nightly
@@ -65,12 +64,11 @@ RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -Zbuild-std \
     --target x86_64-unknown-linux-gnu -- --test-threads=1
 ```
 
-This currently reports about one data race per run, down from ~7.6 before the
-generator threads were joined. It is not a clean gate yet, so it is not wired
-into PR CI — running it by hand before touching `interpreter::call`'s
-generator functions is the expectation. `src/generator_transfer.rs` documents
-the invariants, the surviving race, and why the durable fix is to remove the
-thread boundary rather than to keep adding happens-before edges.
+This reports **zero** races. It is a regression gate, not an open issue: an
+earlier OS-thread implementation moved `Rc`-backed state across threads under
+`unsafe impl Send` and measured ~7.6 races per run (~1.0 after the threads were
+joined). Replacing the thread with a coroutine removed the boundary entirely,
+so there is no non-atomic refcount for two threads to race on.
 
 ## Benchmarks
 

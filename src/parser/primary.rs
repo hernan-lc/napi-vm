@@ -50,7 +50,7 @@ impl Parser {
                 while matches!(self.cur(), Token::DollarLBrace) {
                     self.adv();
                     exprs.push(self.expr()?);
-                    self.eat(&Token::RBrace);
+                    self.expect(&Token::RBrace);
                     quasis.push(self.take_quasi());
                 }
                 self.eat(&Token::Backtick);
@@ -64,13 +64,13 @@ impl Parser {
                 // Otherwise it is a parenthesized expression.
                 self.adv();
                 let e = self.expr()?;
-                self.eat(&Token::RParen);
+                self.expect(&Token::RParen);
                 Some(e)
             }
             Token::LBracket => {
                 self.adv();
                 let mut i = Vec::new();
-                while !matches!(self.cur(), Token::RBracket) {
+                while self.until(&Token::RBracket) {
                     if self.eat(&Token::Comma) {
                         i.push(Expr::Undefined);
                         continue;
@@ -84,13 +84,13 @@ impl Parser {
                         self.eat(&Token::Comma);
                     }
                 }
-                self.eat(&Token::RBracket);
+                self.expect(&Token::RBracket);
                 Some(Expr::Array(i))
             }
             Token::LBrace => {
                 self.adv();
                 let mut p = Vec::new();
-                while !matches!(self.cur(), Token::RBrace) {
+                while self.until(&Token::RBrace) {
                     if self.eat(&Token::DotDotDot) {
                         let s = self.assign()?;
                         p.push(ObjectProp::Spread(s));
@@ -120,7 +120,7 @@ impl Parser {
                         Token::LBracket => {
                             self.adv();
                             let e = self.assign()?;
-                            self.eat(&Token::RBracket);
+                            self.expect(&Token::RBracket);
                             match self.cur() {
                                 Token::Colon => {
                                     self.adv();
@@ -134,10 +134,10 @@ impl Parser {
                                 Token::LParen => {
                                     self.adv();
                                     let (params, defaults) = self.params();
-                                    self.eat(&Token::RParen);
+                                    self.expect(&Token::RParen);
                                     self.eat(&Token::LBrace);
                                     let b = self.block_body();
-                                    self.eat(&Token::RBrace);
+                                    self.expect(&Token::RBrace);
                                     let mut body = defaults;
                                     body.extend(b);
                                     // If the computed key is a simple literal,
@@ -195,10 +195,10 @@ impl Parser {
                     if is_setter {
                         self.eat(&Token::LParen);
                         let param = self.ident()?;
-                        self.eat(&Token::RParen);
+                        self.expect(&Token::RParen);
                         self.eat(&Token::LBrace);
                         let b = self.block_body();
-                        self.eat(&Token::RBrace);
+                        self.expect(&Token::RBrace);
                         p.push(ObjectProp::Setter {
                             name: key,
                             param,
@@ -206,10 +206,10 @@ impl Parser {
                         });
                     } else if self.eat(&Token::LParen) {
                         let (params, defaults) = self.params();
-                        self.eat(&Token::RParen);
+                        self.expect(&Token::RParen);
                         self.eat(&Token::LBrace);
                         let b = self.block_body();
-                        self.eat(&Token::RBrace);
+                        self.expect(&Token::RBrace);
                         let mut body = defaults;
                         body.extend(b);
                         if is_method {
@@ -231,7 +231,7 @@ impl Parser {
                         self.eat(&Token::Comma);
                     }
                 }
-                self.eat(&Token::RBrace);
+                self.expect(&Token::RBrace);
                 Some(Expr::Object(p))
             }
             Token::KwFunction => {
@@ -247,10 +247,10 @@ impl Parser {
                 };
                 self.eat(&Token::LParen);
                 let (p, defaults) = self.params();
-                self.eat(&Token::RParen);
+                self.expect(&Token::RParen);
                 self.eat(&Token::LBrace);
                 let b = self.block_body();
-                self.eat(&Token::RBrace);
+                self.expect(&Token::RBrace);
                 let mut body = defaults;
                 body.extend(b);
                 Some(Expr::FnExpr {
@@ -266,7 +266,7 @@ impl Parser {
                 let c = self.new_callee()?;
                 let a = if self.eat(&Token::LParen) {
                     let mut ag = Vec::new();
-                    while !matches!(self.cur(), Token::RParen) {
+                    while self.until(&Token::RParen) {
                         if let Some(arg) = self.assign() {
                             ag.push(arg);
                         } else {
@@ -276,7 +276,7 @@ impl Parser {
                             self.eat(&Token::Comma);
                         }
                     }
-                    self.eat(&Token::RParen);
+                    self.expect(&Token::RParen);
                     ag
                 } else {
                     vec![]
@@ -331,7 +331,7 @@ impl Parser {
                 Token::LBracket => {
                     self.adv();
                     let p = self.expr()?;
-                    self.eat(&Token::RBracket);
+                    self.expect(&Token::RBracket);
                     e = Expr::Member {
                         object: Box::new(e),
                         property: Box::new(p),
@@ -417,7 +417,7 @@ impl Parser {
     pub(super) fn arrow_body(&mut self, params: Vec<String>, defaults: Vec<Statement>) -> Expr {
         if self.eat(&Token::LBrace) {
             let b = self.block_body();
-            self.eat(&Token::RBrace);
+            self.expect(&Token::RBrace);
             let mut body = defaults;
             body.extend(b);
             Expr::ArrowFn {

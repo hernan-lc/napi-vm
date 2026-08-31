@@ -105,6 +105,25 @@ belong to the host functions themselves — see
 work. It spawns one OS thread per call and must not run concurrently with
 another operation on the same VM.
 
+### Generators
+
+Generators suspend on a stackful coroutine that runs on the calling thread, so
+`yield` inside loops, conditionals and `try`/`finally` all behave as specified,
+and infinite generators are fine.
+
+Leaving a `for...of` early — `break`, `return`, or a `throw` from the body —
+closes the generator, so its `finally` blocks run:
+
+```javascript
+function* g() { try { yield 1; yield 2; } finally { cleanup(); } }
+for (const v of g()) { break; }   // cleanup() runs
+```
+
+A generator that is merely dropped without being closed does *not* run its
+`finally`, matching JavaScript, where a generator collected by the GC never
+resumes. Calling `next()` on a generator from inside its own body throws
+`TypeError: Generator is already running`.
+
 ## LanguageService
 
 | Function | Description |

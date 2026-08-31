@@ -39,6 +39,11 @@ impl Parser {
         // terminator) yields `undefined`; otherwise it yields the operand.
         if matches!(self.cur(), Token::KwYield) {
             self.adv();
+            // `yield* iterable` delegates to another iterator.
+            if self.eat(&Token::Star) {
+                let inner = self.assign()?;
+                return Some(Expr::YieldFrom(Box::new(inner)));
+            }
             let arg = if matches!(
                 self.cur(),
                 Token::Semicolon
@@ -580,7 +585,7 @@ impl Parser {
                 Token::LParen => {
                     self.adv();
                     let mut a = Vec::new();
-                    while !matches!(self.cur(), Token::RParen) && !self.eof() {
+                    while self.until(&Token::RParen) {
                         if let Some(arg) = self.assign() {
                             a.push(arg);
                         } else {
@@ -590,7 +595,7 @@ impl Parser {
                             self.eat(&Token::Comma);
                         }
                     }
-                    self.eat(&Token::RParen);
+                    self.expect(&Token::RParen);
                     e = Expr::Call {
                         callee: Box::new(e),
                         args: a,
@@ -618,7 +623,7 @@ impl Parser {
                 Token::LBracket => {
                     self.adv();
                     let p = self.expr()?;
-                    self.eat(&Token::RBracket);
+                    self.expect(&Token::RBracket);
                     e = Expr::Member {
                         object: Box::new(e),
                         property: Box::new(p),
@@ -646,7 +651,7 @@ impl Parser {
                     if self.eat(&Token::LParen) {
                         // Optional call: obj?.(args)
                         let mut a = Vec::new();
-                        while !matches!(self.cur(), Token::RParen) {
+                        while self.until(&Token::RParen) {
                             if let Some(arg) = self.assign() {
                                 a.push(arg);
                             } else {
@@ -656,7 +661,7 @@ impl Parser {
                                 self.eat(&Token::Comma);
                             }
                         }
-                        self.eat(&Token::RParen);
+                        self.expect(&Token::RParen);
                         e = Expr::Call {
                             callee: Box::new(Expr::OptionalChain {
                                 object: Box::new(e),
@@ -668,7 +673,7 @@ impl Parser {
                     } else if self.eat(&Token::LBracket) {
                         // Optional computed member: obj?.[expr]
                         let p = self.assign()?;
-                        self.eat(&Token::RBracket);
+                        self.expect(&Token::RBracket);
                         e = Expr::OptionalChain {
                             object: Box::new(e),
                             property: Box::new(p),

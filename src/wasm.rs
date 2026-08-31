@@ -341,7 +341,7 @@ fn run_setup(interp: &mut Interpreter) {
     let toks = Lexer::new(CONSOLE_SETUP).tokenize_with_spans();
     let mut parser = Parser::new_with_spans(toks);
     let stmts = parser.parse();
-    let _ = interp.run(&stmts);
+    let _ = interp.run_program_body(&stmts);
 }
 
 /// Build the `__out` sink: a Rust closure that appends `(level, text)` to the
@@ -451,7 +451,7 @@ impl WasmVm {
             ))
         } else {
             self.interp
-                .run(&stmts)
+                .run_program_body(&stmts)
                 .map_err(|e| self.interp.enrich_error(e, None))
         };
         self.interp.cur_mod = None;
@@ -521,7 +521,7 @@ impl WasmVm {
                 "RangeError: Maximum parse depth exceeded",
             ));
         }
-        let result = self.interp.run(&stmts);
+        let result = self.interp.run_program_body(&stmts);
         self.interp.cur_mod = None;
         result.map_err(|e| JsValue::from_str(&e.to_string()))?;
 

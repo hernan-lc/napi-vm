@@ -37,8 +37,13 @@ js-sys = "0.3"
 
 # `file://` URI parsing for the language server. Scoped to native targets
 # because `crate::lsp` (its only consumer) is not compiled for wasm32.
+#
+# `corosensei` provides the stackful coroutines that back generators. It is
+# target-scoped because it needs assembly stack-switching support, which
+# wasm32 does not have; that target keeps the degraded generator path.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 url = "2"
+corosensei = "0.3.4"
 
 [dev-dependencies]
 criterion = "0.5"

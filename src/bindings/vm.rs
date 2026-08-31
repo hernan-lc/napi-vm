@@ -884,13 +884,20 @@ fn execute_source(interp: &mut Interpreter, source: &str) -> Result<Value, VmErr
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize_with_spans();
     let mut parser = Parser::new_with_spans(tokens);
-    let statements = parser.parse();
-    if parser.depth_exceeded {
-        return Err(VmErr::Msg(
-            "RangeError: Maximum parse depth exceeded".to_string(),
-        ));
-    }
-    interp.run(&statements)
+    // Refuse to execute a program that did not parse. Recovering from a
+    // syntax error and running whatever statements survived is worse than
+    // reporting where the source broke.
+    let statements = match parser.parse_program() {
+        Ok(statements) => statements,
+        Err(error) if parser.depth_exceeded => {
+            let _ = error;
+            return Err(VmErr::Msg(
+                "RangeError: Maximum parse depth exceeded".to_string(),
+            ));
+        }
+        Err(error) => return Err(VmErr::Msg(error.to_string())),
+    };
+    interp.run_program_body(&statements)
 }
 
 fn async_result_string(value: Value) -> Result<String, String> {

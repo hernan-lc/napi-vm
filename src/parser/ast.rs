@@ -154,6 +154,9 @@ pub enum Expr {
     },
     Await(Box<Expr>),
     Yield(Option<Box<Expr>>),
+    /// `yield* iterable` -- delegate to another iterator, yielding each of its
+    /// values in turn and evaluating to that iterator's return value.
+    YieldFrom(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,6 +239,13 @@ pub enum Statement {
         body: Vec<Statement>,
     },
     Block(Vec<Statement>),
+    /// Several declarators from one `let`/`const`/`var` statement:
+    /// `let a = 1, b = 2;`.
+    ///
+    /// Transparent to scoping -- unlike [`Statement::Block`], it introduces no
+    /// environment, so the names land in the enclosing scope. It exists
+    /// because one statement can only return one `Statement`.
+    Declarations(Vec<Statement>),
     Labeled {
         label: String,
         body: Box<Statement>,
@@ -328,6 +338,123 @@ pub enum Pattern {
 impl Pattern {
     pub fn is_rest(&self) -> bool {
         matches!(self, Pattern::Rest(_))
+    }
+}
+
+/// Every identifier a binding pattern introduces, in source order.
+///
+/// Used for hoisting: `const { a, b: [c] } = obj;` declares `a` and `c`, and
+/// all of them must exist (in their dead zone) before the block's first
+/// statement runs.
+pub fn pattern_names(pattern: &Pattern) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_pattern_names(pattern, &mut names);
+    names
+}
+
+fn collect_pattern_names(pattern: &Pattern, out: &mut Vec<String>) {
+    match pattern {
+        Pattern::Ident(name) => out.push(name.clone()),
+        Pattern::Array(items) => {
+            for item in items {
+                collect_pattern_names(item, out);
+            }
+        }
+        Pattern::Object(props) => {
+            for (key, sub) in props {
+                match sub {
+                    Some(sub) => collect_pattern_names(sub, out),
+                    // Shorthand `{ a }` binds the key itself.
+                    None => out.push(key.clone()),
+                }
+            }
+        }
+        Pattern::Rest(inner) => collect_pattern_names(inner, out),
+        Pattern::Default(inner, _) => collect_pattern_names(inner, out),
+    }
+}
+
+/// Collect the names every `var` in `stmts` introduces, for hoisting to the
+/// enclosing function or program scope.
+///
+/// Recurses through every construct a `var` can hide inside -- blocks, loops,
+/// `if`, `try`, `switch`, labels -- but deliberately *not* into nested
+/// functions or classes, which begin their own variable scope. Function
+/// declarations are collected too: they are `var`-scoped, and the interpreter
+/// defines them eagerly during hoisting.
+pub fn collect_var_names(stmts: &[Statement], out: &mut Vec<String>) {
+    for stmt in stmts {
+        collect_stmt_var_names(stmt, out);
+    }
+}
+
+fn collect_stmt_var_names(stmt: &Statement, out: &mut Vec<String>) {
+    match stmt {
+        Statement::VarDecl {
+            kind: VarKind::Var,
+            name,
+            destructuring,
+            ..
+        } => match destructuring {
+            Some(pattern) => collect_pattern_names(pattern, out),
+            None => out.push(name.clone()),
+        },
+        // Other declaration kinds are lexical: block-scoped, handled elsewhere.
+        Statement::VarDecl { .. } | Statement::ClassDecl { .. } => {}
+        // A function declaration's *name* is var-scoped; its body is not.
+        Statement::FnDecl { name, .. } => out.push(name.clone()),
+        Statement::Block(body) | Statement::Declarations(body) => collect_var_names(body, out),
+        Statement::If { then, else_, .. } => {
+            collect_var_names(then, out);
+            if let Some(else_) = else_ {
+                collect_var_names(else_, out);
+            }
+        }
+        Statement::While { body, .. }
+        | Statement::DoWhile { body, .. }
+        | Statement::ForIn { body, .. }
+        | Statement::ForOf { body, .. } => collect_var_names(body, out),
+        Statement::For { init, body, .. } => {
+            if let Some(init) = init
+                && let ForInit::Var {
+                    kind: VarKind::Var,
+                    decls,
+                } = &**init
+            {
+                out.extend(decls.iter().map(|(name, _)| name.clone()));
+            }
+            collect_var_names(body, out);
+        }
+        Statement::Labeled { body, .. } => collect_stmt_var_names(body, out),
+        Statement::Try {
+            body,
+            catch,
+            finally,
+        } => {
+            collect_var_names(body, out);
+            if let Some((_, catch_body)) = catch {
+                collect_var_names(catch_body, out);
+            }
+            if let Some(finally) = finally {
+                collect_var_names(finally, out);
+            }
+        }
+        Statement::Switch { cases, .. } => {
+            for case in cases {
+                collect_var_names(&case.body, out);
+            }
+        }
+        Statement::Expr(_)
+        | Statement::Return(_)
+        | Statement::Break
+        | Statement::Continue
+        | Statement::LabeledBreak(_)
+        | Statement::LabeledContinue(_)
+        | Statement::Throw(_)
+        | Statement::ExportDefault(_)
+        | Statement::ExportNamed { .. }
+        | Statement::Import { .. }
+        | Statement::Empty => {}
     }
 }
 
@@ -431,7 +558,7 @@ fn stmt_references(s: &Statement, name: &str) -> bool {
         Statement::ForOf { iter, body, .. } => {
             expr_references(iter, name) || stmts_reference(body, name)
         }
-        Statement::Block(b) => stmts_reference(b, name),
+        Statement::Block(b) | Statement::Declarations(b) => stmts_reference(b, name),
         Statement::Labeled { body, .. } => stmt_references(body, name),
         Statement::Throw(e) => expr_references(e, name),
         Statement::Try {
@@ -519,6 +646,7 @@ fn expr_references(e: &Expr, name: &str) -> bool {
         Expr::Spread(x) => expr_references(x, name),
         Expr::Template { exprs, .. } => exprs.iter().any(|x| expr_references(x, name)),
         Expr::Await(x) => expr_references(x, name),
+        Expr::YieldFrom(x) => expr_references(x, name),
         Expr::Yield(x) => x
             .as_ref()
             .map(|x| expr_references(x, name))
