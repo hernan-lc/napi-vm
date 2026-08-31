@@ -101,8 +101,12 @@ impl Interpreter {
         if let Some((p, cb)) = catch {
             let ce = Rc::new(RefCell::new(Environment::child(self.global.clone())));
             ce.borrow_mut().set(p, err_val);
+            // The catch parameter lives in its own scope, and the catch block
+            // is a block: its lexical declarations belong to that scope too.
             let s = std::mem::replace(&mut self.global, ce);
-            let r = self.run(cb);
+            // Only lexical hoisting here: a `var` inside `catch` belongs to
+            // the enclosing function scope, where it was already hoisted.
+            let r = self.run_hoisted_here(cb);
             self.global = s;
             r
         } else {
@@ -297,7 +301,9 @@ impl Interpreter {
                     .clone()
                     .unwrap_or_else(|| Rc::<str>::from("<anonymous>"));
                 self.push_frame(fname, Span::unknown());
-                let r = self.run(&fd.body);
+                // A function body is a fresh variable scope: `var` and
+                // function declarations hoist to it, lexical ones dead-zone.
+                let r = self.run_program_body(&fd.body);
                 // Convert a bare message into a located runtime error *before*
                 // popping the frame, so the snapshot carries the full call
                 // chain. Only the error path pays for the snapshot — the
@@ -474,7 +480,7 @@ impl Interpreter {
                 };
 
                 let s = std::mem::replace(&mut self.global, fe);
-                let r = self.run(&fd.body);
+                let r = self.run_program_body(&fd.body);
                 self.global = s;
                 match r {
                     Err(VmErr::Ret(v)) => match v {
@@ -524,6 +530,7 @@ fn make_generator_coroutine(
     params: Rc<Vec<Rc<str>>>,
     args: Vec<Value>,
     builtins_env: Option<super::Env>,
+    gen_depth: u32,
 ) -> Option<crate::value::GenCoroutine> {
     use corosensei::Coroutine;
     use corosensei::stack::DefaultStack;
@@ -549,6 +556,10 @@ fn make_generator_coroutine(
             if let Some(global) = inherited_global {
                 interp.persistent_global = global;
             }
+            // Carried so recursion *through* generators stays bounded: each
+            // body runs on a fresh interpreter whose call stack starts empty,
+            // so `MAX_CALL_DEPTH` alone never sees it.
+            interp.gen_depth = gen_depth;
 
             // SAFETY: `yielder` is borrowed from this coroutine's own stack frame
             // and stays alive for the whole closure. `interp` is created here and
@@ -566,7 +577,7 @@ fn make_generator_coroutine(
             }
             interp.global = fe;
 
-            match interp.run(&body) {
+            match interp.run_program_body(&body) {
                 Ok(v) | Err(VmErr::Ret(v)) => GenOutcome::Returned(v),
                 Err(VmErr::Throw(v)) => {
                     let msg = match &v {
@@ -626,6 +637,11 @@ pub(crate) fn generator_next(
             }
 
             if !inner.started {
+                if interp.gen_depth >= super::MAX_GENERATOR_DEPTH {
+                    return Err(crate::value::limit_err(
+                        "Maximum generator nesting exceeded",
+                    ));
+                }
                 inner.started = true;
                 // The builtins scope is the parent of the driver's global.
                 let builtins_env = interp.global.borrow().parent_env();
@@ -635,6 +651,7 @@ pub(crate) fn generator_next(
                     inner.params.clone(),
                     inner.args.clone(),
                     builtins_env,
+                    interp.gen_depth + 1,
                 );
                 if inner.coroutine.is_none() {
                     // Stack allocation failed; report an exhausted generator.

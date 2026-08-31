@@ -4,10 +4,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::{Environment, Interpreter, Module};
+use super::{BindKind, Env, Environment, Interpreter, Lookup, ModifyOutcome, Module};
 use crate::error::{VmErr, vm_err, vm_ret, vm_throw};
 use crate::parser::{
-    AssignOp, ClassMember, Expr, ExprOrBlock, ForInit, ObjectProp, Statement, UnOp,
+    AssignOp, ClassMember, Expr, ExprOrBlock, ForInit, ObjectProp, Statement, UnOp, VarKind,
     arrow_body_references, stmts_reference,
 };
 use crate::value::{ClassData, FunctionData, PromiseState, Value};
@@ -61,16 +61,59 @@ impl Interpreter {
                 name,
                 init,
                 destructuring,
-                kind: _,
+                kind,
             } => {
                 let v = match init {
                     Some(e) => self.eval_expr(e)?,
                     None => Value::Undefined,
                 };
-                if let Some(pat) = destructuring {
-                    self.destructure(pat, &v)?;
-                } else {
-                    self.set_binding(name, v.clone())?;
+                match kind {
+                    // `var` was already hoisted to the enclosing function or
+                    // program scope; this statement only assigns to it.
+                    VarKind::Var => {
+                        if let Some(pat) = destructuring {
+                            self.destructure(pat, &v)?;
+                        } else if init.is_some() {
+                            self.assign_or_set_binding(name, v.clone())?;
+                        } else {
+                            // A bare `var a;` re-declaration must not erase an
+                            // existing value: `var a = 1; var a; a` is 1.
+                            // Hoisting already created the binding.
+                            if self.global.borrow().get(name).is_none() {
+                                self.assign_or_set_binding(name, Value::Undefined)?;
+                            }
+                        }
+                    }
+                    // `let`/`const` bind in *this* block, leaving the dead
+                    // zone. Declaring here as well as in `hoist_lexical` keeps
+                    // the statement correct on the paths that do not hoist.
+                    VarKind::Let | VarKind::Const => {
+                        let bind_kind = if matches!(kind, VarKind::Const) {
+                            BindKind::Const
+                        } else {
+                            BindKind::Let
+                        };
+                        match destructuring {
+                            Some(pat) => {
+                                // Declare each name first so `destructure`'s
+                                // writes land on bindings that already carry
+                                // the right kind -- otherwise a destructured
+                                // `const` would be reassignable.
+                                for bound in crate::parser::pattern_names(pat) {
+                                    self.declare_binding(
+                                        &bound,
+                                        Value::Undefined,
+                                        bind_kind,
+                                        false,
+                                    )?;
+                                }
+                                self.destructure(pat, &v)?;
+                            }
+                            None => {
+                                self.declare_binding(name, v.clone(), bind_kind, true)?;
+                            }
+                        }
+                    }
                 }
                 Ok(v)
             }
@@ -277,9 +320,9 @@ impl Interpreter {
             Statement::If { test, then, else_ } => {
                 let t = self.eval_expr(test)?;
                 if self.truthy(&t) {
-                    self.run(then)
+                    self.run_block(then)
                 } else if let Some(a) = else_ {
-                    self.run(a)
+                    self.run_block(a)
                 } else {
                     Ok(Value::Undefined)
                 }
@@ -293,7 +336,7 @@ impl Interpreter {
                     if !self.truthy(&t) {
                         break;
                     }
-                    match self.run(body) {
+                    match self.run_block(body) {
                         Err(VmErr::Break(None)) => break,
                         Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
                         Err(VmErr::Continue(None)) => continue,
@@ -308,7 +351,7 @@ impl Interpreter {
                 let mut r = Value::Undefined;
                 loop {
                     self.consume_loop()?;
-                    match self.run(body) {
+                    match self.run_block(body) {
                         Err(VmErr::Break(None)) => break,
                         Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
                         Err(VmErr::Continue(None)) => {}
@@ -328,44 +371,13 @@ impl Interpreter {
                 update,
                 body,
             } => {
-                if let Some(i) = init {
-                    match i.as_ref() {
-                        ForInit::Var { decls, .. } => {
-                            for (name, init) in decls {
-                                let v = match init {
-                                    Some(e) => self.eval_expr(e)?,
-                                    None => Value::Undefined,
-                                };
-                                self.set_binding(name, v)?;
-                            }
-                        }
-                        ForInit::Expr(e) => {
-                            self.eval_expr(e)?;
-                        }
-                    }
-                }
-                let mut r = Value::Undefined;
-                let label = self.active_label.take();
-                loop {
-                    self.consume_loop()?;
-                    if let Some(t) = test {
-                        let tv = self.eval_expr(t)?;
-                        if !self.truthy(&tv) {
-                            break;
-                        }
-                    }
-                    match self.run(body) {
-                        Err(VmErr::Break(None)) => break,
-                        Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
-                        Err(VmErr::Continue(None)) => {}
-                        Err(VmErr::Continue(l)) if label_matches(&label, &l) => {}
-                        other => r = other?,
-                    }
-                    if let Some(u) = update {
-                        self.eval_expr(u)?;
-                    }
-                }
-                Ok(r)
+                // The loop head gets its own scope, so `for (let i = ...)`
+                // does not leak `i` and does not collide with an outer `i`.
+                let outer = self.push_scope();
+                let result =
+                    self.run_for(init.as_deref(), test.as_deref(), update.as_deref(), body);
+                self.pop_scope(outer);
+                result
             }
             Statement::ForIn { name, obj, body } => {
                 let o = self.eval_expr(obj)?;
@@ -375,7 +387,7 @@ impl Interpreter {
                 for k in ks {
                     self.consume_loop()?;
                     self.set_binding(name, Value::String(k))?;
-                    match self.run(body) {
+                    match self.run_block(body) {
                         Err(VmErr::Break(None)) => break,
                         Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
                         Err(VmErr::Continue(None)) => continue,
@@ -387,29 +399,7 @@ impl Interpreter {
             }
             Statement::ForOf { name, iter, body } => {
                 let source = self.eval_expr(iter)?;
-                let iterator = if matches!(source, Value::String(_)) {
-                    let iter_fn =
-                        self.prop(&source, &Value::String("__symbol_iterator__".to_string()))?;
-                    self.call_this(&iter_fn, source, vec![])?
-                } else {
-                    match &source {
-                        Value::Generator { .. } => source.clone(),
-                        Value::Array(_) => {
-                            let iter_fn = self
-                                .prop(&source, &Value::String("__symbol_iterator__".to_string()))?;
-                            self.call_this(&iter_fn, source.clone(), vec![])?
-                        }
-                        Value::Object { .. } => {
-                            let iter_fn = self
-                                .prop(&source, &Value::String("__symbol_iterator__".to_string()))?;
-                            if matches!(iter_fn, Value::Undefined) {
-                                return vm_err("object is not iterable (no Symbol.iterator)");
-                            }
-                            self.call_this(&iter_fn, source.clone(), vec![])?
-                        }
-                        _ => return vm_err("for...of needs iterable"),
-                    }
-                };
+                let iterator = self.iterator_for(&source)?;
                 let next_fn = self.prop(&iterator, &Value::String("next".to_string()))?;
                 if matches!(next_fn, Value::Undefined) {
                     return vm_err("iterator has no next() method");
@@ -436,7 +426,7 @@ impl Interpreter {
                     }
                     let value = result.get_prop("value").unwrap_or(Value::Undefined);
                     self.set_binding(name, value)?;
-                    match self.run(body) {
+                    match self.run_block(body) {
                         Err(VmErr::Break(None)) => break,
                         Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
                         Err(VmErr::Continue(None)) => continue,
@@ -455,7 +445,9 @@ impl Interpreter {
                 }
                 Ok(r)
             }
-            Statement::Block(s) => self.run(s),
+            Statement::Block(s) => self.run_block(s),
+            // A declarator group shares the enclosing scope: no new frame.
+            Statement::Declarations(s) => self.run(s),
             Statement::Labeled { label, body } => {
                 // Make the label available to a directly-wrapped loop, which
                 // takes it on entry.
@@ -483,7 +475,7 @@ impl Interpreter {
                 finally,
             } => {
                 // Run the body, routing thrown and runtime errors into catch.
-                let body_result = self.run(body);
+                let body_result = self.run_block(body);
 
                 let after_catch = match body_result {
                     Err(VmErr::Throw(val)) => self.run_catch(catch, val),
@@ -502,44 +494,18 @@ impl Interpreter {
 
                 // finally always runs last; its own error/return takes precedence.
                 if let Some(f) = finally {
-                    self.run(f)?;
+                    self.run_block(f)?;
                 }
                 after_catch
             }
             Statement::Switch { disc, cases } => {
                 let d = self.eval_expr(disc)?;
-                let mut r = Value::Undefined;
-                let mut m = false;
-                let mut found_label = None;
-                for c in cases {
-                    if let Some(ref t) = c.test {
-                        let tv = self.eval_expr(t)?;
-                        if self.seq(&d, &tv) {
-                            m = true;
-                        }
-                    } else {
-                        m = true;
-                    }
-                    if m {
-                        match self.run(&c.body) {
-                            Err(VmErr::Break(l)) => match l {
-                                None => break,
-                                Some(label) => {
-                                    found_label = Some(label);
-                                    break;
-                                }
-                            },
-                            Err(e) => return Err(e),
-                            Ok(v) => {
-                                r = v;
-                            }
-                        }
-                    }
-                }
-                if let Some(label) = found_label {
-                    return Err(VmErr::Break(Some(label)));
-                }
-                Ok(r)
+                // Every case shares one block scope: fall-through means a
+                // `let` declared in one case is visible in the next.
+                let outer = self.push_scope();
+                let result = self.run_switch_cases(&d, cases);
+                self.pop_scope(outer);
+                result
             }
             Statement::ExportDefault(e) => {
                 let v = self.eval_expr(e)?;
@@ -614,6 +580,213 @@ impl Interpreter {
         }
     }
 
+    /// Collect every value an iterable produces, for spread and rest.
+    ///
+    /// Bounded by the loop budget and the array-length cap, so an infinite
+    /// generator raises a catchable `RangeError` instead of hanging.
+    fn drain_iterable(&mut self, source: &Value) -> Result<Vec<Value>, VmErr> {
+        let iterator = self.iterator_for(source)?;
+        let next_fn = self.prop(&iterator, &Value::String("next".to_string()))?;
+        if matches!(next_fn, Value::Undefined) {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        loop {
+            self.consume_loop()?;
+            let step = self.call_this(&next_fn, iterator.clone(), vec![])?;
+            let done = step.get_prop("done").map(|v| v.is_truthy()).unwrap_or(true);
+            if done {
+                return Ok(out);
+            }
+            out.push(step.get_prop("value").unwrap_or(Value::Undefined));
+            if out.len() > crate::value::MAX_ARRAY_LEN {
+                return Err(crate::value::limit_err("Maximum array length exceeded"));
+            }
+        }
+    }
+
+    /// Obtain an iterator for `source`, following the `Symbol.iterator`
+    /// protocol. Shared by `for...of` and `yield*`.
+    fn iterator_for(&mut self, source: &Value) -> Result<Value, VmErr> {
+        if matches!(source, Value::String(_)) {
+            let iter_fn = self.prop(source, &Value::String("__symbol_iterator__".to_string()))?;
+            return self.call_this(&iter_fn, source.clone(), vec![]);
+        }
+        match source {
+            // A generator is its own iterator.
+            Value::Generator { .. } => Ok(source.clone()),
+            Value::Array(_) => {
+                let iter_fn =
+                    self.prop(source, &Value::String("__symbol_iterator__".to_string()))?;
+                self.call_this(&iter_fn, source.clone(), vec![])
+            }
+            Value::Object { .. } => {
+                let iter_fn =
+                    self.prop(source, &Value::String("__symbol_iterator__".to_string()))?;
+                if matches!(iter_fn, Value::Undefined) {
+                    return vm_err("object is not iterable (no Symbol.iterator)");
+                }
+                self.call_this(&iter_fn, source.clone(), vec![])
+            }
+            _ => vm_err("for...of needs iterable"),
+        }
+    }
+
+    /// The body of a C-style `for`, running inside the loop scope the caller
+    /// pushed.
+    ///
+    /// `for (let i = ...)` gives **each iteration its own binding**, which is
+    /// what makes a closure created in the body capture that iteration's
+    /// value:
+    ///
+    /// ```js
+    /// const fns = [];
+    /// for (let i = 0; i < 3; i++) fns.push(() => i);
+    /// fns.map(f => f());   // [0, 1, 2], not [3, 3, 3]
+    /// ```
+    ///
+    /// The copy happens *after* the body and *before* the update, so the
+    /// update advances the next iteration's binding rather than the one the
+    /// body just captured. `var` keeps the single function-scoped binding, so
+    /// the same loop written with `var` still yields `[3, 3, 3]`.
+    fn run_for(
+        &mut self,
+        init: Option<&ForInit>,
+        test: Option<&Expr>,
+        update: Option<&Expr>,
+        body: &[Statement],
+    ) -> Result<Value, VmErr> {
+        let loop_scope = self.global.clone();
+        let mut per_iteration: Vec<String> = Vec::new();
+
+        if let Some(init) = init {
+            match init {
+                ForInit::Var { kind, decls } => {
+                    for (name, init) in decls {
+                        let v = match init {
+                            Some(e) => self.eval_expr(e)?,
+                            None => Value::Undefined,
+                        };
+                        match kind {
+                            // Hoisted to the function scope already.
+                            VarKind::Var => self.assign_or_set_binding(name, v)?,
+                            VarKind::Let => {
+                                self.declare_binding(name, v, BindKind::Let, true)?;
+                                per_iteration.push(name.clone());
+                            }
+                            VarKind::Const => {
+                                self.declare_binding(name, v, BindKind::Const, true)?
+                            }
+                        }
+                    }
+                }
+                ForInit::Expr(e) => {
+                    self.eval_expr(e)?;
+                }
+            }
+        }
+
+        if !per_iteration.is_empty() {
+            self.global = self.copy_iteration_scope(&loop_scope, &per_iteration);
+        }
+
+        let mut r = Value::Undefined;
+        let label = self.active_label.take();
+        loop {
+            self.consume_loop()?;
+            if let Some(t) = test {
+                let tv = self.eval_expr(t)?;
+                if !self.truthy(&tv) {
+                    break;
+                }
+            }
+            match self.run_block(body) {
+                Err(VmErr::Break(None)) => break,
+                Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
+                Err(VmErr::Continue(None)) => {}
+                Err(VmErr::Continue(l)) if label_matches(&label, &l) => {}
+                other => r = other?,
+            }
+            if !per_iteration.is_empty() {
+                let current = self.global.clone();
+                self.global = self.copy_iteration_scope(&current, &per_iteration);
+            }
+            if let Some(u) = update {
+                self.eval_expr(u)?;
+            }
+        }
+        Ok(r)
+    }
+
+    /// Build the next iteration's scope: a sibling of `from` carrying a fresh
+    /// copy of each per-iteration binding's current value.
+    fn copy_iteration_scope(&self, from: &Env, names: &[String]) -> Env {
+        let parent = from
+            .borrow()
+            .parent_env()
+            .unwrap_or_else(|| self.persistent_global.clone());
+        let scope = Rc::new(RefCell::new(Environment::child(parent)));
+        {
+            let source = from.borrow();
+            let mut target = scope.borrow_mut();
+            for name in names {
+                let value = source.get(name).unwrap_or(Value::Undefined);
+                target.declare(name, value, BindKind::Let, true);
+            }
+        }
+        scope
+    }
+
+    /// Run a `switch`'s cases inside the scope the caller already pushed.
+    ///
+    /// All cases share that one block scope, because fall-through means a
+    /// `let` declared by one case is in scope for the next. Lexical
+    /// declarations from *every* case are hoisted before any case runs, so a
+    /// case that falls into a later declaration sees a dead zone rather than
+    /// an outer binding.
+    fn run_switch_cases(
+        &mut self,
+        disc: &Value,
+        cases: &[crate::parser::SwitchCase],
+    ) -> Result<Value, VmErr> {
+        for case in cases {
+            self.hoist_lexical_public(&case.body)?;
+        }
+
+        let mut r = Value::Undefined;
+        let mut matched = false;
+        let mut found_label = None;
+        for c in cases {
+            if let Some(ref t) = c.test {
+                let tv = self.eval_expr(t)?;
+                if self.seq(disc, &tv) {
+                    matched = true;
+                }
+            } else {
+                matched = true;
+            }
+            if matched {
+                match self.run(&c.body) {
+                    Err(VmErr::Break(l)) => match l {
+                        None => break,
+                        Some(label) => {
+                            found_label = Some(label);
+                            break;
+                        }
+                    },
+                    Err(e) => return Err(e),
+                    Ok(v) => {
+                        r = v;
+                    }
+                }
+            }
+        }
+        if let Some(label) = found_label {
+            return Err(VmErr::Break(Some(label)));
+        }
+        Ok(r)
+    }
+
     pub(crate) fn eval_expr(&mut self, e: &Expr) -> Result<Value, VmErr> {
         match e {
             Expr::Number(n) => Ok(Value::Number(*n)),
@@ -630,10 +803,17 @@ impl Interpreter {
                 if n == "undefined" {
                     return Ok(Value::Undefined);
                 }
-                self.global
-                    .borrow()
-                    .get(n)
-                    .ok_or_else(|| VmErr::Msg(format!("ReferenceError: {} is not defined", n)))
+                match self.global.borrow().lookup(n) {
+                    Lookup::Value(v) => Ok(v),
+                    // Declared in this block but the declaration has not run:
+                    // the temporal dead zone. JavaScript distinguishes this
+                    // from an undeclared name, and so do we.
+                    Lookup::Uninitialized => vm_err(format!(
+                        "ReferenceError: Cannot access '{}' before initialization",
+                        n
+                    )),
+                    Lookup::Missing => vm_err(format!("ReferenceError: {} is not defined", n)),
+                }
             }
             Expr::Array(i) => {
                 let mut v = Vec::new();
@@ -662,6 +842,22 @@ impl Interpreter {
                                         ));
                                     }
                                     v.extend(s.chars().map(|c| Value::String(c.to_string())))
+                                }
+                                // Anything else iterable -- a generator, an
+                                // object with `Symbol.iterator` -- is drained
+                                // through the iterator protocol. Silently
+                                // producing nothing here made `[...gen()]`
+                                // return an empty array.
+                                Value::Generator { .. } | Value::Object { .. } => {
+                                    let items = self.drain_iterable(&inner_val)?;
+                                    if v.len().saturating_add(items.len())
+                                        > crate::value::MAX_ARRAY_LEN
+                                    {
+                                        return Err(crate::value::limit_err(
+                                            "Maximum array length exceeded",
+                                        ));
+                                    }
+                                    v.extend(items);
                                 }
                                 _ => {}
                             }
@@ -793,10 +989,25 @@ impl Interpreter {
                                     old = Some(cur);
                                     Value::Number(if inc { cur_num + 1.0 } else { cur_num - 1.0 })
                                 })
-                            }
-                            .ok_or_else(|| {
-                                VmErr::Msg(format!("ReferenceError: {} is not defined", n))
-                            })?;
+                            };
+                            let new_val = match new_val {
+                                ModifyOutcome::Updated(v) => v,
+                                ModifyOutcome::Missing => {
+                                    return vm_err(format!("ReferenceError: {} is not defined", n));
+                                }
+                                ModifyOutcome::Const => {
+                                    return vm_err(format!(
+                                        "TypeError: Assignment to constant variable '{}'",
+                                        n
+                                    ));
+                                }
+                                ModifyOutcome::Uninitialized => {
+                                    return vm_err(format!(
+                                        "ReferenceError: Cannot access '{}' before initialization",
+                                        n
+                                    ));
+                                }
+                            };
                             if *prefix {
                                 Ok(new_val)
                             } else {
@@ -955,9 +1166,24 @@ impl Interpreter {
                             if let Some(e) = err {
                                 return Err(e);
                             }
-                            res.ok_or_else(|| {
-                                VmErr::Msg(format!("ReferenceError: {} is not defined", n))
-                            })?
+                            match res {
+                                ModifyOutcome::Updated(v) => v,
+                                ModifyOutcome::Missing => {
+                                    return vm_err(format!("ReferenceError: {} is not defined", n));
+                                }
+                                ModifyOutcome::Const => {
+                                    return vm_err(format!(
+                                        "TypeError: Assignment to constant variable '{}'",
+                                        n
+                                    ));
+                                }
+                                ModifyOutcome::Uninitialized => {
+                                    return vm_err(format!(
+                                        "ReferenceError: Cannot access '{}' before initialization",
+                                        n
+                                    ));
+                                }
+                            }
                         } else {
                             self.assign_or_set_binding(n, v.clone())?;
                             v
@@ -1114,6 +1340,52 @@ impl Interpreter {
                 }
                 // Outside a generator body: yield is a no-op returning undefined.
                 Ok(Value::Undefined)
+            }
+            Expr::YieldFrom(inner) => {
+                // `yield* it` re-yields every value `it` produces, then
+                // evaluates to `it`'s own return value. Values sent in with
+                // `next(v)` are forwarded to the delegate.
+                let source = self.eval_expr(inner)?;
+                let iterator = self.iterator_for(&source)?;
+                let next_fn = self.prop(&iterator, &Value::String("next".to_string()))?;
+                if matches!(next_fn, Value::Undefined) {
+                    return vm_err("TypeError: yield* requires an iterable");
+                }
+
+                let mut sent = Value::Undefined;
+                loop {
+                    self.consume_loop()?;
+                    let step = self.call_this(&next_fn, iterator.clone(), vec![sent])?;
+                    let done = step.get_prop("done").map(|v| v.is_truthy()).unwrap_or(true);
+                    let value = step.get_prop("value").unwrap_or(Value::Undefined);
+                    if done {
+                        // The delegate's return value is this expression's.
+                        return Ok(value);
+                    }
+
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        let _ = value;
+                        sent = Value::Undefined;
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    match self.gen_yielder.as_ref() {
+                        Some(yielder) => match yielder.suspend(value) {
+                            crate::value::GenResume::Next(v) => {
+                                sent = v.unwrap_or(Value::Undefined);
+                            }
+                            crate::value::GenResume::Return => {
+                                // The outer generator is being closed: close
+                                // the delegate too, then unwind.
+                                close_iterator(&iterator);
+                                return vm_ret(Value::Undefined);
+                            }
+                        },
+                        // Outside a generator body there is nobody to yield
+                        // to; drain the iterator for its side effects.
+                        None => sent = Value::Undefined,
+                    }
+                }
             }
         }
     }

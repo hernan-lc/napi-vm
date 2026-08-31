@@ -4,7 +4,7 @@ mod eval;
 mod ops;
 mod resolve;
 
-pub use env::{Env, Environment, Module};
+pub use env::{AssignOutcome, BindKind, Env, Environment, Lookup, ModifyOutcome, Module};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use crate::error::{StackFrame, VmErr};
 use crate::host::HostBridge;
-use crate::parser::Statement;
+use crate::parser::{Statement, VarKind, collect_var_names, pattern_names};
 use crate::span::Span;
 use crate::value::Value;
 
@@ -24,6 +24,16 @@ use crate::value::Value;
 /// native limit on both the main thread (8MB typical) and generator coroutine
 /// stacks (8MB, see `GENERATOR_STACK_SIZE`).
 pub const MAX_CALL_DEPTH: usize = 256;
+
+/// Maximum depth of *nested generator bodies* currently executing.
+///
+/// A generator body runs on its own coroutine stack with its own
+/// `Interpreter`, so its call stack starts empty and `MAX_CALL_DEPTH` never
+/// sees recursion that goes through generators. `function* g() { yield* g(); }`
+/// therefore recursed until some other limit tripped, allocating an 8 MiB
+/// stack per level on the way -- seconds of work for a program that should
+/// fail immediately. This bounds that directly.
+pub const MAX_GENERATOR_DEPTH: u32 = 64;
 
 /// Default cap on loop iterations per top-level execution (`vm.run`,
 /// `registerModule`, `callFunction`). The interpreter is synchronous and has
@@ -60,6 +70,9 @@ pub struct Interpreter {
     /// The source code for the current module/script, used to extract
     /// source lines for error context. Stored as lines for efficient lookup.
     source_lines: Vec<String>,
+    /// How many generator bodies are executing beneath this interpreter.
+    /// Zero for the driver; one more than its parent inside a generator body.
+    pub(crate) gen_depth: u32,
     /// Configured per-execution loop-iteration cap.
     loop_budget: u64,
     /// Remaining loop iterations in the current execution. Refilled by
@@ -89,6 +102,7 @@ impl Interpreter {
             gen_yielder: None,
             call_stack: Vec::new(),
             source_lines: Vec::new(),
+            gen_depth: 0,
             loop_budget: DEFAULT_LOOP_BUDGET,
             loops_remaining: DEFAULT_LOOP_BUDGET,
         }
@@ -126,14 +140,25 @@ impl Interpreter {
     pub(crate) fn assign_or_set_binding(&mut self, name: &str, value: Value) -> Result<(), VmErr> {
         let is_persistent_global = Rc::ptr_eq(&self.global, &self.persistent_global);
         let mut env = self.global.borrow_mut();
-        if !env.assign(name, value.clone()) {
-            if is_persistent_global {
-                env.try_set(name, value)?;
-            } else {
-                env.set(name, value);
+        match env.assign(name, value.clone()) {
+            AssignOutcome::Assigned => Ok(()),
+            AssignOutcome::Const => Err(VmErr::Msg(format!(
+                "TypeError: Assignment to constant variable '{name}'"
+            ))),
+            AssignOutcome::Uninitialized => Err(VmErr::Msg(format!(
+                "ReferenceError: Cannot access '{name}' before initialization"
+            ))),
+            // No such binding: an assignment to an undeclared name creates an
+            // implicit `var`-like global, as sloppy-mode JavaScript does.
+            AssignOutcome::Missing => {
+                if is_persistent_global {
+                    env.try_set(name, value)?;
+                } else {
+                    env.set(name, value);
+                }
+                Ok(())
             }
         }
-        Ok(())
     }
 
     /// Set a property through `globalThis`, `window`, or `self`. Reads and
@@ -154,12 +179,165 @@ impl Interpreter {
         self.persistent_global.borrow().get(name)
     }
 
+    /// Execute a statement list in the *current* scope, with no hoisting.
+    ///
+    /// This is the raw sequencer. Callers that introduce a scope should use
+    /// [`Interpreter::run_block`]; callers that begin a function body or a
+    /// program should use [`Interpreter::run_program_body`], which performs
+    /// the hoisting JavaScript requires before the first statement runs.
     pub fn run(&mut self, stmts: &[Statement]) -> Result<Value, VmErr> {
         let mut r = Value::Undefined;
         for s in stmts {
             r = self.eval_stmt(s)?;
         }
         Ok(r)
+    }
+
+    /// Execute a statement list in a fresh block scope.
+    ///
+    /// `let`, `const`, `class` and block-level function declarations become
+    /// visible only inside this scope, and are hoisted into it before the
+    /// first statement runs so a reference above the declaration reports a
+    /// temporal dead zone rather than reaching an outer binding.
+    pub fn run_block(&mut self, stmts: &[Statement]) -> Result<Value, VmErr> {
+        let outer = self.push_scope();
+        let result = self.hoist_lexical(stmts).and_then(|()| self.run(stmts));
+        self.pop_scope(outer);
+        result
+    }
+
+    /// Execute a statement list as a block *in the current scope*, hoisting
+    /// its lexical declarations but not creating a new frame.
+    ///
+    /// For constructs that already pushed a scope of their own -- a `catch`
+    /// clause holding its parameter, a `switch` whose cases share one block --
+    /// so their declarations land there rather than in a second, nested frame.
+    pub(crate) fn run_hoisted_here(&mut self, stmts: &[Statement]) -> Result<Value, VmErr> {
+        self.hoist_lexical(stmts)?;
+        self.run(stmts)
+    }
+
+    /// Execute a function body or a whole program in the current scope,
+    /// performing both halves of JavaScript hoisting first: `var` and function
+    /// declarations (recursively, through blocks but not into nested
+    /// functions), then this level's lexical declarations.
+    pub fn run_program_body(&mut self, stmts: &[Statement]) -> Result<Value, VmErr> {
+        self.hoist_vars(stmts)?;
+        self.hoist_lexical(stmts)?;
+        self.run(stmts)
+    }
+
+    /// Enter a new block scope, returning the scope to restore afterwards.
+    pub(crate) fn push_scope(&mut self) -> Env {
+        let outer = self.global.clone();
+        self.global = Rc::new(RefCell::new(Environment::child(outer.clone())));
+        outer
+    }
+
+    /// Leave a block scope. Always paired with `push_scope`, including on the
+    /// error paths, so a `throw` cannot leave the interpreter in the block.
+    pub(crate) fn pop_scope(&mut self, outer: Env) {
+        self.global = outer;
+    }
+
+    /// Declare a name in the current scope, honouring the global frame's
+    /// binding quota when that is where we are.
+    pub(crate) fn declare_binding(
+        &mut self,
+        name: &str,
+        value: Value,
+        kind: BindKind,
+        initialized: bool,
+    ) -> Result<(), VmErr> {
+        if Rc::ptr_eq(&self.global, &self.persistent_global) {
+            self.global
+                .borrow_mut()
+                .declare_checked(name, value, kind, initialized)
+        } else {
+            self.global
+                .borrow_mut()
+                .declare(name, value, kind, initialized);
+            Ok(())
+        }
+    }
+
+    /// Hoist this level's lexical declarations into the current scope.
+    ///
+    /// `let` and `const` are created uninitialized, which is what makes a read
+    /// above the declaration a `ReferenceError` instead of resolving to an
+    /// outer binding. Function declarations are created *and* initialized,
+    /// because calling a function above its declaration is legal.
+    pub(crate) fn hoist_lexical_public(&mut self, stmts: &[Statement]) -> Result<(), VmErr> {
+        self.hoist_lexical(stmts)
+    }
+
+    fn hoist_lexical(&mut self, stmts: &[Statement]) -> Result<(), VmErr> {
+        for stmt in stmts {
+            match stmt {
+                Statement::VarDecl {
+                    name,
+                    destructuring,
+                    kind,
+                    ..
+                } => {
+                    let kind = match kind {
+                        VarKind::Let => BindKind::Let,
+                        VarKind::Const => BindKind::Const,
+                        // `var` is hoisted by `hoist_vars`, to the function
+                        // scope rather than this block.
+                        VarKind::Var => continue,
+                    };
+                    match destructuring {
+                        Some(pattern) => {
+                            for name in pattern_names(pattern) {
+                                self.declare_binding(&name, Value::Undefined, kind, false)?;
+                            }
+                        }
+                        None => self.declare_binding(name, Value::Undefined, kind, false)?,
+                    }
+                }
+                Statement::ClassDecl { name, .. } => {
+                    // Classes are lexical and have a dead zone, like `let`.
+                    self.declare_binding(name, Value::Undefined, BindKind::Let, false)?;
+                }
+                Statement::FnDecl { .. } => {
+                    // Defined eagerly below so mutual recursion above the
+                    // declarations works.
+                }
+                // Transparent: its declarators belong to this scope.
+                Statement::Declarations(inner) => self.hoist_lexical(inner)?,
+                _ => {}
+            }
+        }
+        // Second pass: function declarations, after every lexical name exists,
+        // so a hoisted function closing over a later `let` sees the binding.
+        for stmt in stmts {
+            if let Statement::FnDecl { name, .. } = stmt {
+                let value = self.eval_stmt(stmt)?;
+                let _ = value;
+                let _ = name;
+            }
+        }
+        Ok(())
+    }
+
+    /// Hoist `var` declarations to the current (function or program) scope.
+    ///
+    /// Recurses through blocks, loops, `if`, `try` and `switch` -- everywhere a
+    /// `var` can hide -- but never into a nested function, which starts its own
+    /// variable scope.
+    fn hoist_vars(&mut self, stmts: &[Statement]) -> Result<(), VmErr> {
+        let mut names = Vec::new();
+        collect_var_names(stmts, &mut names);
+        for name in names {
+            // Only create the binding if nothing already provides it: a
+            // parameter of the same name keeps its argument value, and a
+            // repeated `var` must not erase an earlier assignment.
+            if !self.global.borrow().has(&name) {
+                self.declare_binding(&name, Value::Undefined, BindKind::Var, true)?;
+            }
+        }
+        Ok(())
     }
 
     /// Install a fresh, empty export record for `name` and make it the module
@@ -327,7 +505,7 @@ mod tests {
         let toks = lex.tokenize_with_spans();
         let mut parser = Parser::new_with_spans(toks);
         let stmts = parser.parse();
-        interp.run(&stmts)
+        interp.run_program_body(&stmts)
     }
 
     fn eval_str(src: &str) -> String {

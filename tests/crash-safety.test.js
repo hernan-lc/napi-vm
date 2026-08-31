@@ -267,9 +267,18 @@ test("deeply nested value builds fine and teardown does not crash", () => {
   expect(r).toBe("built");
 });
 
-test("recursive yield* is absorbed, not fatal", () => {
+test("recursive yield* is a catchable error, not fatal", () => {
   const vm = new Vm();
-  expect(() => vm.run("function* g() { yield* g(); } let it = g(); it.next(); 'ok';")).not.toThrow();
+  // Each level of `yield*` starts a generator body on its own coroutine
+  // stack with its own interpreter, so `MAX_CALL_DEPTH` never sees the
+  // recursion. A dedicated nesting cap turns it into a `RangeError` -- this
+  // used to recurse until some other limit tripped, taking ~11 seconds and
+  // allocating an 8 MiB stack per level.
+  expect(() => vm.run("function* g() { yield* g(); } let it = g(); it.next();")).toThrow(
+    /RangeError: Maximum generator nesting exceeded/,
+  );
+  // The VM survives it and keeps working.
+  expect(vm.run("'ok';")).toBe("ok");
 });
 
 test("callFunction into unbounded recursion throws a catchable JS error", async () => {

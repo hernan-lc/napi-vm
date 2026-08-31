@@ -62,7 +62,7 @@ impl Parser {
         };
         self.eat(&Token::LBrace);
         let mut b = Vec::new();
-        while !matches!(self.cur(), Token::RBrace) {
+        while self.until(&Token::RBrace) {
             if self.eof() {
                 break;
             }
@@ -97,10 +97,10 @@ impl Parser {
             };
             if self.eat(&Token::LParen) {
                 let (p, defaults) = self.params();
-                self.eat(&Token::RParen);
+                self.expect(&Token::RParen);
                 self.eat(&Token::LBrace);
                 let bd = self.block_body();
-                self.eat(&Token::RBrace);
+                self.expect(&Token::RBrace);
                 let mut body = defaults;
                 body.extend(bd);
                 if is_getter {
@@ -139,7 +139,7 @@ impl Parser {
                 });
             }
         }
-        self.eat(&Token::RBrace);
+        self.expect(&Token::RBrace);
         Some(Statement::ClassDecl {
             name: n,
             superclass: sc,
@@ -174,7 +174,7 @@ impl Parser {
             Some(Statement::ExportDefault(Box::new(e)))
         } else if self.eat(&Token::LBrace) {
             let mut sp = Vec::new();
-            while !matches!(self.cur(), Token::RBrace) {
+            while self.until(&Token::RBrace) {
                 let l = self.ident()?;
                 let e = if self.eat(&Token::KwAs) {
                     self.ident()?
@@ -186,7 +186,7 @@ impl Parser {
                     self.eat(&Token::Comma);
                 }
             }
-            self.eat(&Token::RBrace);
+            self.expect(&Token::RBrace);
             let s = if self.eat(&Token::KwFrom) {
                 match self.cur() {
                     Token::String(x) => {
@@ -271,7 +271,7 @@ impl Parser {
             if self.eat(&Token::Comma) {
                 if self.eat(&Token::LBrace) {
                     let mut nd = Vec::new();
-                    while !matches!(self.cur(), Token::RBrace) {
+                    while self.until(&Token::RBrace) {
                         let l = self.ident()?;
                         let i = if self.eat(&Token::KwAs) {
                             self.ident()?
@@ -283,7 +283,7 @@ impl Parser {
                             self.eat(&Token::Comma);
                         }
                     }
-                    self.eat(&Token::RBrace);
+                    self.expect(&Token::RBrace);
                     let m = self.from()?;
                     Some(Statement::Import {
                         module: m,
@@ -317,7 +317,7 @@ impl Parser {
             })
         } else if self.eat(&Token::LBrace) {
             let mut nd = Vec::new();
-            while !matches!(self.cur(), Token::RBrace) {
+            while self.until(&Token::RBrace) {
                 let l = self.ident()?;
                 let i = if self.eat(&Token::KwAs) {
                     self.ident()?
@@ -329,7 +329,7 @@ impl Parser {
                     self.eat(&Token::Comma);
                 }
             }
-            self.eat(&Token::RBrace);
+            self.expect(&Token::RBrace);
             let m = self.from()?;
             Some(Statement::Import {
                 module: m,
@@ -368,7 +368,7 @@ impl Parser {
 
     pub(crate) fn block_body(&mut self) -> Vec<Statement> {
         let mut s = Vec::new();
-        while !matches!(self.cur(), Token::RBrace) {
+        while self.until(&Token::RBrace) {
             if self.eof() {
                 break;
             }

@@ -1105,7 +1105,9 @@ impl Builder<'_> {
             Expr::Unary { .. } => Type::Number,
             Expr::Assignment { value, .. } => self.expr(value, env),
             Expr::Spread(value) => self.expr(value, env),
-            Expr::This | Expr::Super | Expr::ImportMeta | Expr::Yield(_) => Type::Unknown,
+            Expr::This | Expr::Super | Expr::ImportMeta | Expr::Yield(_) | Expr::YieldFrom(_) => {
+                Type::Unknown
+            }
         }
     }
 

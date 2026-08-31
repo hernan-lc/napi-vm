@@ -22,14 +22,80 @@ const INLINE_CAP: usize = 8;
 /// are cloned with a refcount bump instead of a heap allocation.
 type Key = Rc<str>;
 
+/// How a binding was declared. This drives assignment and redeclaration
+/// rules, and whether the binding has a temporal dead zone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BindKind {
+    /// `var`, function declarations, parameters, catch parameters, and
+    /// bindings created by assigning to an undeclared name. Function-scoped,
+    /// reassignable, hoisted already-initialized (as `undefined`).
+    Var,
+    /// `let`. Block-scoped, reassignable, dead until its declaration runs.
+    Let,
+    /// `const`. Block-scoped, not reassignable, dead until its declaration runs.
+    Const,
+}
+
+/// One binding: its value plus the declaration facts needed to enforce
+/// `const` and the temporal dead zone.
+#[derive(Clone)]
+struct Binding {
+    value: Value,
+    kind: BindKind,
+    /// `false` while a `let`/`const` is hoisted but not yet initialized --
+    /// the temporal dead zone. Reading such a binding is a `ReferenceError`
+    /// distinct from "not defined".
+    initialized: bool,
+}
+
+impl Binding {
+    fn initialized(value: Value, kind: BindKind) -> Self {
+        Self {
+            value,
+            kind,
+            initialized: true,
+        }
+    }
+}
+
+/// Result of resolving a name through the scope chain.
+pub enum Lookup {
+    /// No binding of this name anywhere in the chain.
+    Missing,
+    /// Declared in an enclosing block but still in its temporal dead zone.
+    Uninitialized,
+    /// A readable binding.
+    Value(Value),
+}
+
+/// Result of assigning to an existing binding.
+#[derive(PartialEq, Eq, Debug)]
+pub enum AssignOutcome {
+    Assigned,
+    /// No binding of this name; the caller decides whether to create one.
+    Missing,
+    /// Assignment to a `const`.
+    Const,
+    /// Assignment before the declaration ran.
+    Uninitialized,
+}
+
+/// Result of a read-modify-write on an existing binding.
+pub enum ModifyOutcome {
+    Updated(Value),
+    Missing,
+    Const,
+    Uninitialized,
+}
+
 // `Vars` only ever lives behind `Env = Rc<RefCell<_>>` and is never moved or
 // cloned by value, so the inline `SmallVec` (much larger than the `HashMap`
 // variant) costs nothing; the inlining is intentional for small frames.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 enum Vars {
-    Small(SmallVec<[(Key, Value); INLINE_CAP]>),
-    Large(HashMap<Key, Value>),
+    Small(SmallVec<[(Key, Binding); INLINE_CAP]>),
+    Large(HashMap<Key, Binding>),
 }
 
 impl Vars {
@@ -40,34 +106,31 @@ impl Vars {
         }
     }
 
-    fn get(&self, n: &str) -> Option<&Value> {
+    fn get(&self, n: &str) -> Option<&Binding> {
         match self {
-            Vars::Small(v) => v.iter().find(|(k, _)| &**k == n).map(|(_, v)| v),
+            Vars::Small(v) => v.iter().find(|(k, _)| &**k == n).map(|(_, b)| b),
             Vars::Large(m) => m.get(n),
         }
     }
 
-    /// Update `n` in place if it is already bound in this frame. Returns the
-    /// value back to the caller on a miss so it can be inserted or forwarded
-    /// up the scope chain without cloning.
-    fn try_set(&mut self, n: &str, v: Value) -> Result<(), Value> {
+    fn get_mut(&mut self, n: &str) -> Option<&mut Binding> {
         match self {
-            Vars::Small(vars) => {
-                if let Some(slot) = vars.iter_mut().find(|(k, _)| &**k == n) {
-                    slot.1 = v;
-                    Ok(())
-                } else {
-                    Err(v)
-                }
+            Vars::Small(v) => v.iter_mut().find(|(k, _)| &**k == n).map(|(_, b)| b),
+            Vars::Large(m) => m.get_mut(n),
+        }
+    }
+
+    /// Overwrite the value of `n` in this frame, keeping its declaration
+    /// facts, if it is already bound. Returns the value back on a miss so the
+    /// caller can insert or forward it without cloning.
+    fn try_set(&mut self, n: &str, v: Value) -> Result<(), Value> {
+        match self.get_mut(n) {
+            Some(binding) => {
+                binding.value = v;
+                binding.initialized = true;
+                Ok(())
             }
-            Vars::Large(map) => {
-                if let Some(slot) = map.get_mut(n) {
-                    *slot = v;
-                    Ok(())
-                } else {
-                    Err(v)
-                }
-            }
+            None => Err(v),
         }
     }
 
@@ -76,26 +139,26 @@ impl Vars {
     /// recursing.
     fn drain_into(&mut self, work: &mut Vec<Value>) {
         match self {
-            Vars::Small(vars) => work.extend(vars.drain(..).map(|(_, v)| v)),
-            Vars::Large(map) => work.extend(map.drain().map(|(_, v)| v)),
+            Vars::Small(vars) => work.extend(vars.drain(..).map(|(_, b)| b.value)),
+            Vars::Large(map) => work.extend(map.drain().map(|(_, b)| b.value)),
         }
     }
 
     /// Bind `n` in this frame, assuming it is not already bound. Small frames
     /// are promoted to a hash map once they outgrow `PROMOTE_AT`.
-    fn insert_new(&mut self, n: &str, v: Value) {
+    fn insert_new(&mut self, n: &str, b: Binding) {
         match self {
             Vars::Small(vars) => {
                 if vars.len() >= PROMOTE_AT {
-                    let mut map: HashMap<Key, Value> = vars.drain(..).collect();
-                    map.insert(Rc::from(n), v);
+                    let mut map: HashMap<Key, Binding> = vars.drain(..).collect();
+                    map.insert(Rc::from(n), b);
                     *self = Vars::Large(map);
                 } else {
-                    vars.push((Rc::from(n), v));
+                    vars.push((Rc::from(n), b));
                 }
             }
             Vars::Large(map) => {
-                map.insert(Rc::from(n), v);
+                map.insert(Rc::from(n), b);
             }
         }
     }
@@ -154,10 +217,15 @@ impl Environment {
     /// path uses this to bind `this` + params in one shot, with no
     /// per-parameter `RefCell` borrows or insertion scans.
     pub fn with_bindings(p: Env, vars: SmallVec<[(Key, Value); INLINE_CAP]>) -> Self {
+        // Parameters and `this` are `var`-like: reassignable and never in a
+        // temporal dead zone.
+        let vars = vars
+            .into_iter()
+            .map(|(k, v)| (k, Binding::initialized(v, BindKind::Var)));
         let vars = if vars.len() > PROMOTE_AT {
-            Vars::Large(vars.into_iter().collect())
+            Vars::Large(vars.collect())
         } else {
-            Vars::Small(vars)
+            Vars::Small(vars.collect())
         };
         Self {
             vars,
@@ -166,21 +234,97 @@ impl Environment {
         }
     }
 
+    /// Read a binding, treating one still in its temporal dead zone as absent.
+    ///
+    /// Callers that must tell "not declared" from "declared but not yet
+    /// initialized" -- identifier evaluation, which reports different errors
+    /// for the two -- should use [`Environment::lookup`] instead.
     pub fn get(&self, n: &str) -> Option<Value> {
-        if let Some(v) = self.vars.get(n) {
-            Some(v.clone())
-        } else if let Some(ref p) = self.parent {
-            p.borrow().get(n)
-        } else {
-            None
+        match self.lookup(n) {
+            Lookup::Value(v) => Some(v),
+            Lookup::Missing | Lookup::Uninitialized => None,
         }
+    }
+
+    /// Resolve a name through the scope chain, distinguishing an undeclared
+    /// name from one in its temporal dead zone.
+    pub fn lookup(&self, n: &str) -> Lookup {
+        if let Some(binding) = self.vars.get(n) {
+            return if binding.initialized {
+                Lookup::Value(binding.value.clone())
+            } else {
+                Lookup::Uninitialized
+            };
+        }
+        match self.parent {
+            Some(ref p) => p.borrow().lookup(n),
+            None => Lookup::Missing,
+        }
+    }
+
+    /// Declare `n` in *this* frame, replacing any binding of the same name.
+    ///
+    /// `initialized: false` puts a `let`/`const` into its temporal dead zone;
+    /// the declaration statement later calls [`Environment::initialize`].
+    pub fn declare(&mut self, n: &str, value: Value, kind: BindKind, initialized: bool) {
+        let binding = Binding {
+            value,
+            kind,
+            initialized,
+        };
+        match self.vars.get_mut(n) {
+            Some(slot) => *slot = binding,
+            None => self.vars.insert_new(n, binding),
+        }
+    }
+
+    /// Like [`Environment::declare`], but enforces this frame's binding quota
+    /// when creating a new name. Used for top-level declarations in the
+    /// persistent global frame.
+    pub fn declare_checked(
+        &mut self,
+        n: &str,
+        value: Value,
+        kind: BindKind,
+        initialized: bool,
+    ) -> Result<(), crate::error::VmErr> {
+        if self.vars.get(n).is_none()
+            && self
+                .global_limit
+                .is_some_and(|limit| self.vars.len() >= limit)
+        {
+            return Err(limit_err("Maximum global binding count exceeded"));
+        }
+        self.declare(n, value, kind, initialized);
+        Ok(())
+    }
+
+    /// Give a hoisted `let`/`const` its value, leaving the dead zone. Returns
+    /// `false` if the name is not bound in this frame.
+    pub fn initialize(&mut self, n: &str, value: Value) -> bool {
+        match self.vars.get_mut(n) {
+            Some(binding) => {
+                binding.value = value;
+                binding.initialized = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The declaration kind of `n` in this frame only, if bound.
+    pub fn kind_of(&self, n: &str) -> Option<BindKind> {
+        self.vars.get(n).map(|b| b.kind)
     }
 
     pub fn set(&mut self, n: &str, v: Value) {
         // Reuse the existing key allocation when the variable is already bound
-        // (the common case in loops); only allocate on first insertion.
+        // (the common case in loops); only allocate on first insertion. A name
+        // created this way is `var`-like, matching an assignment to an
+        // undeclared identifier.
         if let Err(v) = self.vars.try_set(n, v) {
-            self.vars.insert_new(n, v);
+            self.vars
+                .insert_new(n, Binding::initialized(v, BindKind::Var));
         }
     }
 
@@ -194,60 +338,73 @@ impl Environment {
             {
                 return Err(limit_err("Maximum global binding count exceeded"));
             }
-            self.vars.insert_new(n, v);
+            self.vars
+                .insert_new(n, Binding::initialized(v, BindKind::Var));
         }
         Ok(())
     }
 
-    pub fn assign(&mut self, n: &str, v: Value) -> bool {
-        match self.vars.try_set(n, v) {
-            Ok(()) => true,
-            Err(v) => match self.parent {
-                Some(ref p) => p.borrow_mut().assign(n, v),
-                None => false,
-            },
+    /// Assign to an existing binding somewhere in the scope chain.
+    ///
+    /// Reports `const` reassignment and writes into the temporal dead zone
+    /// separately from a plain miss, so the caller can raise the right error
+    /// instead of silently creating an implicit global.
+    pub fn assign(&mut self, n: &str, v: Value) -> AssignOutcome {
+        if let Some(binding) = self.vars.get_mut(n) {
+            if binding.kind == BindKind::Const {
+                // A `const` in its dead zone is still a `const`: JavaScript
+                // reports the TDZ first, since the declaration has not run.
+                return if binding.initialized {
+                    AssignOutcome::Const
+                } else {
+                    AssignOutcome::Uninitialized
+                };
+            }
+            if !binding.initialized {
+                return AssignOutcome::Uninitialized;
+            }
+            binding.value = v;
+            return AssignOutcome::Assigned;
+        }
+        match self.parent {
+            Some(ref p) => p.borrow_mut().assign(n, v),
+            None => AssignOutcome::Missing,
         }
     }
 
     /// Read-modify-write a bound variable in a single borrow and a single
     /// scan. Locates `n` in the scope chain, applies `f` to its current
     /// value, stores the result back into the *same* slot, and returns the
-    /// new value. Returns `None` if `n` is not bound anywhere.
+    /// new value.
     ///
     /// This fuses what would otherwise be a read (`borrow` + scan + clone)
-    /// followed by a write (`borrow_mut` + scan + set) — the pattern behind
-    /// `x++` and compound assignment (`x += …`) — into one `borrow_mut` and
+    /// followed by a write (`borrow_mut` + scan + set) -- the pattern behind
+    /// `x++` and compound assignment (`x += …`) -- into one `borrow_mut` and
     /// one scan, which is the hot path in tight arithmetic loops.
-    pub fn modify<F>(&mut self, n: &str, mut f: F) -> Option<Value>
+    ///
+    /// `const` and dead-zone bindings are refused without calling `f`, so a
+    /// rejected `x += 1` has no side effects.
+    pub fn modify<F>(&mut self, n: &str, mut f: F) -> ModifyOutcome
     where
         F: FnMut(Value) -> Value,
     {
-        let updated = match &mut self.vars {
-            Vars::Small(vars) => {
-                if let Some(slot) = vars.iter_mut().find(|(k, _)| &**k == n) {
-                    let nv = f(slot.1.clone());
-                    slot.1 = nv;
-                    Some(slot.1.clone())
+        if let Some(binding) = self.vars.get_mut(n) {
+            if binding.kind == BindKind::Const {
+                return if binding.initialized {
+                    ModifyOutcome::Const
                 } else {
-                    None
-                }
+                    ModifyOutcome::Uninitialized
+                };
             }
-            Vars::Large(map) => {
-                if let Some(slot) = map.get_mut(n) {
-                    let nv = f(slot.clone());
-                    *slot = nv;
-                    Some(slot.clone())
-                } else {
-                    None
-                }
+            if !binding.initialized {
+                return ModifyOutcome::Uninitialized;
             }
-        };
-        if updated.is_some() {
-            return updated;
+            binding.value = f(binding.value.clone());
+            return ModifyOutcome::Updated(binding.value.clone());
         }
         match self.parent {
             Some(ref p) => p.borrow_mut().modify(n, f),
-            None => None,
+            None => ModifyOutcome::Missing,
         }
     }
 

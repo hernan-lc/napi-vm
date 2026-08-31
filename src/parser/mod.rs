@@ -16,6 +16,22 @@ use crate::span::Span;
 /// code rarely nests beyond a few dozen levels.
 const MAX_PARSE_DEPTH: u32 = 256;
 
+/// Render a token the way a syntax error should name it.
+///
+/// Literals and identifiers are shown with their text, so the message points
+/// at something the reader can find in the source; everything else falls back
+/// to the token's debug name.
+fn describe(token: &Token) -> String {
+    match token {
+        Token::EOF => "end of input".to_string(),
+        Token::Number(n) => format!("number `{n}`"),
+        Token::String(s) => format!("string `{s}`"),
+        Token::Identifier(name) => format!("`{name}`"),
+        Token::Unknown(c) => format!("`{c}`"),
+        other => format!("`{other:?}`"),
+    }
+}
+
 pub struct Parser {
     toks: Vec<(Token, Span)>,
     pos: usize,
@@ -26,6 +42,34 @@ pub struct Parser {
     /// Set once when nesting exceeds `MAX_PARSE_DEPTH`; `parse()` stops and
     /// callers (the NAPI layer) surface it as an error.
     pub depth_exceeded: bool,
+    /// The first syntax error encountered, if any.
+    ///
+    /// Parsing continues after recording it so tooling can still collect an
+    /// approximate tree and further diagnostics, but execution entry points
+    /// refuse to run a program whose parse failed. Only the first error is
+    /// kept: everything after it is likely a cascade from the same mistake.
+    error: Option<ParseError>,
+}
+
+/// A syntax error, with the source position of the token that caused it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseError {
+    pub message: String,
+    pub span: Span,
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if self.span.is_unknown() {
+            write!(f, "SyntaxError: {}", self.message)
+        } else {
+            write!(
+                f,
+                "SyntaxError: {} at {}:{}",
+                self.message, self.span.line, self.span.col
+            )
+        }
+    }
 }
 
 impl Parser {
@@ -36,6 +80,7 @@ impl Parser {
             eof_tok: (Token::EOF, Span::unknown()),
             depth: 0,
             depth_exceeded: false,
+            error: None,
         }
     }
 
@@ -46,19 +91,104 @@ impl Parser {
             eof_tok: (Token::EOF, Span::unknown()),
             depth: 0,
             depth_exceeded: false,
+            error: None,
         }
     }
 
+    /// Parse a whole program, recovering after errors so tooling still gets a
+    /// tree. Check [`Parser::error`] before executing the result --
+    /// [`Parser::parse_program`] does that for you.
     pub fn parse(&mut self) -> Vec<Statement> {
         let mut s = Vec::new();
         while !self.eof() && !self.depth_exceeded {
             if let Some(st) = self.stmt() {
                 s.push(st);
             } else {
+                // Record the position of the token that could not start a
+                // statement, then skip it and keep going. Without the record,
+                // a malformed program used to parse "successfully" into a
+                // partial tree and then run.
+                self.record_error(format!("unexpected token {}", describe(self.cur())));
                 self.adv();
             }
         }
         s
+    }
+
+    /// Parse a whole program, refusing to return a tree that did not parse.
+    ///
+    /// This is what execution should use: running the salvaged half of a
+    /// malformed program is worse than reporting where it broke.
+    pub fn parse_program(&mut self) -> Result<Vec<Statement>, ParseError> {
+        let stmts = self.parse();
+        if self.depth_exceeded {
+            return Err(ParseError {
+                message: "maximum parse depth exceeded".to_string(),
+                span: self.cur_span(),
+            });
+        }
+        match self.error.take() {
+            Some(error) => Err(error),
+            None => Ok(stmts),
+        }
+    }
+
+    /// The first syntax error recorded, if any.
+    pub fn error(&self) -> Option<&ParseError> {
+        self.error.as_ref()
+    }
+
+    /// Record a syntax error at the current token. The first error wins:
+    /// later ones are usually cascades from the same mistake.
+    pub(crate) fn record_error(&mut self, message: String) {
+        if self.error.is_none() {
+            self.error = Some(ParseError {
+                message,
+                span: self.cur_span(),
+            });
+        }
+    }
+
+    /// Loop condition for a delimited list: true while the cursor is neither
+    /// at `close` nor at end of input.
+    ///
+    /// Every such loop must use this. Testing only for the closing token spins
+    /// forever on truncated input, because `cur()` keeps returning `EOF` once
+    /// the tokens run out and `adv()` cannot move past the end. That turned a
+    /// malformed program like `function f( { }` into an unkillable loop in the
+    /// interpreter thread -- parsing happens before the loop budget exists, so
+    /// nothing interrupted it.
+    pub(crate) fn until(&mut self, close: &Token) -> bool {
+        if self.eof() {
+            self.record_error(format!(
+                "unexpected end of input, expected {}",
+                describe(close)
+            ));
+            return false;
+        }
+        self.cur() != close
+    }
+
+    /// Consume `tok`, or record a syntax error naming what was expected.
+    ///
+    /// Use this wherever the grammar *requires* a token -- the `)` of an `if`
+    /// head, the `{` of a block. `eat` returns a bool that is easy to ignore,
+    /// and ignoring it is how `if (true { }` came to parse as valid.
+    pub(crate) fn expect(&mut self, tok: &Token) -> bool {
+        if self.eat(tok) {
+            return true;
+        }
+        self.record_error(format!(
+            "expected {}, found {}",
+            describe(tok),
+            describe(self.cur())
+        ));
+        false
+    }
+
+    /// Span of the token under the cursor.
+    pub(crate) fn cur_span(&self) -> Span {
+        self.toks.get(self.pos).unwrap_or(&self.eof_tok).1
     }
 
     /// Enter one level of statement/expression nesting. Returns `false` (and

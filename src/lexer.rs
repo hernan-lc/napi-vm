@@ -1,6 +1,12 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Number(f64),
+    /// A character that begins no valid token, e.g. `@` or `#`.
+    ///
+    /// Carried through as a token rather than skipped so the parser can report
+    /// a `SyntaxError` pointing at it. Dropping it silently let `x = #foo`
+    /// parse as `x = foo` and run.
+    Unknown(char),
     String(String),
     Identifier(String),
     Plus,
@@ -658,7 +664,7 @@ impl Lexer {
             _ => {
                 self.pos += 1;
                 self.col += 1;
-                return None;
+                Token::Unknown(c)
             }
         })
     }
