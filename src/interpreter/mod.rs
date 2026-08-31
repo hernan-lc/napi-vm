@@ -1,10 +1,11 @@
-mod call;
+pub(crate) mod call;
 mod env;
 mod eval;
 mod ops;
 mod resolve;
 
 pub use env::{AssignOutcome, BindKind, Env, Environment, Lookup, ModifyOutcome, Module};
+pub use ops::{SYMBOL_ITERATOR_SLOT, is_internal_key, strict_equals, symbol_slot_key};
 
 use std::cell::RefCell;
 use std::collections::HashMap;

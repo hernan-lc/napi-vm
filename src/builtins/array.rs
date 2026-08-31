@@ -9,8 +9,16 @@ use crate::value::Value;
 
 pub(super) fn install(e: &mut Environment) {
     if let Some(a) = e.get("Array") {
-        a.set_prop("isArray".to_string(), nf("isArray", array_is_array))
-            .expect("built-in Array property");
+        let statics: &[(&str, NativeFn)] = &[
+            ("isArray", array_is_array),
+            ("from", array_from),
+            ("of", array_of),
+        ];
+        for (name, callable) in statics {
+            a.set_prop(name.to_string(), nf(name, *callable))
+                .expect("built-in Array property");
+        }
+        super::make_callable(&a, array_ctor, None);
     }
 }
 
@@ -18,6 +26,75 @@ pub(super) fn install(e: &mut Environment) {
 
 fn array_is_array(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     Ok(Value::Bool(matches!(a.first(), Some(Value::Array(_)))))
+}
+
+/// `Array(n)` allocates `n` holes; `Array(a, b, …)` collects its arguments.
+fn array_ctor(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    if let [Value::Number(n)] = a.as_slice() {
+        if !n.is_finite() || *n < 0.0 || n.fract() != 0.0 {
+            return Err(crate::value::limit_err("Invalid array length"));
+        }
+        if *n > crate::value::MAX_ARRAY_LEN as f64 {
+            return Err(crate::value::limit_err("Maximum array length exceeded"));
+        }
+        return Ok(Value::array(vec![Value::Undefined; *n as usize]));
+    }
+    Value::checked_array(a)
+}
+
+fn array_of(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    Value::checked_array(a)
+}
+
+/// `Array.from(source, mapFn?)`: drains an iterable, or reads `length` and the
+/// index properties of an array-like.
+fn array_from(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let source = a.first().cloned().unwrap_or(Value::Undefined);
+    let mapper = a.get(1).cloned();
+    let items = match &source {
+        Value::Array(items) => items.borrow().clone(),
+        Value::Undefined | Value::Null => {
+            return Err(VmErr::Msg(
+                "TypeError: Array.from requires an array-like or iterable".to_string(),
+            ));
+        }
+        // An array-like has a `length` but no iterator; the iterator protocol
+        // takes precedence when both are present, as in the specification.
+        Value::Object { .. }
+            if matches!(
+                interp.prop(
+                    &source,
+                    &Value::String(crate::interpreter::SYMBOL_ITERATOR_SLOT.to_string())
+                )?,
+                Value::Undefined
+            ) =>
+        {
+            let length = interp.member(&source, "length")?.to_number();
+            let length = if length.is_finite() && length > 0.0 {
+                (length as usize).min(crate::value::MAX_ARRAY_LEN)
+            } else {
+                0
+            };
+            let mut out = Vec::with_capacity(length.min(1024));
+            for index in 0..length {
+                out.push(interp.member(&source, &index.to_string())?);
+            }
+            out
+        }
+        other => interp.iterate(other)?,
+    };
+    let Some(mapper) = mapper.filter(|m| !matches!(m, Value::Undefined | Value::Null)) else {
+        return Value::checked_array(items);
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for (index, item) in items.into_iter().enumerate() {
+        out.push(interp.call_this(
+            &mapper,
+            Value::Undefined,
+            vec![item, Value::Number(index as f64)],
+        )?);
+    }
+    Value::checked_array(out)
 }
 
 // --- Array prototype --------------------------------------------------------

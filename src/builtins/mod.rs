@@ -4,8 +4,9 @@ mod error;
 mod json;
 mod math;
 mod number;
-mod object;
+pub(crate) mod object;
 mod promise;
+mod reflect;
 mod string;
 mod symbol;
 
@@ -14,7 +15,8 @@ pub(crate) use promise::promise_method;
 pub use array::array_method;
 pub use number::number_method;
 pub use string::string_method;
-pub(crate) use symbol::{symbol_for, symbol_key_for};
+pub use symbol::symbol_method;
+pub(crate) use symbol::{is_iterator_symbol, symbol_for, symbol_key_for, well_known};
 
 use crate::error::VmErr;
 use crate::interpreter::{Env, Interpreter};
@@ -411,6 +413,7 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     date::install(e);
     error::install(e);
     promise::install(e);
+    reflect::install(e);
     symbol::install(e);
     // Global functions.
     e.set("parseInt", nf("parseInt", number::parse_int));
@@ -439,12 +442,36 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
 // Shared helpers for the native function implementations in the sub-modules.
 // ===========================================================================
 
-type NativeFn = fn(&mut Interpreter, Value, Vec<Value>) -> Result<Value, VmErr>;
+pub(crate) type NativeFn = fn(&mut Interpreter, Value, Vec<Value>) -> Result<Value, VmErr>;
 
 fn nf(name: &str, callable: NativeFn) -> Value {
     Value::NativeFunction {
         name: name.into(),
         callable,
+    }
+}
+
+/// Make a built-in namespace object callable.
+///
+/// `String`, `Number`, `Array` and friends are objects so they can carry their
+/// statics, but they are also functions. Installing the implementation in an
+/// internal slot lets `Interpreter::call_this` and `Interpreter::ctor` find it
+/// while keeping the statics where property access expects them. `construct`
+/// is only needed where `new X(…)` differs from `X(…)`.
+fn make_callable(target: &Value, call: NativeFn, construct: Option<NativeFn>) {
+    target
+        .set_prop(
+            crate::interpreter::call::CALL_SLOT.to_string(),
+            nf("call", call),
+        )
+        .expect("built-in call slot");
+    if let Some(construct) = construct {
+        target
+            .set_prop(
+                crate::interpreter::call::CONSTRUCT_SLOT.to_string(),
+                nf("construct", construct),
+            )
+            .expect("built-in construct slot");
     }
 }
 

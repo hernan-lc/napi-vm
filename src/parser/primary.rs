@@ -43,18 +43,11 @@ impl Parser {
             }
             Token::Backtick => {
                 self.adv();
-                let mut quasis = Vec::new();
-                let mut exprs = Vec::new();
-                // Leading quasi (possibly empty).
-                quasis.push(self.take_quasi());
-                while matches!(self.cur(), Token::DollarLBrace) {
-                    self.adv();
-                    exprs.push(self.expr()?);
-                    self.expect(&Token::RBrace);
-                    quasis.push(self.take_quasi());
-                }
-                self.eat(&Token::Backtick);
-                Some(Expr::Template { quasis, exprs })
+                let (quasis, exprs) = self.template_body()?;
+                Some(Expr::Template {
+                    quasis: quasis.into_iter().map(|q| q.cooked).collect(),
+                    exprs,
+                })
             }
             Token::LParen => {
                 // Speculatively try to parse an arrow-function parameter list.
@@ -99,8 +92,11 @@ impl Parser {
                         }
                         continue;
                     }
-                    let is_method = self.eat(&Token::KwGet);
-                    let is_setter = self.eat(&Token::KwSet);
+                    // `get`/`set` introduce an accessor only when a property
+                    // name follows. In `{ get: 1 }` and `{ get() {} }` they are
+                    // the property name themselves.
+                    let is_method = self.starts_accessor(&Token::KwGet) && self.eat(&Token::KwGet);
+                    let is_setter = self.starts_accessor(&Token::KwSet) && self.eat(&Token::KwSet);
                     let key = match self.cur() {
                         Token::Identifier(n) => {
                             let v = n.clone();
@@ -116,6 +112,16 @@ impl Parser {
                             let v = n.to_string();
                             self.adv();
                             v
+                        }
+                        // `get` and `set` are contextual: reaching here means
+                        // no property name followed, so they name the property.
+                        Token::KwGet => {
+                            self.adv();
+                            "get".to_string()
+                        }
+                        Token::KwSet => {
+                            self.adv();
+                            "set".to_string()
                         }
                         Token::LBracket => {
                             self.adv();
@@ -344,16 +350,35 @@ impl Parser {
         Some(e)
     }
 
-    /// Consume a `TemplateQuasi` token if present, returning its raw text
-    /// (empty string when the quasi is absent).
-    fn take_quasi(&mut self) -> String {
+    /// Consume a `TemplateQuasi` token if present, returning both its cooked
+    /// and raw text (empty when the quasi is absent).
+    pub(crate) fn take_quasi(&mut self) -> crate::lexer::TemplateChunk {
         if let Token::TemplateQuasi(q) = self.cur() {
             let s = q.clone();
             self.adv();
             s
         } else {
-            String::new()
+            crate::lexer::TemplateChunk::default()
         }
+    }
+
+    /// Parse the body of a template literal, positioned just after the opening
+    /// backtick. Shared by plain and tagged templates.
+    pub(crate) fn template_body(
+        &mut self,
+    ) -> Option<(Vec<crate::lexer::TemplateChunk>, Vec<Expr>)> {
+        let mut quasis = Vec::new();
+        let mut exprs = Vec::new();
+        // Leading quasi (possibly empty).
+        quasis.push(self.take_quasi());
+        while matches!(self.cur(), Token::DollarLBrace) {
+            self.adv();
+            exprs.push(self.expr()?);
+            self.expect(&Token::RBrace);
+            quasis.push(self.take_quasi());
+        }
+        self.eat(&Token::Backtick);
+        Some((quasis, exprs))
     }
 
     /// Speculatively parse `( params ) =>`. On any failure, restore the parser

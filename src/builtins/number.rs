@@ -16,7 +16,74 @@ pub(super) fn install(e: &mut Environment) {
             .expect("built-in Number property");
         n.set_prop("parseFloat".to_string(), nf("parseFloat", parse_float))
             .expect("built-in Number property");
+        let constants: &[(&str, f64)] = &[
+            ("MAX_SAFE_INTEGER", 9_007_199_254_740_991.0),
+            ("MIN_SAFE_INTEGER", -9_007_199_254_740_991.0),
+            ("MAX_VALUE", f64::MAX),
+            ("MIN_VALUE", f64::MIN_POSITIVE * f64::EPSILON),
+            ("EPSILON", f64::EPSILON),
+            ("POSITIVE_INFINITY", f64::INFINITY),
+            ("NEGATIVE_INFINITY", f64::NEG_INFINITY),
+            ("NaN", f64::NAN),
+        ];
+        for (name, value) in constants {
+            n.set_prop(name.to_string(), Value::Number(*value))
+                .expect("built-in Number property");
+        }
+        n.set_prop("isInteger".to_string(), nf("isInteger", number_is_integer))
+            .expect("built-in Number property");
+        n.set_prop(
+            "isSafeInteger".to_string(),
+            nf("isSafeInteger", number_is_safe_integer),
+        )
+        .expect("built-in Number property");
+        super::make_callable(&n, number_ctor, None);
     }
+    if let Some(b) = e.get("Boolean") {
+        super::make_callable(&b, boolean_ctor, None);
+    }
+    if let Some(o) = e.get("Object") {
+        super::make_callable(&o, object_ctor, None);
+    }
+}
+
+/// `Number(v)`: the numeric coercion of `v`.
+fn number_ctor(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::Number(match a.first() {
+        None => 0.0,
+        Some(v) => v.to_number(),
+    }))
+}
+
+fn boolean_ctor(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::Bool(
+        a.first().map(|v| v.is_truthy()).unwrap_or(false),
+    ))
+}
+
+/// `Object(v)`: `v` itself when it is already an object, a fresh object when
+/// it is nullish. Primitives have no wrapper type here, so they pass through.
+fn object_ctor(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(match a.first() {
+        None | Some(Value::Undefined) | Some(Value::Null) => Value::object(vec![]),
+        Some(v) => v.clone(),
+    })
+}
+
+fn number_is_integer(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::Bool(match a.first() {
+        Some(Value::Number(n)) => n.is_finite() && n.fract() == 0.0,
+        _ => false,
+    }))
+}
+
+fn number_is_safe_integer(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::Bool(match a.first() {
+        Some(Value::Number(n)) => {
+            n.is_finite() && n.fract() == 0.0 && n.abs() <= 9_007_199_254_740_991.0
+        }
+        _ => false,
+    }))
 }
 
 // --- Number prototype -------------------------------------------------------

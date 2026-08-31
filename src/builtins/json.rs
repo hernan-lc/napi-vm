@@ -104,10 +104,16 @@ fn json_serialize(
                 ));
             }
             append_json_char(out, '{')?;
+            let meta = props.meta.borrow();
             let props = props.borrow();
             let mut first = true;
             for (k, v) in props.iter() {
-                if matches!(v, Value::Undefined) {
+                // `JSON.stringify` walks own *enumerable* string keys only,
+                // skipping `undefined` values and the VM's internal slots.
+                if matches!(v, Value::Undefined)
+                    || crate::interpreter::is_internal_key(k)
+                    || !meta.attrs_of(k).enumerable
+                {
                     continue;
                 }
                 if !first {

@@ -227,6 +227,24 @@ impl Parser {
         &self.toks.get(self.pos - 1).unwrap_or(&self.eof_tok).0
     }
 
+    /// Is the current token `keyword` acting as the `get`/`set` prefix of an
+    /// accessor, rather than as an ordinary property name?
+    ///
+    /// It is an accessor only when a property name follows. `{ get: 1 }`,
+    /// `{ get() {} }`, `{ get }` and `{ get, x }` all name a property `get`.
+    pub(crate) fn starts_accessor(&self, keyword: &Token) -> bool {
+        self.cur() == keyword
+            && matches!(
+                self.peek(),
+                Token::Identifier(_)
+                    | Token::String(_)
+                    | Token::Number(_)
+                    | Token::LBracket
+                    | Token::KwGet
+                    | Token::KwSet
+            )
+    }
+
     pub(crate) fn eat(&mut self, t: &Token) -> bool {
         if self.cur() == t {
             self.pos += 1;

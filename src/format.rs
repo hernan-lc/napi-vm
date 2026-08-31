@@ -270,16 +270,12 @@ fn render_plain_value(
         Value::Promise { .. } | Value::HostPending { .. } => output.push_str("[object Promise]"),
         Value::Generator { .. } => output.push_str("[object Generator]"),
         Value::StringIterator { .. } => output.push_str("[object String Iterator]"),
-        Value::Symbol(s) => {
-            output.push_str("Symbol(")?;
-            output.push_str(s)?;
-            output.push_char(')')
-        }
+        Value::Symbol(s) => output.push_str(&s.to_display()),
         Value::Error(e) => output.push_str(&e.message),
     }
 }
 
-fn number_string(n: f64) -> String {
+pub fn number_string(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1e15 {
         format!("{:.0}", n)
     } else {
@@ -556,9 +552,7 @@ fn render_inspect_value(
             if context.colors && pretty {
                 context.output.push_str("\x1b[32m")?;
             }
-            context.output.push_str("Symbol(")?;
-            context.output.push_str(s)?;
-            context.output.push_char(')')?;
+            context.output.push_str(&s.to_display())?;
             if context.colors && pretty {
                 context.output.push_str("\x1b[0m")?;
             }

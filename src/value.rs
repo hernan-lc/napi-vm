@@ -37,6 +37,196 @@ pub fn limit_err(msg: &str) -> VmErr {
     VmErr::Msg(format!("RangeError: {}", msg))
 }
 
+/// Per-property attributes (`writable`, `enumerable`, `configurable`).
+///
+/// Properties created by ordinary assignment or an object literal carry the
+/// default `true`/`true`/`true` and are *not* stored: only properties whose
+/// attributes differ from the default take a slot in [`ObjectMeta::attrs`], so
+/// the common case costs nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropAttrs {
+    pub writable: bool,
+    pub enumerable: bool,
+    pub configurable: bool,
+}
+
+impl Default for PropAttrs {
+    fn default() -> Self {
+        Self {
+            writable: true,
+            enumerable: true,
+            configurable: true,
+        }
+    }
+}
+
+/// Object state that is *not* the property slots themselves: the prototype
+/// link, per-property attributes, and extensibility.
+///
+/// This lives beside the slots inside one [`ObjectCell`] allocation, so every
+/// clone of a `Value::Object` observes the same metadata. That sharing is what
+/// makes `Object.setPrototypeOf`, `Object.freeze` and `defineProperty`
+/// observable through every reference to the object rather than through the
+/// one binding they were applied to.
+#[derive(Debug, Default)]
+pub struct ObjectMeta {
+    /// Prototype link. `None` means a null prototype.
+    pub proto: Option<Rc<Value>>,
+    /// Non-default property attributes, keyed by property name.
+    pub attrs: Vec<(String, PropAttrs)>,
+    /// Cleared by `Object.preventExtensions`/`seal`/`freeze`: no new own
+    /// properties may be added.
+    pub non_extensible: bool,
+}
+
+impl ObjectMeta {
+    pub fn attrs_of(&self, key: &str) -> PropAttrs {
+        self.attrs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, a)| *a)
+            .unwrap_or_default()
+    }
+
+    pub fn set_attrs(&mut self, key: &str, attrs: PropAttrs) {
+        if let Some((_, slot)) = self.attrs.iter_mut().find(|(k, _)| k == key) {
+            *slot = attrs;
+            return;
+        }
+        if attrs != PropAttrs::default() {
+            self.attrs.push((key.to_string(), attrs));
+        }
+    }
+
+    pub fn forget(&mut self, key: &str) {
+        self.attrs.retain(|(k, _)| k != key);
+    }
+}
+
+/// The allocation behind every `Value::Array`: the elements plus the named
+/// properties an array can also carry.
+///
+/// Named properties are rare — a tagged template's `strings.raw` is the main
+/// one — so the map is empty for ordinary arrays and costs a `Vec` header.
+/// Like [`ObjectCell`], this `Deref`s to the element `RefCell` so existing
+/// element access reads unchanged.
+#[derive(Debug)]
+pub struct ArrayCell {
+    elements: RefCell<Vec<Value>>,
+    pub named: RefCell<Vec<(String, Value)>>,
+}
+
+impl ArrayCell {
+    pub fn new(elements: Vec<Value>) -> Self {
+        Self {
+            elements: RefCell::new(elements),
+            named: RefCell::new(Vec::new()),
+        }
+    }
+
+    pub fn named_prop(&self, key: &str) -> Option<Value> {
+        self.named
+            .borrow()
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    pub fn set_named(&self, key: String, value: Value) {
+        let mut named = self.named.borrow_mut();
+        match named.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, slot)) => *slot = value,
+            None => named.push((key, value)),
+        }
+    }
+
+    /// Uncontended access to the elements, for the iterative `Drop`.
+    pub fn elements_mut(&mut self) -> &mut Vec<Value> {
+        self.elements.get_mut()
+    }
+}
+
+impl std::ops::Deref for ArrayCell {
+    type Target = RefCell<Vec<Value>>;
+    fn deref(&self) -> &Self::Target {
+        &self.elements
+    }
+}
+
+/// The single allocation behind every `Value::Object`: the property slots plus
+/// the shared [`ObjectMeta`].
+///
+/// It `Deref`s to the slot `RefCell` so that `props.borrow()`,
+/// `Rc::ptr_eq(props, other)` and the rest of the existing property-access
+/// code keep working unchanged — the metadata is an addition beside the slots,
+/// not a new indirection in front of them.
+#[derive(Debug)]
+pub struct ObjectCell {
+    slots: RefCell<Vec<(String, Value)>>,
+    pub meta: RefCell<ObjectMeta>,
+}
+
+impl ObjectCell {
+    pub fn new(props: Vec<(String, Value)>, proto: Option<Rc<Value>>) -> Self {
+        Self {
+            slots: RefCell::new(props),
+            meta: RefCell::new(ObjectMeta {
+                proto,
+                ..ObjectMeta::default()
+            }),
+        }
+    }
+
+    pub fn proto(&self) -> Option<Rc<Value>> {
+        self.meta.borrow().proto.clone()
+    }
+
+    pub fn set_proto(&self, proto: Option<Rc<Value>>) {
+        self.meta.borrow_mut().proto = proto;
+    }
+
+    /// Uncontended access to the slots, for the iterative `Drop`.
+    pub fn slots_mut(&mut self) -> &mut Vec<(String, Value)> {
+        self.slots.get_mut()
+    }
+}
+
+impl std::ops::Deref for ObjectCell {
+    type Target = RefCell<Vec<(String, Value)>>;
+    fn deref(&self) -> &Self::Target {
+        &self.slots
+    }
+}
+
+/// A symbol's identity.
+///
+/// A symbol is unique: two symbols with the same description are different
+/// values, and `s === s` is true only for the same one. That is why the
+/// description alone cannot represent it — identity lives in `id`, which is
+/// what `strict_equals` and the property-slot naming both compare.
+///
+/// Ids below [`FIRST_USER_SYMBOL`] are reserved for the well-known symbols, so
+/// `Symbol.iterator` is the same value every time it is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolData {
+    pub id: u64,
+    /// `Symbol()` has no description; `Symbol('x')` has `"x"`.
+    pub description: Option<String>,
+}
+
+/// Ids `0..FIRST_USER_SYMBOL` name the well-known symbols.
+pub const FIRST_USER_SYMBOL: u64 = 64;
+
+impl SymbolData {
+    /// `String(sym)` / `sym.toString()`: `Symbol(desc)`, or `Symbol()`.
+    pub fn to_display(&self) -> String {
+        match &self.description {
+            Some(d) => format!("Symbol({})", d),
+            None => "Symbol()".to_string(),
+        }
+    }
+}
+
 /// Payload of `Value::Function`, boxed so the enum itself stays small.
 #[derive(Debug, Clone)]
 pub struct FunctionData {
@@ -95,10 +285,9 @@ pub enum Value {
     Number(f64),
     String(String),
     Object {
-        props: Rc<RefCell<Vec<(String, Value)>>>,
-        proto: Option<Rc<Value>>,
+        props: Rc<ObjectCell>,
     },
-    Array(Rc<RefCell<Vec<Value>>>),
+    Array(Rc<ArrayCell>),
     Function(Box<FunctionData>),
     NativeFunction {
         name: Rc<str>,
@@ -132,7 +321,7 @@ pub enum Value {
     HostPending {
         id: usize,
     },
-    Symbol(String),
+    Symbol(Rc<SymbolData>),
     Error(Box<ErrorData>),
 }
 
@@ -314,20 +503,27 @@ impl Value {
 
     pub fn object(props: Vec<(String, Value)>) -> Self {
         Value::Object {
-            props: Rc::new(RefCell::new(props)),
-            proto: None,
+            props: Rc::new(ObjectCell::new(props, None)),
         }
     }
 
     pub fn object_with_proto(props: Vec<(String, Value)>, proto: Option<Rc<Value>>) -> Self {
         Value::Object {
-            props: Rc::new(RefCell::new(props)),
-            proto,
+            props: Rc::new(ObjectCell::new(props, proto)),
+        }
+    }
+
+    /// The object's prototype link, or `None` for a null prototype / a
+    /// non-object receiver.
+    pub fn proto_of(&self) -> Option<Rc<Value>> {
+        match self {
+            Value::Object { props } => props.proto(),
+            _ => None,
         }
     }
 
     pub fn array(items: Vec<Value>) -> Self {
-        Value::Array(Rc::new(RefCell::new(items)))
+        Value::Array(Rc::new(ArrayCell::new(items)))
     }
 
     pub fn checked_array(items: Vec<Value>) -> Result<Self, VmErr> {
@@ -347,25 +543,21 @@ impl Value {
     pub fn get_prop(&self, key: &str) -> Option<Value> {
         match self {
             Value::Object { .. } => {
-                let mut current = self;
+                let mut current = self.clone();
                 for _ in 0..=MAX_PROTOTYPE_DEPTH {
-                    match current {
-                        Value::Object { props, proto } => {
-                            if let Some((_, value)) =
-                                props.borrow().iter().find(|(name, _)| name == key)
-                            {
-                                return Some(value.clone());
-                            }
-                            let next = proto.as_deref()?;
-                            current = next;
-                        }
-                        _ => return None,
+                    let Value::Object { props } = &current else {
+                        return None;
+                    };
+                    if let Some((_, value)) = props.borrow().iter().find(|(name, _)| name == key) {
+                        return Some(value.clone());
                     }
+                    let next = props.proto()?;
+                    current = next.as_ref().clone();
                 }
                 None
             }
-            Value::Array(items) => {
-                let items = items.borrow();
+            Value::Array(cell) => {
+                let items = cell.borrow();
                 if key == "length" {
                     return Some(Value::Number(items.len() as f64));
                 }
@@ -374,7 +566,8 @@ impl Value {
                 {
                     return Some(items[idx].clone());
                 }
-                None
+                drop(items);
+                cell.named_prop(key)
             }
             Value::String(s) => {
                 if key == "length" {
@@ -397,18 +590,30 @@ impl Value {
 
     /// Insert or replace an own property while enforcing the object cap.
     pub fn set_prop(&self, key: String, val: Value) -> Result<(), VmErr> {
-        if let Value::Object { props, .. } = self {
-            let mut props = props.borrow_mut();
-            for (k, v) in props.iter_mut() {
+        if let Value::Array(cell) = self {
+            cell.set_named(key, val);
+            return Ok(());
+        }
+        if let Value::Object { props } = self {
+            let writable = props.meta.borrow().attrs_of(&key).writable;
+            let mut slots = props.borrow_mut();
+            for (k, v) in slots.iter_mut() {
                 if k == &key {
-                    *v = val;
+                    // A non-writable property silently ignores the write, the
+                    // way a sloppy-mode assignment does.
+                    if writable {
+                        *v = val;
+                    }
                     return Ok(());
                 }
             }
-            if props.len() >= MAX_OBJECT_PROPS {
+            if props.meta.borrow().non_extensible {
+                return Ok(());
+            }
+            if slots.len() >= MAX_OBJECT_PROPS {
                 return Err(limit_err("Maximum object property count exceeded"));
             }
-            props.push((key, val));
+            slots.push((key, val));
         }
         Ok(())
     }
@@ -416,30 +621,25 @@ impl Value {
     pub fn has_prop(&self, key: &str) -> bool {
         match self {
             Value::Object { .. } => {
-                let mut current = self;
+                let mut current = self.clone();
                 for _ in 0..=MAX_PROTOTYPE_DEPTH {
-                    match current {
-                        Value::Object { props, proto } => {
-                            if props.borrow().iter().any(|(name, _)| name == key) {
-                                return true;
-                            }
-                            let Some(next) = proto.as_deref() else {
-                                return false;
-                            };
-                            current = next;
-                        }
-                        _ => return false,
+                    let Value::Object { props } = &current else {
+                        return false;
+                    };
+                    if props.borrow().iter().any(|(name, _)| name == key) {
+                        return true;
                     }
+                    let Some(next) = props.proto() else {
+                        return false;
+                    };
+                    current = next.as_ref().clone();
                 }
                 false
             }
-            Value::Array(items) => {
-                let items = items.borrow();
+            Value::Array(cell) => {
                 key == "length"
-                    || key
-                        .parse::<usize>()
-                        .map(|i| i < items.len())
-                        .unwrap_or(false)
+                    || key.parse::<usize>().is_ok_and(|i| i < cell.borrow().len())
+                    || cell.named_prop(key).is_some()
             }
             Value::String(_) => key == "length",
             Value::Error(_) => key == "message" || key == "name",
@@ -487,19 +687,20 @@ impl Value {
                 if Rc::strong_count(items) == 1
                     && let Some(cell) = Rc::get_mut(items)
                 {
-                    work.append(cell.get_mut());
+                    work.append(cell.elements_mut());
+                    work.extend(cell.named.get_mut().drain(..).map(|(_, v)| v));
                 }
             }
-            Value::Object { props, proto } => {
+            Value::Object { props } => {
                 if Rc::strong_count(props) == 1
                     && let Some(cell) = Rc::get_mut(props)
                 {
-                    work.extend(cell.get_mut().drain(..).map(|(_, v)| v));
-                }
-                if let Some(p) = proto.take()
-                    && let Ok(inner) = Rc::try_unwrap(p)
-                {
-                    work.push(inner);
+                    work.extend(cell.slots_mut().drain(..).map(|(_, v)| v));
+                    if let Some(p) = cell.meta.get_mut().proto.take()
+                        && let Ok(inner) = Rc::try_unwrap(p)
+                    {
+                        work.push(inner);
+                    }
                 }
             }
             Value::Function(fd) => {

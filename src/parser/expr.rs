@@ -689,6 +689,19 @@ impl Parser {
                         };
                     }
                 }
+                // A template literal directly after an expression is a
+                // *tagged* template: the tag receives the literal chunks and
+                // the interpolated values as separate arguments.
+                Token::Backtick => {
+                    self.adv();
+                    let (quasis, exprs) = self.template_body()?;
+                    e = Expr::TaggedTemplate {
+                        tag: Box::new(e),
+                        cooked: quasis.iter().map(|q| q.cooked.clone()).collect(),
+                        raw: quasis.into_iter().map(|q| q.raw).collect(),
+                        exprs,
+                    };
+                }
                 Token::Arrow => {
                     if let Expr::Identifier(n) = e {
                         self.adv();

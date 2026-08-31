@@ -16,6 +16,31 @@ use crate::value::{GeneratorInner, PromiseState, Value};
 
 type Key = Rc<str>;
 
+/// Internal slot naming the function a built-in namespace object runs when it
+/// is *called*: `String(x)`, `Number(x)`, `Map(…)`.
+pub(crate) const CALL_SLOT: &str = "__symbol_call__";
+/// Internal slot naming the function it runs when it is *constructed*, for
+/// built-ins whose `new` form differs from their call form.
+pub(crate) const CONSTRUCT_SLOT: &str = "__symbol_construct__";
+
+/// The function stored in one of the internal call slots, if any.
+pub(crate) fn callable_slot(value: &Value, slot: &str) -> Option<Value> {
+    let Value::Object { props } = value else {
+        return None;
+    };
+    props
+        .borrow()
+        .iter()
+        .find(|(k, _)| k == slot)
+        .map(|(_, v)| v.clone())
+        .filter(|v| {
+            matches!(
+                v,
+                Value::Function(_) | Value::NativeFunction { .. } | Value::HostFunction { .. }
+            )
+        })
+}
+
 impl Interpreter {
     pub(super) fn destructure(&mut self, pat: &Pattern, val: &Value) -> Result<Value, VmErr> {
         match pat {
@@ -115,20 +140,74 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn assign_member(
+    /// `delete obj[key]`: remove an own property and report whether the
+    /// object is left without it.
+    ///
+    /// Non-configurable properties survive and yield `false`; a missing
+    /// property is already absent, so deleting it succeeds.
+    pub(crate) fn delete_member(&mut self, obj: &Value, key: &Value) -> Result<Value, VmErr> {
+        match obj {
+            Value::Object { props } => {
+                let slot = self.property_key(key)?;
+                if !props.meta.borrow().attrs_of(&slot).configurable
+                    && props.borrow().iter().any(|(k, _)| *k == slot)
+                {
+                    return Ok(Value::Bool(false));
+                }
+                let mut slots = props.borrow_mut();
+                if let Some(index) = slots.iter().position(|(k, _)| *k == slot) {
+                    slots.remove(index);
+                    drop(slots);
+                    props.meta.borrow_mut().forget(&slot);
+                }
+                Ok(Value::Bool(true))
+            }
+            // Deleting an array element leaves a hole, which this VM models as
+            // `undefined` (it has no sparse-array representation).
+            Value::Array(items) => {
+                let index = self.tn(key);
+                if index.is_finite() && index >= 0.0 && index.fract() == 0.0 {
+                    let mut items = items.borrow_mut();
+                    let index = index as usize;
+                    if index < items.len() {
+                        items[index] = Value::Undefined;
+                    }
+                }
+                Ok(Value::Bool(true))
+            }
+            _ => Ok(Value::Bool(true)),
+        }
+    }
+
+    /// Coerce a value used in a computed member expression to the slot name
+    /// the object stores it under.
+    pub(crate) fn property_key(&self, key: &Value) -> Result<String, VmErr> {
+        Ok(match key {
+            Value::String(k) => k.clone(),
+            Value::Number(n) => crate::format::number_string(*n),
+            Value::Symbol(s) => crate::interpreter::symbol_slot_key(s),
+            other => self.vs(other)?,
+        })
+    }
+
+    pub(crate) fn assign_member(
         &mut self,
         obj: &Value,
         prop: &Value,
         val: Value,
     ) -> Result<(), VmErr> {
         match (obj, prop) {
-            (Value::Object { props, .. }, Value::String(k)) => {
-                // If a setter is defined for this key, invoke it.
+            (Value::Object { props }, Value::String(k)) => {
+                // If a setter is defined for this key, invoke it. An accessor
+                // declared with *both* a getter and a setter keeps the getter
+                // in the named slot and the setter in a companion slot, since
+                // one slot cannot hold two functions.
+                let companion = format!("__setter:{}__", k);
                 let setter = props
                     .borrow()
                     .iter()
                     .find(|(xk, xv)| {
-                        xk == k
+                        (xk == &companion || xk == k)
                             && matches!(xv, Value::Function(f) if f.name.as_ref().is_some_and(|n| n.starts_with("set ")))
                     })
                     .map(|(_, xv)| xv.clone());
@@ -136,23 +215,53 @@ impl Interpreter {
                     self.call_this(&setter_fn, obj.clone(), vec![val])?;
                     return Ok(());
                 }
-                let mut props = props.borrow_mut();
-                for (xk, xv) in props.iter_mut() {
+                let writable = props.meta.borrow().attrs_of(k).writable;
+                let mut slots = props.borrow_mut();
+                for (xk, xv) in slots.iter_mut() {
                     if xk == k {
-                        *xv = val;
+                        // Sloppy-mode semantics: a write to a non-writable
+                        // property is ignored rather than thrown.
+                        if writable {
+                            *xv = val;
+                        }
                         return Ok(());
                     }
                 }
-                if props.len() >= crate::value::MAX_OBJECT_PROPS {
+                if props.meta.borrow().non_extensible {
+                    return Ok(());
+                }
+                if slots.len() >= crate::value::MAX_OBJECT_PROPS {
                     return Err(crate::value::limit_err(
                         "Maximum object property count exceeded",
                     ));
                 }
-                props.push((k.clone(), val));
+                slots.push((k.clone(), val));
                 Ok(())
+            }
+            // Any other key on an object is coerced to its slot name first:
+            // `o[1] = v`, `o[sym] = v`, `o[{}] = v`.
+            (Value::Object { .. }, _) => {
+                let slot = self.property_key(prop)?;
+                self.assign_member(obj, &Value::String(slot), val)
             }
             // `window.x = v` / `globalThis.x = v` define a real global.
             (Value::GlobalObject, Value::String(k)) => self.set_global_checked(k, val),
+            // A non-index key on an array is a named property, not an
+            // element: `strings.raw`, `arr.total = 3`.
+            (Value::Array(cell), Value::String(k)) if k.parse::<usize>().is_err() => {
+                if k == "length" {
+                    let length = self.tn(&val);
+                    if length.is_finite() && length >= 0.0 && length.fract() == 0.0 {
+                        cell.borrow_mut().resize(
+                            (length as usize).min(crate::value::MAX_ARRAY_LEN),
+                            Value::Undefined,
+                        );
+                    }
+                    return Ok(());
+                }
+                cell.set_named(k.clone(), val);
+                Ok(())
+            }
             (Value::Array(items), Value::Number(i)) => {
                 if !i.is_finite() || *i < 0.0 || i.fract() != 0.0 {
                     return Err(VmErr::Msg("TypeError: Invalid array index".to_string()));
@@ -353,6 +462,13 @@ impl Interpreter {
                     bridge.call_host(*id, args)
                 }
             }
+            // A built-in namespace such as `String` or `Map` is an object
+            // carrying its statics *and* an internal call slot, so it can be
+            // both `String.fromCharCode(…)` and `String(x)`.
+            Value::Object { .. } => match callable_slot(f, CALL_SLOT) {
+                Some(target) => self.call_this(&target, this_val, args),
+                None => vm_err("TypeError: object is not a function".to_string()),
+            },
             _ => {
                 let type_name = match f {
                     Value::String(_) => "string",
@@ -361,7 +477,6 @@ impl Interpreter {
                     Value::Null => "null",
                     Value::Undefined => "undefined",
                     Value::Array(_) => "array",
-                    Value::Object { .. } => "object",
                     _ => "unknown",
                 };
                 vm_err(format!("TypeError: {} is not a function", type_name))
@@ -403,7 +518,16 @@ impl Interpreter {
         }
     }
 
-    pub(super) fn ctor(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmErr> {
+    pub(crate) fn ctor(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmErr> {
+        // A built-in namespace object constructs through its internal slot:
+        // `new Map()` and `Map()` reach the same implementation unless the
+        // built-in installs a separate one.
+        if let Value::Object { .. } = f
+            && let Some(target) =
+                callable_slot(f, CONSTRUCT_SLOT).or_else(|| callable_slot(f, CALL_SLOT))
+        {
+            return self.call_this(&target, Value::Undefined, args);
+        }
         match f {
             Value::Class(c) => {
                 // The instance's prototype is the class prototype (shared Rc, so

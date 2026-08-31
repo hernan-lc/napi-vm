@@ -5,6 +5,63 @@ use crate::error::VmErr;
 use crate::parser::{BinOp, UnOp};
 use crate::value::Value;
 
+/// `===`.
+///
+/// Primitives compare by value; everything else compares by *reference
+/// identity*, which is what makes `o === o` true and `{} === {}` false. Each
+/// reference type is identified by the address of the allocation its clones
+/// share, so two `Value`s naming the same object agree.
+pub fn strict_equals(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(a), Value::Number(b)) => a == b,
+        (Value::String(a), Value::String(b)) => a == b,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
+        // The global aliases all denote the one global scope.
+        (Value::GlobalObject, Value::GlobalObject) => true,
+        (Value::Object { props: x }, Value::Object { props: y }) => Rc::ptr_eq(x, y),
+        (Value::Array(x), Value::Array(y)) => Rc::ptr_eq(x, y),
+        (Value::Generator { inner: x }, Value::Generator { inner: y }) => Rc::ptr_eq(x, y),
+        (Value::StringIterator { inner: x }, Value::StringIterator { inner: y }) => {
+            Rc::ptr_eq(x, y)
+        }
+        (Value::Class(x), Value::Class(y)) => Rc::ptr_eq(&x.prototype, &y.prototype),
+        (Value::Function(x), Value::Function(y)) => Rc::ptr_eq(&x.body, &y.body),
+        (Value::NativeFunction { callable: x, .. }, Value::NativeFunction { callable: y, .. }) => {
+            std::ptr::fn_addr_eq(*x, *y)
+        }
+        (Value::HostFunction { id: x, .. }, Value::HostFunction { id: y, .. }) => x == y,
+        (Value::HostPending { id: x }, Value::HostPending { id: y }) => x == y,
+        (Value::Symbol(x), Value::Symbol(y)) => x.id == y.id,
+        (Value::Error(x), Value::Error(y)) => x.name == y.name && x.message == y.message,
+        _ => false,
+    }
+}
+
+/// Property slots the VM uses to store symbol-keyed values are named with a
+/// reserved `__symbol…__` prefix. They are real slots so the prototype walk
+/// finds them, but they must stay out of `Object.keys`, `for…in` and
+/// `JSON.stringify`, which enumerate string keys only.
+pub fn is_internal_key(key: &str) -> bool {
+    key.starts_with("__symbol") || key.starts_with("__setter:")
+}
+
+/// The slot name backing a symbol-keyed property.
+///
+/// Keyed by the symbol's *id*, so two symbols sharing a description still get
+/// separate slots. `Symbol.iterator` keeps a fixed, readable name because the
+/// evaluator looks that slot up directly when starting a `for…of`.
+pub fn symbol_slot_key(symbol: &crate::value::SymbolData) -> String {
+    if symbol.id == 1 {
+        SYMBOL_ITERATOR_SLOT.to_string()
+    } else {
+        format!("__symbol:{}__", symbol.id)
+    }
+}
+
+/// The slot every iterable stores its `[Symbol.iterator]` method in.
+pub const SYMBOL_ITERATOR_SLOT: &str = "__symbol_iterator__";
+
 impl Interpreter {
     pub fn bin_op(&self, op: BinOp, l: &Value, r: &Value) -> Result<Value, VmErr> {
         // Fast path: when both operands are already numbers, the arithmetic and
@@ -139,16 +196,13 @@ impl Interpreter {
                 };
                 let mut result = false;
                 if let Some(tp) = target_proto {
-                    let mut cur = match l {
-                        Value::Object { proto, .. } => proto.clone(),
-                        _ => None,
-                    };
+                    let mut cur = l.proto_of();
                     let mut visited = std::collections::HashSet::new();
                     for _ in 0..crate::value::MAX_PROTOTYPE_DEPTH {
                         let Some(p) = cur else {
                             break;
                         };
-                        if let Value::Object { props, proto } = p.as_ref() {
+                        if let Value::Object { props } = p.as_ref() {
                             let identity = Rc::as_ptr(props) as *const ();
                             if !visited.insert(identity) {
                                 break;
@@ -157,7 +211,7 @@ impl Interpreter {
                                 result = true;
                                 break;
                             }
-                            cur = proto.clone();
+                            cur = props.proto();
                         } else {
                             break;
                         }
@@ -165,12 +219,16 @@ impl Interpreter {
                 }
                 Value::Bool(result)
             }
+            // `in` is a prototype-chain query, not an own-property one, and
+            // its left operand is coerced to a property key.
             BinOp::In => {
-                if let (Value::String(k), Value::Object { props, .. }) = (l, r) {
-                    Value::Bool(props.borrow().iter().any(|(x, _)| x == k))
-                } else {
-                    Value::Bool(false)
-                }
+                let key = match l {
+                    Value::String(k) => k.clone(),
+                    Value::Number(n) => crate::format::number_string(*n),
+                    Value::Symbol(s) => symbol_slot_key(s),
+                    other => self.vs(other)?,
+                };
+                Value::Bool(r.has_prop(&key))
             }
         })
     }
@@ -181,6 +239,9 @@ impl Interpreter {
             UnOp::Neg => Value::Number(-self.tn(v)),
             UnOp::Pos => Value::Number(self.tn(v)),
             UnOp::BitNot => Value::Number(!(self.tn(v) as i32) as f64),
+            UnOp::Typeof if super::call::callable_slot(v, super::call::CALL_SLOT).is_some() => {
+                Value::String("function".to_string())
+            }
             UnOp::Typeof => Value::String(
                 match v {
                     Value::Undefined => "undefined",
@@ -212,7 +273,15 @@ impl Interpreter {
 
     pub fn keys(&self, o: &Value) -> Vec<String> {
         match o {
-            Value::Object { props, .. } => props.borrow().iter().map(|(k, _)| k.clone()).collect(),
+            Value::Object { props } => {
+                let meta = props.meta.borrow();
+                props
+                    .borrow()
+                    .iter()
+                    .filter(|(k, _)| meta.attrs_of(k).enumerable && !is_internal_key(k))
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            }
             Value::Array(i) => (0..i.borrow().len()).map(|x| x.to_string()).collect(),
             Value::GlobalObject => self.global_keys(),
             _ => vec![],
@@ -269,15 +338,7 @@ impl Interpreter {
     }
 
     pub fn seq(&self, a: &Value, b: &Value) -> bool {
-        match (a, b) {
-            (Value::Number(a), Value::Number(b)) => a == b,
-            (Value::String(a), Value::String(b)) => a == b,
-            (Value::Bool(a), Value::Bool(b)) => a == b,
-            (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
-            // The global aliases all denote the one global scope.
-            (Value::GlobalObject, Value::GlobalObject) => true,
-            _ => false,
-        }
+        strict_equals(a, b)
     }
 
     pub fn vs(&self, v: &Value) -> Result<String, VmErr> {
@@ -357,11 +418,7 @@ impl Interpreter {
             }
             Value::Generator { .. } => output.push_str("[object Generator]"),
             Value::StringIterator { .. } => output.push_str("[object String Iterator]"),
-            Value::Symbol(s) => {
-                output.push_str("Symbol(")?;
-                output.push_str(s)?;
-                output.push_char(')')
-            }
+            Value::Symbol(s) => output.push_str(&s.to_display()),
             Value::Error(e) => output.push_str(&e.message),
         }
     }

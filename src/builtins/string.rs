@@ -16,7 +16,48 @@ pub(super) fn install(e: &mut Environment) {
             nf("fromCharCode", string_from_char_code),
         )
         .expect("built-in String property");
+        s.set_prop("raw".to_string(), nf("raw", string_raw))
+            .expect("built-in String property");
+        super::make_callable(&s, string_ctor, None);
     }
+}
+
+/// `String(v)`: the string coercion of `v`.
+fn string_ctor(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    match a.first() {
+        None => Ok(Value::String(String::new())),
+        // `String(sym)` is the one coercion the specification allows for a
+        // symbol; template literals and `+` still reject it.
+        Some(Value::Symbol(s)) => Ok(Value::String(s.to_display())),
+        Some(v) => Value::checked_string(interp.vs(v)?),
+    }
+}
+
+/// `String.raw(strings, ...subs)`: the cooked strings joined with the
+/// substitutions, without escape processing.
+fn string_raw(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let template = a.first().cloned().unwrap_or(Value::Undefined);
+    let raw = match interp.member(&template, "raw")? {
+        Value::Undefined => template,
+        other => other,
+    };
+    let parts = match &raw {
+        Value::Array(items) => items.borrow().clone(),
+        _ => Vec::new(),
+    };
+    let mut out = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        out.push_str(&super::join_str(interp, part)?);
+        if index + 1 < parts.len()
+            && let Some(sub) = a.get(index + 1)
+        {
+            out.push_str(&super::join_str(interp, sub)?);
+        }
+        if out.len() > crate::value::MAX_STRING_LEN {
+            return Err(crate::value::limit_err("Maximum string length exceeded"));
+        }
+    }
+    Value::checked_string(out)
 }
 
 fn string_from_char_code(_: &mut Interpreter, _this: Value, a: Vec<Value>) -> Result<Value, VmErr> {

@@ -114,6 +114,14 @@ pub enum Expr {
         property: Box<Expr>,
         computed: bool,
     },
+    /// `` tag`a${x}b` ``: the tag is called with the array of literal chunks
+    /// (carrying a `raw` companion array) followed by the interpolated values.
+    TaggedTemplate {
+        tag: Box<Expr>,
+        cooked: Vec<String>,
+        raw: Vec<String>,
+        exprs: Vec<Expr>,
+    },
     Assignment {
         target: Box<Expr>,
         op: AssignOp,
@@ -614,6 +622,9 @@ fn expr_references(e: &Expr, name: &str) -> bool {
             expr_references(left, name) || expr_references(right, name)
         }
         Expr::Unary { operand, .. } => expr_references(operand, name),
+        Expr::TaggedTemplate { tag, exprs, .. } => {
+            expr_references(tag, name) || exprs.iter().any(|x| expr_references(x, name))
+        }
         Expr::Call { callee, args } => {
             expr_references(callee, name) || args.iter().any(|a| expr_references(a, name))
         }

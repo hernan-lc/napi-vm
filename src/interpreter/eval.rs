@@ -584,7 +584,7 @@ impl Interpreter {
     ///
     /// Bounded by the loop budget and the array-length cap, so an infinite
     /// generator raises a catchable `RangeError` instead of hanging.
-    fn drain_iterable(&mut self, source: &Value) -> Result<Vec<Value>, VmErr> {
+    pub(crate) fn drain_iterable(&mut self, source: &Value) -> Result<Vec<Value>, VmErr> {
         let iterator = self.iterator_for(source)?;
         let next_fn = self.prop(&iterator, &Value::String("next".to_string()))?;
         if matches!(next_fn, Value::Undefined) {
@@ -888,13 +888,7 @@ impl Interpreter {
                                 Value::Number(n) => n.to_string(),
                                 // Symbol keys are stored under an internal
                                 // mangled name so they can be resolved later.
-                                Value::Symbol(desc) => {
-                                    if desc == "Symbol.iterator" {
-                                        "__symbol_iterator__".to_string()
-                                    } else {
-                                        format!("__symbol:{}__", desc)
-                                    }
-                                }
+                                Value::Symbol(s) => super::symbol_slot_key(s),
                                 _ => continue,
                             };
                             o.push((key, self.eval_expr(v)?));
@@ -971,6 +965,43 @@ impl Interpreter {
                 operand,
                 prefix,
             } => {
+                // `delete` needs the *reference*, not the value: it removes a
+                // slot from the receiver rather than computing anything from
+                // the property it names.
+                if matches!(op, UnOp::Delete) {
+                    match operand.as_ref() {
+                        Expr::Member {
+                            object, property, ..
+                        } => {
+                            let obj = self.eval_expr(object)?;
+                            let key = self.eval_expr(property)?;
+                            return self.delete_member(&obj, &key);
+                        }
+                        Expr::OptionalChain {
+                            object, property, ..
+                        } => {
+                            let obj = self.eval_expr(object)?;
+                            if matches!(obj, Value::Null | Value::Undefined) {
+                                return Ok(Value::Bool(true));
+                            }
+                            let key = self.eval_expr(property)?;
+                            return self.delete_member(&obj, &key);
+                        }
+                        // `delete someBinding` is `false`: declared bindings
+                        // are not configurable. An unresolvable name is not a
+                        // reference at all, so it deletes vacuously — and does
+                        // not raise the `ReferenceError` that reading it would.
+                        Expr::Identifier(name) => {
+                            let bound = self.global.borrow().get(name).is_some();
+                            return Ok(Value::Bool(!bound));
+                        }
+                        // `delete 42`: not a reference, so nothing to remove.
+                        other => {
+                            self.eval_expr(other)?;
+                            return Ok(Value::Bool(true));
+                        }
+                    }
+                }
                 if matches!(op, UnOp::Inc | UnOp::Dec)
                     && matches!(operand.as_ref(), Expr::Identifier(_) | Expr::Member { .. })
                 {
@@ -1266,6 +1297,37 @@ impl Interpreter {
                     ("main".to_string(), Value::Bool(self.is_main)),
                 ];
                 Ok(Value::object(o))
+            }
+            // `` tag`a${x}b` ``: the tag receives the literal chunks as an
+            // array carrying a `raw` companion, then the interpolated values.
+            Expr::TaggedTemplate {
+                tag,
+                cooked,
+                raw,
+                exprs,
+            } => {
+                let (this_val, tag_fn) = match tag.as_ref() {
+                    // Preserve the receiver so `` obj.tag`…` `` sees `this`.
+                    Expr::Member {
+                        object, property, ..
+                    } => {
+                        let receiver = self.eval_expr(object)?;
+                        let key = self.eval_expr(property)?;
+                        let f = self.get_prop_value(&receiver, &key)?;
+                        (receiver, f)
+                    }
+                    other => (Value::Undefined, self.eval_expr(other)?),
+                };
+                let strings = Value::array(cooked.iter().cloned().map(Value::String).collect());
+                strings.set_prop(
+                    "raw".to_string(),
+                    Value::array(raw.iter().cloned().map(Value::String).collect()),
+                )?;
+                let mut args = vec![strings];
+                for expr in exprs {
+                    args.push(self.eval_expr(expr)?);
+                }
+                self.call_this(&tag_fn, this_val, args)
             }
             Expr::Template { quasis, exprs } => {
                 let mut result = String::new();

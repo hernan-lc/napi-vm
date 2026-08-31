@@ -60,12 +60,12 @@ impl Interpreter {
         };
 
         match value {
-            Value::Object { props, proto } => {
+            Value::Object { props } => {
                 for (name, property) in props.borrow().iter() {
                     add(name, completion_kind(property));
                 }
-                if let Some(proto) = proto {
-                    self.collect_completion_members(proto, members, depth + 1);
+                if let Some(proto) = props.proto() {
+                    self.collect_completion_members(&proto, members, depth + 1);
                 }
             }
             Value::Array(_) => {
@@ -121,8 +121,21 @@ impl Interpreter {
         }
     }
 
+    /// Read a string-keyed property, running a getter if one is installed.
+    pub(crate) fn member(&mut self, o: &Value, key: &str) -> Result<Value, VmErr> {
+        self.get_prop_value(o, &Value::String(key.to_string()))
+    }
+
+    /// Every value an iterable produces, as a `Vec`.
+    pub(crate) fn iterate(&mut self, source: &Value) -> Result<Vec<Value>, VmErr> {
+        match source {
+            Value::Array(items) => Ok(items.borrow().clone()),
+            _ => self.drain_iterable(source),
+        }
+    }
+
     /// Resolve a property value, invoking it if it is a getter.
-    pub(super) fn get_prop_value(&mut self, o: &Value, p: &Value) -> Result<Value, VmErr> {
+    pub(crate) fn get_prop_value(&mut self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         let v = self.prop(o, p)?;
         if let Value::Function(f) = &v
             && !f.is_arrow
@@ -133,7 +146,7 @@ impl Interpreter {
         Ok(v)
     }
 
-    pub(super) fn prop(&self, o: &Value, p: &Value) -> Result<Value, VmErr> {
+    pub(crate) fn prop(&self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         match (o, p) {
             // `window.x` / `globalThis.x` / `self.x` read a real global.
             (Value::GlobalObject, Value::String(k)) => Ok(self
@@ -141,27 +154,7 @@ impl Interpreter {
                 .borrow()
                 .get(k)
                 .unwrap_or(Value::Undefined)),
-            (Value::Object { .. }, Value::String(k)) => {
-                let mut current = o;
-                for _ in 0..=crate::value::MAX_PROTOTYPE_DEPTH {
-                    match current {
-                        Value::Object { props, proto } => {
-                            if let Some((_, value)) = props.borrow().iter().find(|(xk, _)| xk == k)
-                            {
-                                return Ok(value.clone());
-                            }
-                            let Some(next) = proto.as_deref() else {
-                                return Ok(Value::Undefined);
-                            };
-                            current = next;
-                        }
-                        _ => return Ok(Value::Undefined),
-                    }
-                }
-                Err(crate::value::limit_err(
-                    "Maximum prototype chain depth exceeded",
-                ))
-            }
+            (Value::Object { .. }, Value::String(k)) => lookup_chain(o, k),
             (Value::Array(items), Value::Number(i)) => {
                 let items = items.borrow();
                 if !i.is_finite() || *i < 0.0 || i.fract() != 0.0 {
@@ -193,7 +186,9 @@ impl Interpreter {
                 } else if let Some(m) = crate::builtins::array_method(k) {
                     Ok(m)
                 } else {
-                    Ok(Value::Undefined)
+                    // Arrays can also carry named properties — a tagged
+                    // template's `strings.raw` is the built-in example.
+                    Ok(items.named_prop(k).unwrap_or(Value::Undefined))
                 }
             }
             (Value::String(s), Value::String(k)) => {
@@ -271,13 +266,10 @@ impl Interpreter {
                 // Well-known symbols and static methods on `Symbol`. A native
                 // function cannot carry properties, so they are resolved here.
                 if name.as_ref() == "Symbol" {
+                    if let Some(symbol) = crate::builtins::well_known(k) {
+                        return Ok(symbol);
+                    }
                     match k.as_str() {
-                        "iterator" => Ok(Value::Symbol("Symbol.iterator".to_string())),
-                        "toStringTag" => Ok(Value::Symbol("Symbol.toStringTag".to_string())),
-                        "hasInstance" => Ok(Value::Symbol("Symbol.hasInstance".to_string())),
-                        "toPrimitive" => Ok(Value::Symbol("Symbol.toPrimitive".to_string())),
-                        "species" => Ok(Value::Symbol("Symbol.species".to_string())),
-                        "asyncIterator" => Ok(Value::Symbol("Symbol.asyncIterator".to_string())),
                         "for" => Ok(Value::NativeFunction {
                             name: "for".into(),
                             callable: crate::builtins::symbol_for,
@@ -293,6 +285,14 @@ impl Interpreter {
                 }
             }
 
+            (Value::Symbol(symbol), Value::String(k)) => match k.as_str() {
+                "description" => Ok(symbol
+                    .description
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Undefined)),
+                other => Ok(crate::builtins::symbol_method(other).unwrap_or(Value::Undefined)),
+            },
             (Value::HostFunction { name, .. }, Value::String(k)) => {
                 if k == "name" {
                     Ok(Value::String(name.to_string()))
@@ -302,25 +302,29 @@ impl Interpreter {
             }
             // Symbol-keyed property access: `arr[Symbol.iterator]`,
             // `str[Symbol.iterator]`, `gen[Symbol.iterator]`.
-            (Value::Array(_), Value::Symbol(desc)) if desc == "Symbol.iterator" => {
+            (Value::Array(_), Value::Symbol(_)) if crate::builtins::is_iterator_symbol(p) => {
                 Ok(Value::NativeFunction {
                     name: "[Symbol.iterator]".into(),
                     callable: array_iter,
                 })
             }
-            (Value::String(_), Value::Symbol(desc)) if desc == "Symbol.iterator" => {
+            (Value::String(_), Value::Symbol(_)) if crate::builtins::is_iterator_symbol(p) => {
                 Ok(Value::NativeFunction {
                     name: "[Symbol.iterator]".into(),
                     callable: string_iter,
                 })
             }
-            (Value::Generator { .. }, Value::Symbol(desc)) if desc == "Symbol.iterator" => {
+            (Value::Generator { .. }, Value::Symbol(_))
+                if crate::builtins::is_iterator_symbol(p) =>
+            {
                 Ok(Value::NativeFunction {
                     name: "[Symbol.iterator]".into(),
                     callable: generator_iter_self,
                 })
             }
-            (Value::StringIterator { .. }, Value::Symbol(desc)) if desc == "Symbol.iterator" => {
+            (Value::StringIterator { .. }, Value::Symbol(_))
+                if crate::builtins::is_iterator_symbol(p) =>
+            {
                 Ok(Value::NativeFunction {
                     name: "[Symbol.iterator]".into(),
                     callable: string_iter_self,
@@ -328,32 +332,8 @@ impl Interpreter {
             }
             // Object symbol-keyed lookup: `obj[Symbol.iterator]` resolves the
             // internal `__symbol_iterator__` property.
-            (Value::Object { .. }, Value::Symbol(desc)) => {
-                let internal_key = if desc == "Symbol.iterator" {
-                    "__symbol_iterator__".to_string()
-                } else {
-                    format!("__symbol:{}__", desc)
-                };
-                let mut current = o;
-                for _ in 0..=crate::value::MAX_PROTOTYPE_DEPTH {
-                    match current {
-                        Value::Object { props, proto } => {
-                            if let Some((_, value)) =
-                                props.borrow().iter().find(|(key, _)| *key == internal_key)
-                            {
-                                return Ok(value.clone());
-                            }
-                            let Some(next) = proto.as_deref() else {
-                                return Ok(Value::Undefined);
-                            };
-                            current = next;
-                        }
-                        _ => return Ok(Value::Undefined),
-                    }
-                }
-                Err(crate::value::limit_err(
-                    "Maximum prototype chain depth exceeded",
-                ))
+            (Value::Object { .. }, Value::Symbol(symbol)) => {
+                lookup_chain(o, &super::symbol_slot_key(symbol))
             }
             // Internal errors surface to guest `catch` blocks as error objects
             // with readable `name`/`message` properties.
@@ -365,6 +345,28 @@ impl Interpreter {
             _ => Ok(Value::Undefined),
         }
     }
+}
+
+/// Walk an object's prototype chain looking for `key`, bounded by
+/// [`MAX_PROTOTYPE_DEPTH`](crate::value::MAX_PROTOTYPE_DEPTH) so a guest-built
+/// cycle spends bounded time instead of hanging.
+fn lookup_chain(o: &Value, key: &str) -> Result<Value, VmErr> {
+    let mut current = o.clone();
+    for _ in 0..=crate::value::MAX_PROTOTYPE_DEPTH {
+        let Value::Object { props } = &current else {
+            return Ok(Value::Undefined);
+        };
+        if let Some((_, value)) = props.borrow().iter().find(|(xk, _)| xk == key) {
+            return Ok(value.clone());
+        }
+        let Some(next) = props.proto() else {
+            return Ok(Value::Undefined);
+        };
+        current = next.as_ref().clone();
+    }
+    Err(crate::value::limit_err(
+        "Maximum prototype chain depth exceeded",
+    ))
 }
 
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -432,7 +434,7 @@ fn array_iter(
     let iter_obj = super::Value::object(vec![
         (
             "__items__".to_string(),
-            super::Value::Array(Rc::new(RefCell::new((*items_rc).clone()))),
+            super::Value::array((*items_rc).clone()),
         ),
         ("__cursor__".to_string(), super::Value::Number(0.0)),
         (

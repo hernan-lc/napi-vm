@@ -1,3 +1,12 @@
+/// One literal chunk of a template literal, in both forms: `cooked` has
+/// escape sequences resolved, `raw` is the source text verbatim. Tagged
+/// templates expose both; an ordinary template literal uses only `cooked`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TemplateChunk {
+    pub cooked: String,
+    pub raw: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Number(f64),
@@ -109,7 +118,10 @@ pub enum Token {
     UShrEqual,
     StarStarEqual,
     Backtick,
-    TemplateQuasi(String),
+    /// One literal chunk of a template. Ordinary template literals use the
+    /// cooked text (escapes resolved); a *tagged* template also receives the
+    /// raw text, which is why both are carried.
+    TemplateQuasi(TemplateChunk),
     DollarLBrace,
     EOF,
 }
@@ -231,7 +243,7 @@ impl Lexer {
             Token::Backtick,
             crate::span::Span::new(self.line, self.col - 1),
         )];
-        let mut quasi = String::new();
+        let mut quasi = TemplateChunk::default();
         while self.pos < self.src.len() {
             let c = self.src[self.pos];
             if c == '`' {
@@ -246,14 +258,16 @@ impl Lexer {
                 self.col += 2;
                 let span = crate::span::Span::new(self.line, self.col - 2);
                 toks.push((Token::TemplateQuasi(quasi), span));
-                quasi = String::new();
+                quasi = TemplateChunk::default();
                 toks.push((Token::DollarLBrace, span));
                 self.lex_interp(&mut toks);
             } else if c == '\\' && self.pos + 1 < self.src.len() {
                 self.pos += 1;
                 self.col += 1;
                 let e = self.src[self.pos];
-                quasi.push(match e {
+                quasi.raw.push('\\');
+                quasi.raw.push(e);
+                quasi.cooked.push(match e {
                     'n' => '\n',
                     't' => '\t',
                     'r' => '\r',
@@ -263,7 +277,8 @@ impl Lexer {
                 self.pos += 1;
                 self.col += 1;
             } else {
-                quasi.push(c);
+                quasi.cooked.push(c);
+                quasi.raw.push(c);
                 self.pos += 1;
                 if c == '\n' {
                     self.line += 1;

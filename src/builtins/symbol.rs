@@ -1,33 +1,84 @@
-//! `Symbol` global: callable to mint unique symbol values, with well-known
-//! symbols (`Symbol.iterator`, `Symbol.toStringTag`, etc.) and registry
-//! methods (`Symbol.for`, `Symbol.keyFor`).
+//! `Symbol`: unique symbol values, the well-known symbols, and the global
+//! registry behind `Symbol.for` / `Symbol.keyFor`.
+//!
+//! A symbol's identity is an id, not its description: `Symbol('x') !==
+//! Symbol('x')`, while a well-known symbol and a registry symbol are the same
+//! value every time they are obtained. Ids below
+//! [`FIRST_USER_SYMBOL`](crate::value::FIRST_USER_SYMBOL) are reserved for the
+//! well-known symbols so that reservation is a compile-time fact.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::error::VmErr;
 use crate::interpreter::{Environment, Interpreter};
-use crate::value::Value;
+use crate::value::{FIRST_USER_SYMBOL, SymbolData, Value};
 
-// Global symbol registry for `Symbol.for` / `Symbol.keyFor`.
+/// The well-known symbols, in id order starting at 1.
+const WELL_KNOWN: &[&str] = &[
+    "iterator",
+    "asyncIterator",
+    "toStringTag",
+    "hasInstance",
+    "toPrimitive",
+    "species",
+    "unscopables",
+    "isConcatSpreadable",
+    "match",
+    "matchAll",
+    "replace",
+    "search",
+    "split",
+];
+
 thread_local! {
-    static SYMBOL_REGISTRY: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
+    /// Global symbol registry for `Symbol.for` / `Symbol.keyFor`.
+    static SYMBOL_REGISTRY: RefCell<HashMap<String, Rc<SymbolData>>> =
+        RefCell::new(HashMap::new());
+    /// Source of fresh ids for `Symbol()`.
+    static NEXT_ID: Cell<u64> = const { Cell::new(FIRST_USER_SYMBOL) };
 }
 
 pub(super) fn install(e: &mut Environment) {
     e.set("Symbol", super::nf("Symbol", symbol_call));
 }
 
-fn symbol_call(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let desc = match a.first() {
-        None | Some(Value::Undefined) => String::new(),
-        Some(Value::String(s)) => s.clone(),
-        Some(v) => interp.vs(v)?,
-    };
-    Ok(Value::Symbol(desc))
+/// Mint a brand-new symbol. Every call produces a distinct identity.
+pub(crate) fn new_symbol(description: Option<String>) -> Value {
+    let id = NEXT_ID.with(|n| {
+        let id = n.get();
+        n.set(id + 1);
+        id
+    });
+    Value::Symbol(Rc::new(SymbolData { id, description }))
 }
 
-/// `Symbol.for(key)`: returns the shared symbol for `key`, creating it if new.
+/// The well-known symbol named `name` (`"iterator"`, `"toStringTag"`, …), or
+/// `None` if there is no such symbol.
+pub(crate) fn well_known(name: &str) -> Option<Value> {
+    let index = WELL_KNOWN.iter().position(|k| *k == name)?;
+    Some(Value::Symbol(Rc::new(SymbolData {
+        id: index as u64 + 1,
+        description: Some(format!("Symbol.{}", name)),
+    })))
+}
+
+/// Is `value` the well-known `Symbol.iterator`?
+pub(crate) fn is_iterator_symbol(value: &Value) -> bool {
+    matches!(value, Value::Symbol(s) if s.id == 1)
+}
+
+fn symbol_call(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let description = match a.first() {
+        None | Some(Value::Undefined) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(v) => Some(interp.vs(v)?),
+    };
+    Ok(new_symbol(description))
+}
+
+/// `Symbol.for(key)`: the one shared symbol for `key`, created on first use.
 pub(crate) fn symbol_for(
     interp: &mut Interpreter,
     _: Value,
@@ -38,34 +89,55 @@ pub(crate) fn symbol_for(
         Some(Value::Undefined) | None => "undefined".to_string(),
         Some(v) => interp.vs(v)?,
     };
-    let sym = SYMBOL_REGISTRY.with(|reg| {
-        let mut reg = reg.borrow_mut();
-        reg.entry(key.clone())
-            .or_insert_with(|| Value::Symbol(key.clone()))
-            .clone()
-    });
-    Ok(sym)
+    if let Some(existing) = SYMBOL_REGISTRY.with(|reg| reg.borrow().get(&key).cloned()) {
+        return Ok(Value::Symbol(existing));
+    }
+    let fresh = new_symbol(Some(key.clone()));
+    let Value::Symbol(data) = &fresh else {
+        unreachable!("new_symbol returns a symbol");
+    };
+    let data = data.clone();
+    SYMBOL_REGISTRY.with(|reg| reg.borrow_mut().insert(key, data.clone()));
+    Ok(Value::Symbol(data))
 }
 
-/// `Symbol.keyFor(sym)`: returns the registry key for a shared symbol.
+/// `Symbol.keyFor(sym)`: the registry key of a shared symbol, or `undefined`
+/// for a symbol that was never registered.
 pub(crate) fn symbol_key_for(
     _interp: &mut Interpreter,
     _: Value,
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
-    let desc = match a.first() {
-        Some(Value::Symbol(d)) => d.clone(),
-        _ => return Ok(Value::Undefined),
+    let Some(Value::Symbol(target)) = a.first() else {
+        return Ok(Value::Undefined);
     };
     SYMBOL_REGISTRY.with(|reg| {
-        let reg = reg.borrow();
-        for (key, val) in reg.iter() {
-            if let Value::Symbol(d) = val
-                && *d == desc
-            {
-                return Ok(Value::String(key.clone()));
-            }
-        }
-        Ok(Value::Undefined)
+        Ok(reg
+            .borrow()
+            .iter()
+            .find(|(_, data)| data.id == target.id)
+            .map(|(key, _)| Value::String(key.clone()))
+            .unwrap_or(Value::Undefined))
     })
+}
+
+/// Properties readable on a symbol value itself: `description` and
+/// `toString()`.
+pub fn symbol_method(key: &str) -> Option<Value> {
+    match key {
+        "toString" => Some(super::nf("toString", symbol_to_string)),
+        "valueOf" => Some(super::nf("valueOf", symbol_value_of)),
+        _ => None,
+    }
+}
+
+fn symbol_to_string(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    match &this {
+        Value::Symbol(s) => Ok(Value::String(s.to_display())),
+        _ => Ok(Value::String("Symbol()".to_string())),
+    }
+}
+
+fn symbol_value_of(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(this)
 }

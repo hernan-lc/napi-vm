@@ -1,78 +1,538 @@
-//! `Object` static methods.
+//! `Object` static methods, including the property-descriptor surface.
+
+use std::rc::Rc;
 
 use super::nf;
 use crate::error::VmErr;
-use crate::interpreter::{Environment, Interpreter};
-use crate::value::Value;
+use crate::interpreter::{Environment, Interpreter, is_internal_key};
+use crate::value::{ObjectCell, PropAttrs, Value};
 
 pub(super) fn install(e: &mut Environment) {
-    if let Some(o) = e.get("Object") {
-        o.set_prop("keys".to_string(), nf("keys", object_keys))
+    let Some(o) = e.get("Object") else { return };
+    let methods: &[(&str, super::NativeFn)] = &[
+        ("keys", object_keys),
+        ("values", object_values),
+        ("entries", object_entries),
+        ("assign", object_assign),
+        ("getOwnPropertyNames", object_get_own_property_names),
+        ("create", object_create),
+        ("defineProperty", object_define_property),
+        ("defineProperties", object_define_properties),
+        ("getOwnPropertyDescriptor", object_get_own_descriptor),
+        ("getOwnPropertyDescriptors", object_get_own_descriptors),
+        ("getPrototypeOf", object_get_prototype_of),
+        ("setPrototypeOf", object_set_prototype_of),
+        ("hasOwn", object_has_own),
+        ("fromEntries", object_from_entries),
+        ("freeze", object_freeze),
+        ("isFrozen", object_is_frozen),
+        ("seal", object_seal),
+        ("isSealed", object_is_sealed),
+        ("preventExtensions", object_prevent_extensions),
+        ("isExtensible", object_is_extensible),
+        ("is", object_is),
+    ];
+    for (name, callable) in methods {
+        o.set_prop(name.to_string(), nf(name, *callable))
             .expect("built-in Object property");
-        o.set_prop("values".to_string(), nf("values", object_values))
-            .expect("built-in Object property");
-        o.set_prop("entries".to_string(), nf("entries", object_entries))
-            .expect("built-in Object property");
-        o.set_prop("assign".to_string(), nf("assign", object_assign))
-            .expect("built-in Object property");
-        o.set_prop(
-            "getOwnPropertyNames".to_string(),
-            nf("getOwnPropertyNames", object_get_own_property_names),
-        )
-        .expect("built-in Object property");
     }
 }
 
-fn object_keys(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let v = a.first().cloned().unwrap_or(Value::Undefined);
-    Value::checked_array(interp.keys(&v).into_iter().map(Value::String).collect())
-}
-fn object_values(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    match a.first() {
-        Some(Value::Object { props, .. }) => {
-            Value::checked_array(props.borrow().iter().map(|(_, v)| v.clone()).collect())
-        }
-        _ => Value::checked_array(vec![]),
+// --- Shared helpers ---------------------------------------------------------
+
+fn cell(v: &Value) -> Option<&Rc<ObjectCell>> {
+    match v {
+        Value::Object { props } => Some(props),
+        _ => None,
     }
 }
-fn object_entries(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    match a.first() {
-        Some(Value::Object { props, .. }) => {
-            let entries = props
+
+fn type_err(msg: &str) -> VmErr {
+    VmErr::Msg(format!("TypeError: {}", msg))
+}
+
+/// Own property names in insertion order, excluding the VM's internal
+/// symbol slots. `enumerable_only` applies the `enumerable` attribute.
+fn own_names(v: &Value, enumerable_only: bool) -> Vec<String> {
+    match v {
+        Value::Object { props } => {
+            let meta = props.meta.borrow();
+            props
                 .borrow()
                 .iter()
-                .map(|(k, v)| Value::array(vec![Value::String(k.clone()), v.clone()]))
-                .collect();
-            Value::checked_array(entries)
+                .filter(|(k, _)| !is_internal_key(k))
+                .filter(|(k, _)| !enumerable_only || meta.attrs_of(k).enumerable)
+                .map(|(k, _)| k.clone())
+                .collect()
         }
-        _ => Value::checked_array(vec![]),
+        Value::Array(items) => (0..items.borrow().len()).map(|i| i.to_string()).collect(),
+        _ => Vec::new(),
     }
 }
-fn object_assign(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+
+/// Read an own property slot without walking the prototype chain and without
+/// invoking a getter.
+fn own_slot(v: &Value, key: &str) -> Option<Value> {
+    cell(v)?
+        .borrow()
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, value)| value.clone())
+}
+
+/// Is this slot an accessor stored under the `get …` / `set …` naming that the
+/// evaluator uses to recognize getters and setters?
+fn accessor_kind(key: &str, value: &Value) -> Option<&'static str> {
+    let Value::Function(f) = value else {
+        return None;
+    };
+    let name = f.name.as_ref()?;
+    if name.as_ref() == format!("get {}", key) {
+        Some("get")
+    } else if name.as_ref() == format!("set {}", key) {
+        Some("set")
+    } else {
+        None
+    }
+}
+
+fn desc_bool(desc: &Value, key: &str, default: bool) -> bool {
+    match own_slot(desc, key) {
+        Some(v) => v.is_truthy(),
+        None => default,
+    }
+}
+
+// --- Enumeration ------------------------------------------------------------
+
+fn object_keys(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    Value::checked_array(own_names(&v, true).into_iter().map(Value::String).collect())
+}
+
+fn object_values(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    let mut out = Vec::new();
+    for key in own_names(&v, true) {
+        out.push(interp.member(&v, &key)?);
+    }
+    Value::checked_array(out)
+}
+
+fn object_entries(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    let mut out = Vec::new();
+    for key in own_names(&v, true) {
+        let value = interp.member(&v, &key)?;
+        out.push(Value::array(vec![Value::String(key), value]));
+    }
+    Value::checked_array(out)
+}
+
+fn object_assign(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let target = a.first().cloned().unwrap_or_else(|| Value::object(vec![]));
     for src in a.iter().skip(1) {
-        if let Value::Object { props, .. } = src {
-            // Clone before writing so Object.assign(o, o) does not hold a
-            // RefCell borrow while set_prop tries to mutate the same object.
-            let entries = props.borrow().clone();
-            for (k, v) in entries {
-                target.set_prop(k, v)?;
-            }
+        // Snapshot the keys first so `Object.assign(o, o)` does not hold a
+        // borrow on the object it is about to write to.
+        for key in own_names(src, true) {
+            let value = interp.member(src, &key)?;
+            target.set_prop(key, value)?;
         }
     }
     Ok(target)
 }
+
 fn object_get_own_property_names(
     interp: &mut Interpreter,
     _: Value,
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
     let v = a.first().cloned().unwrap_or(Value::Undefined);
-    match v {
-        Value::GlobalObject => {
-            let names = interp.global_keys();
-            Value::checked_array(names.into_iter().map(Value::String).collect())
+    let names = match v {
+        Value::GlobalObject => interp.global_keys(),
+        ref other => own_names(other, false),
+    };
+    Value::checked_array(names.into_iter().map(Value::String).collect())
+}
+
+fn object_from_entries(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let source = a.first().cloned().unwrap_or(Value::Undefined);
+    let mut props: Vec<(String, Value)> = Vec::new();
+    for entry in interp.iterate(&source)? {
+        let raw_key = interp.member(&entry, "0")?;
+        let key = interp.property_key(&raw_key)?;
+        let value = interp.member(&entry, "1")?;
+        match props.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, slot)) => *slot = value,
+            None => props.push((key, value)),
         }
-        _ => Value::checked_array(interp.keys(&v).into_iter().map(Value::String).collect()),
     }
+    Value::checked_object(props)
+}
+
+fn object_has_own(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    let key = match a.get(1) {
+        Some(Value::String(k)) => k.clone(),
+        Some(Value::Number(n)) => crate::format::number_string(*n),
+        Some(Value::Symbol(s)) => crate::interpreter::symbol_slot_key(s),
+        _ => "undefined".to_string(),
+    };
+    let found = match &v {
+        Value::Object { props } => props.borrow().iter().any(|(k, _)| *k == key),
+        Value::Array(items) => {
+            key == "length" || key.parse::<usize>().is_ok_and(|i| i < items.borrow().len())
+        }
+        Value::String(s) => {
+            key == "length" || key.parse::<usize>().is_ok_and(|i| i < s.chars().count())
+        }
+        _ => false,
+    };
+    Ok(Value::Bool(found))
+}
+
+fn object_is(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let x = a.first().cloned().unwrap_or(Value::Undefined);
+    let y = a.get(1).cloned().unwrap_or(Value::Undefined);
+    // `Object.is` differs from `===` exactly at NaN and signed zero.
+    let same = match (&x, &y) {
+        (Value::Number(a), Value::Number(b)) => {
+            if a.is_nan() && b.is_nan() {
+                true
+            } else if *a == 0.0 && *b == 0.0 {
+                a.is_sign_positive() == b.is_sign_positive()
+            } else {
+                a == b
+            }
+        }
+        _ => interp.seq(&x, &y),
+    };
+    Ok(Value::Bool(same))
+}
+
+// --- Prototypes -------------------------------------------------------------
+
+fn object_get_prototype_of(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    Ok(match v.proto_of() {
+        Some(p) => p.as_ref().clone(),
+        None => Value::Null,
+    })
+}
+
+fn object_set_prototype_of(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    let proto = a.get(1).cloned().unwrap_or(Value::Null);
+    if let Some(c) = cell(&v) {
+        c.set_proto(proto_arg(&proto)?);
+    }
+    Ok(v)
+}
+
+/// Validate and wrap the prototype argument shared by `create` and
+/// `setPrototypeOf`: an object, or `null` for a null prototype.
+fn proto_arg(proto: &Value) -> Result<Option<Rc<Value>>, VmErr> {
+    match proto {
+        Value::Null | Value::Undefined => Ok(None),
+        Value::Object { .. } => Ok(Some(Rc::new(proto.clone()))),
+        Value::Class(c) => Ok(Some(c.prototype.clone())),
+        _ => Err(type_err("Object prototype may only be an Object or null")),
+    }
+}
+
+fn object_create(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let proto = a.first().cloned().unwrap_or(Value::Null);
+    let created = Value::object_with_proto(vec![], proto_arg(&proto)?);
+    if let Some(descriptors) = a.get(1)
+        && !matches!(descriptors, Value::Undefined | Value::Null)
+    {
+        apply_descriptor_map(interp, &created, descriptors)?;
+    }
+    Ok(created)
+}
+
+// --- Descriptors ------------------------------------------------------------
+
+fn object_define_property(
+    interp: &mut Interpreter,
+    _: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let target = a.first().cloned().unwrap_or(Value::Undefined);
+    if cell(&target).is_none() {
+        return Err(type_err("Object.defineProperty called on non-object"));
+    }
+    let key = interp.property_key(&a.get(1).cloned().unwrap_or(Value::Undefined))?;
+    let descriptor = a.get(2).cloned().unwrap_or(Value::Undefined);
+    define_property(&target, &key, &descriptor)?;
+    Ok(target)
+}
+
+fn object_define_properties(
+    interp: &mut Interpreter,
+    _: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let target = a.first().cloned().unwrap_or(Value::Undefined);
+    if cell(&target).is_none() {
+        return Err(type_err("Object.defineProperties called on non-object"));
+    }
+    let descriptors = a.get(1).cloned().unwrap_or(Value::Undefined);
+    apply_descriptor_map(interp, &target, &descriptors)?;
+    Ok(target)
+}
+
+fn apply_descriptor_map(
+    _interp: &mut Interpreter,
+    target: &Value,
+    descriptors: &Value,
+) -> Result<(), VmErr> {
+    for key in own_names(descriptors, true) {
+        let descriptor = own_slot(descriptors, &key).unwrap_or(Value::Undefined);
+        define_property(target, &key, &descriptor)?;
+    }
+    Ok(())
+}
+
+/// Install one property from a descriptor object.
+///
+/// Data descriptors write the slot directly; accessor descriptors store the
+/// function under the `get …` / `set …` name the evaluator recognizes. A
+/// descriptor omitting an attribute gets `false`, per the specification —
+/// which is why `defineProperty` produces a non-enumerable property by
+/// default while plain assignment produces an enumerable one.
+pub(crate) fn define_property(target: &Value, key: &str, descriptor: &Value) -> Result<(), VmErr> {
+    let Some(c) = cell(target) else {
+        return Err(type_err("Object.defineProperty called on non-object"));
+    };
+    if cell(descriptor).is_none() {
+        return Err(type_err("Property description must be an object"));
+    }
+
+    let existing = c.borrow().iter().any(|(k, _)| k == key);
+    if existing && !c.meta.borrow().attrs_of(key).configurable {
+        return Err(type_err(&format!("Cannot redefine property: {}", key)));
+    }
+    if !existing && c.meta.borrow().non_extensible {
+        return Err(type_err(&format!(
+            "Cannot define property {}, object is not extensible",
+            key
+        )));
+    }
+
+    let getter = own_slot(descriptor, "get");
+    let setter = own_slot(descriptor, "set");
+    let is_accessor =
+        matches!(getter, Some(Value::Function(_))) || matches!(setter, Some(Value::Function(_)));
+
+    let attrs = PropAttrs {
+        // An accessor has no `writable` attribute; its mutability is whether a
+        // setter exists, and the slot must stay assignable so the setter path
+        // in `assign_member` is reached.
+        writable: if is_accessor {
+            true
+        } else {
+            desc_bool(descriptor, "writable", false)
+        },
+        enumerable: desc_bool(descriptor, "enumerable", false),
+        configurable: desc_bool(descriptor, "configurable", false),
+    };
+
+    let mut values: Vec<(String, Value)> = Vec::new();
+    if is_accessor {
+        if let Some(Value::Function(f)) = &getter {
+            let mut f = f.clone();
+            f.name = Some(format!("get {}", key).into());
+            values.push((key.to_string(), Value::Function(f)));
+        }
+        if let Some(Value::Function(f)) = &setter {
+            let mut f = f.clone();
+            f.name = Some(format!("set {}", key).into());
+            // A setter lives in the same slot when there is no getter; with a
+            // getter present it is stored under a companion slot the assign
+            // path looks up.
+            let slot = if values.is_empty() {
+                key.to_string()
+            } else {
+                format!("__setter:{}__", key)
+            };
+            values.push((slot, Value::Function(f)));
+        }
+    } else {
+        values.push((
+            key.to_string(),
+            own_slot(descriptor, "value").unwrap_or(Value::Undefined),
+        ));
+    }
+
+    {
+        let mut slots = c.borrow_mut();
+        for (slot, value) in values {
+            match slots.iter_mut().find(|(k, _)| *k == slot) {
+                Some((_, existing)) => *existing = value,
+                None => {
+                    if slots.len() >= crate::value::MAX_OBJECT_PROPS {
+                        return Err(crate::value::limit_err(
+                            "Maximum object property count exceeded",
+                        ));
+                    }
+                    slots.push((slot, value));
+                }
+            }
+        }
+    }
+    c.meta.borrow_mut().set_attrs(key, attrs);
+    Ok(())
+}
+
+fn object_get_own_descriptor(
+    interp: &mut Interpreter,
+    _: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let target = a.first().cloned().unwrap_or(Value::Undefined);
+    let key = interp.property_key(&a.get(1).cloned().unwrap_or(Value::Undefined))?;
+    Ok(descriptor_for(&target, &key))
+}
+
+fn object_get_own_descriptors(
+    _: &mut Interpreter,
+    _: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let target = a.first().cloned().unwrap_or(Value::Undefined);
+    let props = own_names(&target, false)
+        .into_iter()
+        .map(|key| {
+            let descriptor = descriptor_for(&target, &key);
+            (key, descriptor)
+        })
+        .collect();
+    Value::checked_object(props)
+}
+
+/// Build the descriptor object for one own property, or `undefined` when the
+/// property does not exist.
+fn descriptor_for(target: &Value, key: &str) -> Value {
+    if let Value::Array(items) = target {
+        let items = items.borrow();
+        if let Ok(index) = key.parse::<usize>()
+            && index < items.len()
+        {
+            return Value::object(vec![
+                ("value".to_string(), items[index].clone()),
+                ("writable".to_string(), Value::Bool(true)),
+                ("enumerable".to_string(), Value::Bool(true)),
+                ("configurable".to_string(), Value::Bool(true)),
+            ]);
+        }
+        if key == "length" {
+            return Value::object(vec![
+                ("value".to_string(), Value::Number(items.len() as f64)),
+                ("writable".to_string(), Value::Bool(true)),
+                ("enumerable".to_string(), Value::Bool(false)),
+                ("configurable".to_string(), Value::Bool(false)),
+            ]);
+        }
+        return Value::Undefined;
+    }
+
+    let Some(c) = cell(target) else {
+        return Value::Undefined;
+    };
+    let Some(value) = own_slot(target, key) else {
+        return Value::Undefined;
+    };
+    let attrs = c.meta.borrow().attrs_of(key);
+    let mut fields = Vec::new();
+    match accessor_kind(key, &value) {
+        Some("get") => {
+            fields.push(("get".to_string(), value));
+            let setter =
+                own_slot(target, &format!("__setter:{}__", key)).unwrap_or(Value::Undefined);
+            fields.push(("set".to_string(), setter));
+        }
+        Some("set") => {
+            fields.push(("get".to_string(), Value::Undefined));
+            fields.push(("set".to_string(), value));
+        }
+        _ => {
+            fields.push(("value".to_string(), value));
+            fields.push(("writable".to_string(), Value::Bool(attrs.writable)));
+        }
+    }
+    fields.push(("enumerable".to_string(), Value::Bool(attrs.enumerable)));
+    fields.push(("configurable".to_string(), Value::Bool(attrs.configurable)));
+    Value::object(fields)
+}
+
+// --- Integrity levels -------------------------------------------------------
+
+/// Apply `seal`/`freeze`: mark the object non-extensible, and clear
+/// `configurable` (and, when freezing, `writable`) on every own property.
+fn lock(target: &Value, freeze: bool) {
+    let Some(c) = cell(target) else { return };
+    let keys: Vec<String> = c.borrow().iter().map(|(k, _)| k.clone()).collect();
+    let mut meta = c.meta.borrow_mut();
+    meta.non_extensible = true;
+    for key in keys {
+        let mut attrs = meta.attrs_of(&key);
+        attrs.configurable = false;
+        if freeze {
+            attrs.writable = false;
+        }
+        meta.set_attrs(&key, attrs);
+    }
+}
+
+/// Do every own property, and the object itself, already satisfy the
+/// integrity level? An object with no properties is frozen as soon as it is
+/// non-extensible.
+fn locked(target: &Value, freeze: bool) -> bool {
+    let Some(c) = cell(target) else {
+        // Primitives are frozen and sealed vacuously.
+        return !matches!(target, Value::Array(_));
+    };
+    let meta = c.meta.borrow();
+    if !meta.non_extensible {
+        return false;
+    }
+    c.borrow().iter().all(|(k, v)| {
+        let attrs = meta.attrs_of(k);
+        // Accessors have no writable attribute, so freezing does not require
+        // one to be cleared.
+        !attrs.configurable && (!freeze || !attrs.writable || accessor_kind(k, v).is_some())
+    })
+}
+
+fn object_freeze(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    lock(&v, true);
+    Ok(v)
+}
+fn object_seal(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    lock(&v, false);
+    Ok(v)
+}
+fn object_is_frozen(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    Ok(Value::Bool(locked(&v, true)))
+}
+fn object_is_sealed(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    Ok(Value::Bool(locked(&v, false)))
+}
+fn object_prevent_extensions(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    if let Some(c) = cell(&v) {
+        c.meta.borrow_mut().non_extensible = true;
+    }
+    Ok(v)
+}
+fn object_is_extensible(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let v = a.first().cloned().unwrap_or(Value::Undefined);
+    Ok(Value::Bool(
+        cell(&v).is_some_and(|c| !c.meta.borrow().non_extensible),
+    ))
 }
