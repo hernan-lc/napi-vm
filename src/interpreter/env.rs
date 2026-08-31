@@ -272,7 +272,7 @@ impl Environment {
         self.vars.get(n).is_some()
     }
 
-    /// Return the parent environment, if any. Used by the generator thread
+    /// Return the parent environment, if any. Used by a generator body
     /// spawner to find the builtins frame.
     pub fn parent_env(&self) -> Option<Env> {
         self.parent.clone()
@@ -284,7 +284,7 @@ impl Environment {
     }
 
     /// Find the persistent global frame in an environment chain. This is used
-    /// by generator threads, whose active frame is detached from the normal
+    /// by generator bodies, whose active frame is detached from the normal
     /// interpreter `global` field while the body runs.
     pub fn find_global(env: &Env) -> Option<Env> {
         let mut current = env.clone();

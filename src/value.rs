@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::mpsc;
 
 use crate::error::VmErr;
 use crate::interpreter::{Env, Interpreter};
@@ -149,95 +148,149 @@ pub enum PromiseState {
     Rejected,
 }
 
-/// Messages sent from the main thread to the generator thread.
+/// What a generator body is being resumed *for*.
+#[derive(Debug, Clone)]
 pub enum GenResume {
-    /// Resume execution, optionally passing a value into the `yield` expression.
-    Next(Option<GeneratorValue>),
+    /// A normal `next(v)`: `v` becomes the value of the `yield` expression.
+    Next(Option<Value>),
+    /// The generator is being abandoned. The `yield` expression returns from
+    /// the body instead of producing a value, so the interpreter unwinds it
+    /// normally and guest `finally` blocks still run -- which is what
+    /// `for...of` + `break` does in JavaScript, via the implicit `return()`.
+    Return,
 }
 
-/// Messages sent from the generator thread back to the main thread.
-pub enum GenYield {
-    /// The generator yielded a value and is now suspended.
-    Yielded(GeneratorValue),
-    /// The generator returned (body finished). Carries the return value.
-    Returned(GeneratorValue),
-    /// The generator threw an uncaught error.
+/// How a generator body finished.
+pub enum GenOutcome {
+    /// The body ran to completion (or hit `return`), carrying its value.
+    Returned(Value),
+    /// The body threw. Carries the message, already rendered to a string.
     Threw(String),
+}
+
+/// The coroutine backing one generator.
+///
+/// Resuming it passes the value given to `next(v)` (as `Option<Value>`) and
+/// gets back either a yielded `Value` or the final [`GenOutcome`]. The
+/// coroutine runs on its own stack but on the *calling thread*: nothing is
+/// sent anywhere, so no `Send` bound and no `unsafe` are involved.
+#[cfg(not(target_arch = "wasm32"))]
+pub type GenCoroutine = corosensei::Coroutine<GenResume, Value, GenOutcome>;
+
+/// Handle a generator body uses to suspend itself at a `yield`.
+///
+/// This exists to keep the one piece of `unsafe` the design needs -- a
+/// pointer to a value living on the coroutine's own stack -- in a single
+/// audited place, rather than spread across the evaluator.
+///
+/// # Safety
+///
+/// `corosensei` hands the body a `&Yielder` borrowed from the coroutine's
+/// stack frame, so its lifetime cannot be named by `Interpreter`, which is
+/// what needs to reach it at each `yield`. The pointer is sound because:
+///
+/// 1. the `Yielder` is alive for the whole of the body's execution, and the
+///    `Interpreter` holding this handle is *created inside* that body and
+///    dropped when it returns or unwinds -- so the handle can never outlive
+///    its referent;
+/// 2. it is only ever dereferenced on the thread running the coroutine, which
+///    is the thread that created it -- `GenYielder` is neither `Send` nor
+///    `Sync`, so the compiler enforces that;
+/// 3. `suspend` takes `&self`, so no aliasing `&mut` to the `Yielder` exists.
+///
+/// This is a self-referential borrow expressed as a pointer. It is not the
+/// old cross-thread `unsafe impl Send` over `Rc`: nothing is shared between
+/// threads here, so there is no refcount to race on.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct GenYielder {
+    inner: *const corosensei::Yielder<GenResume, Value>,
+    /// Pins this handle to one thread: a raw pointer is already `!Send`, and
+    /// `PhantomData<*const ()>` makes that explicit and stable.
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl GenYielder {
+    /// Wrap the yielder borrowed from the running coroutine's stack.
+    ///
+    /// # Safety
+    /// The caller must ensure the returned handle is stored only in state
+    /// owned by the coroutine body, so it cannot outlive `yielder`.
+    pub unsafe fn new(yielder: &corosensei::Yielder<GenResume, Value>) -> Self {
+        Self {
+            inner: yielder as *const _,
+            _not_send: std::marker::PhantomData,
+        }
+    }
+
+    /// Suspend the generator, handing `value` to the caller of `next()`, and
+    /// report why it was resumed.
+    pub fn suspend(&self, value: Value) -> GenResume {
+        // SAFETY: see the type-level proof. The referent outlives this handle
+        // by construction, and this is the thread that created it.
+        unsafe { (*self.inner).suspend(value) }
+    }
 }
 
 /// Mutable state shared across a generator's `next()` calls (behind an `Rc` so
 /// clones of the `Value::Generator` observe the same progress).
 ///
-/// True mid-body suspension is implemented via a dedicated OS thread: the
-/// generator body runs in its own thread and blocks at each `yield`, waiting
-/// for a resume signal over a channel. This correctly handles infinite
-/// generators, yields inside loops/conditionals, and `try/finally` around
-/// yields.
+/// Mid-body suspension is implemented with a stackful coroutine: the body runs
+/// on its own stack, on the *calling thread*, and `yield` switches back to the
+/// caller. That handles infinite generators, `yield` inside loops and
+/// conditionals, and `try`/`finally` around a `yield`.
+///
+/// This replaced an OS-thread implementation. A thread meant moving `Rc`-backed
+/// values across a thread boundary under `unsafe impl Send`, and non-atomic
+/// refcounts made that a measurable data race no amount of channel discipline
+/// closed. A coroutine keeps everything on one thread, so the question does not
+/// arise: there is no `Send` bound and no `unsafe` in this path.
 pub struct GeneratorInner {
     pub body: Rc<Vec<Statement>>,
     pub closure: Option<Env>,
     pub params: Rc<Vec<Rc<str>>>,
     pub args: Vec<Value>,
-    /// Sender to the generator thread (resume signals). `None` once done.
-    pub to_gen: Option<mpsc::Sender<GenResume>>,
-    /// Receiver from the generator thread (yielded/returned values).
-    pub from_gen: Option<mpsc::Receiver<GenYield>>,
-    /// Handle to the generator thread, held so its exit can be *ordered*
-    /// before the main thread continues.
-    ///
-    /// The thread drops clones of `Rc`s the main thread still holds -- the
-    /// body, the closure environment, every intermediate value -- and those
-    /// refcounts are not atomic. Without joining, that drop glue races the
-    /// main thread's own use of the same environment. See
-    /// [`crate::generator_transfer`], invariant 3.
-    ///
-    /// `None` before the first `next()`, after a successful join, or when the
-    /// thread could not be spawned.
+    /// The suspended body. `None` before the first `next()`, once the
+    /// generator has finished, and -- transiently -- while it is running,
+    /// which is how re-entrant `next()` is detected.
     #[cfg(not(target_arch = "wasm32"))]
-    pub thread: Option<std::thread::JoinHandle<()>>,
+    pub coroutine: Option<GenCoroutine>,
     pub started: bool,
     pub done: bool,
     pub return_value: Option<Value>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl GeneratorInner {
-    /// Close the resume channel and wait for the generator thread to exit.
+    /// Close a suspended generator the way JavaScript's `return()` does:
+    /// resume the body once so its `finally` blocks run, then discard it.
     ///
-    /// Idempotent. Progress is guaranteed: a live generator thread is only
-    /// ever blocked on `from_main.recv()`, which fails as soon as `to_gen` is
-    /// dropped, and the body then unwinds to the end of the thread function.
-    /// A panicked thread is joined just the same; the panic is not propagated
-    /// because the generator's result has already been reported to the guest.
+    /// This is deliberately *not* done in `Drop`. Resuming runs guest code,
+    /// and a `Drop` fires at arbitrary points -- including while the
+    /// interpreter holds a `RefCell` borrow on the very environment that guest
+    /// code would touch, which panics inside a drop and aborts the process.
+    /// Closing is therefore an explicit act, performed where the language says
+    /// an iterator is closed: leaving a `for...of` early.
     ///
-    /// The order of the three steps below is load-bearing:
-    ///
-    /// 1. drop `to_gen`, which is what lets a suspended thread wake and unwind;
-    /// 2. **join**, so the thread is gone before this one touches VM state again;
-    /// 3. only then drop `from_gen`.
-    ///
-    /// Dropping the receiver also drops any `GenYield` messages still sitting
-    /// in the channel, and those carry `GeneratorValue`s whose `Rc`s the
-    /// generator thread is concurrently releasing as it unwinds. Doing that
-    /// before the join is a data race on a non-atomic refcount -- one that
-    /// ThreadSanitizer catches in the nested-generator abandonment path.
-    pub fn join_thread(&mut self) {
-        self.to_gen = None;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
+    /// A generator that is merely dropped is *not* closed, and its `finally`
+    /// does not run. That matches JavaScript, where a generator collected by
+    /// the GC never resumes.
+    pub fn close(&mut self) {
+        if self.done {
+            return;
         }
-        self.from_gen = None;
-    }
-}
-
-impl Drop for GeneratorInner {
-    fn drop(&mut self) {
-        // An abandoned generator -- `for...of` with a `break`, or a generator
-        // value that simply goes out of scope -- leaves a thread suspended at
-        // a `yield`. Dropping it without joining would let it unwind, and
-        // release its `Rc` clones, concurrently with whatever the main thread
-        // does next.
-        self.join_thread();
+        self.done = true;
+        let Some(mut coroutine) = self.coroutine.take() else {
+            return;
+        };
+        if coroutine.done() {
+            return;
+        }
+        if let corosensei::CoroutineResult::Yield(_) = coroutine.resume(GenResume::Return) {
+            // A `yield` inside the `finally` block: honouring it would let the
+            // generator resurrect itself mid-teardown. Stop, and let
+            // `Coroutine::drop` force-unwind the rest of the stack.
+        }
     }
 }
 
@@ -249,28 +302,6 @@ impl std::fmt::Debug for GeneratorInner {
             self.started, self.done
         )
     }
-}
-
-/// A generator-only wrapper for values transferred at a suspension point.
-///
-/// Its `Send` impl, and the proof behind it, live in
-/// [`crate::generator_transfer`].
-pub struct GeneratorValue(pub Value);
-
-/// Generator state transferred once to its dedicated execution thread.
-///
-/// This type is deliberately private to the generator implementation. It must
-/// not be used for host calls or general VM work: the generator protocol is the
-/// only place where the channel guarantees that the two sides do not access
-/// the wrapped reference-counted values concurrently.
-pub struct GeneratorInit {
-    pub body: Rc<Vec<Statement>>,
-    pub closure: Option<Env>,
-    pub params: Rc<Vec<Rc<str>>>,
-    pub args: Vec<GeneratorValue>,
-    pub to_gen_rx: mpsc::Receiver<GenResume>,
-    pub from_gen_tx: mpsc::Sender<GenYield>,
-    pub builtins_env: Option<Env>,
 }
 
 impl Value {

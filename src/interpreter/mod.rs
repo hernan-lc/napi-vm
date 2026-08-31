@@ -21,8 +21,8 @@ use crate::value::Value;
 /// guest recursion would overflow the *native* stack — a SIGSEGV that no
 /// try/catch can intercept. Checking the depth here turns that into a
 /// catchable `RangeError`, the way V8 does. 256 keeps a wide margin under the
-/// native limit on both the main thread (8MB typical) and generator threads
-/// (8MB, see `spawn_generator_thread`).
+/// native limit on both the main thread (8MB typical) and generator coroutine
+/// stacks (8MB, see `GENERATOR_STACK_SIZE`).
 pub const MAX_CALL_DEPTH: usize = 256;
 
 /// Default cap on loop iterations per top-level execution (`vm.run`,
@@ -50,10 +50,11 @@ pub struct Interpreter {
     /// Label applied to the loop currently being entered, if any. A loop takes
     /// this on entry so nested unlabeled loops do not consume its signals.
     active_label: Option<String>,
-    /// When executing inside a generator thread, this holds the channel
-    /// endpoints used to communicate yield/resume with the main thread.
-    /// `None` when not inside a generator body.
-    pub(crate) gen_channel: Option<GenChannel>,
+    /// When executing inside a generator body, this is the handle used to
+    /// suspend at a `yield`. `None` for every other interpreter, including the
+    /// one that drives the generator.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) gen_yielder: Option<crate::value::GenYielder>,
     /// Call stack for error reporting. Pushed on function entry, popped on exit.
     call_stack: Vec<StackFrame>,
     /// The source code for the current module/script, used to extract
@@ -65,14 +66,6 @@ pub struct Interpreter {
     /// `begin_execution()` at each NAPI entry point; decremented by
     /// `consume_loop()` on every loop iteration.
     loops_remaining: u64,
-}
-
-/// Channel endpoints available to a generator body during execution.
-pub(crate) struct GenChannel {
-    /// Send yielded values back to the main thread.
-    pub to_main: std::sync::mpsc::Sender<crate::value::GenYield>,
-    /// Receive resume signals from the main thread.
-    pub from_main: std::sync::mpsc::Receiver<crate::value::GenResume>,
 }
 
 impl Default for Interpreter {
@@ -92,7 +85,8 @@ impl Interpreter {
             cur_mod: None,
             is_main: false,
             active_label: None,
-            gen_channel: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            gen_yielder: None,
             call_stack: Vec::new(),
             source_lines: Vec::new(),
             loop_budget: DEFAULT_LOOP_BUDGET,

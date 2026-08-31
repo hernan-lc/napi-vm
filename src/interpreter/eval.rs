@@ -29,6 +29,23 @@ fn push_call_arg(args: &mut Vec<Value>, value: Value) -> Result<(), VmErr> {
 /// Whether a labeled control-flow signal targets the loop with `label`.
 /// Unlabeled signals (`None`) target the innermost loop and are handled by
 /// the callers directly; this only decides labeled ones.
+/// Close an iterator that a `for...of` is abandoning before exhaustion.
+///
+/// Only generators need this today: their bodies may be suspended inside a
+/// `try`, and JavaScript runs those `finally` blocks when the loop exits
+/// early. Any other iterable is a plain object with no teardown to perform.
+#[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
+fn close_iterator(iterator: &Value) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Value::Generator { inner } = iterator {
+        // A generator cannot be mid-`next()` here: this runs on the same
+        // thread that just returned from it, so the cell is free.
+        if let Ok(mut inner) = inner.try_borrow_mut() {
+            inner.close();
+        }
+    }
+}
+
 fn label_matches(label: &Option<String>, signal: &Option<String>) -> bool {
     match (label, signal) {
         (Some(a), Some(b)) => a == b,
@@ -399,6 +416,10 @@ impl Interpreter {
                 }
                 let mut r = Value::Undefined;
                 let label = self.active_label.take();
+                // Leaving before the iterator reports `done` must close it, so
+                // a suspended generator runs its `finally` blocks. Tracked here
+                // and acted on at every exit, error paths included.
+                let mut exhausted = false;
                 loop {
                     // Account for the iterator's next call as well as the
                     // body iteration. This keeps custom/infinite iterators
@@ -410,6 +431,7 @@ impl Interpreter {
                         .map(|v| v.is_truthy())
                         .unwrap_or(true);
                     if done {
+                        exhausted = true;
                         break;
                     }
                     let value = result.get_prop("value").unwrap_or(Value::Undefined);
@@ -419,8 +441,17 @@ impl Interpreter {
                         Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
                         Err(VmErr::Continue(None)) => continue,
                         Err(VmErr::Continue(l)) if label_matches(&label, &l) => continue,
-                        other => r = other?,
+                        // `return`, `throw`, or a break/continue aimed at an
+                        // outer label also leaves the loop, and also closes.
+                        Err(error) => {
+                            close_iterator(&iterator);
+                            return Err(error);
+                        }
+                        Ok(value) => r = value,
                     }
+                }
+                if !exhausted {
+                    close_iterator(&iterator);
                 }
                 Ok(r)
             }
@@ -1058,33 +1089,31 @@ impl Interpreter {
                 }
             }
             Expr::Yield(arg) => {
-                // Evaluate the yielded expression, send it to the main thread
-                // via the generator channel, then block until resumed. The
-                // resume signal may carry a value (from `next(val)`) which
-                // becomes the result of the `yield` expression.
+                // Evaluate the yielded expression, then switch back to whoever
+                // called `next()`. Execution resumes here when `next(v)` is
+                // called again, and `v` becomes the value of this expression.
+                //
+                // An abandoned generator is resumed once more with
+                // `GenResume::Return`, so guest `finally` blocks still run.
+                // Evaluated on every target: the expression may have side
+                // effects even where suspension is unsupported.
                 let v = match arg {
                     Some(e) => self.eval_expr(e)?,
                     None => Value::Undefined,
                 };
-                if let Some(chan) = self.gen_channel.as_ref() {
-                    use crate::value::{GenResume, GenYield};
-                    chan.to_main
-                        .send(GenYield::Yielded(crate::value::GeneratorValue(v)))
-                        .map_err(|_| VmErr::Msg("generator receiver dropped".to_string()))?;
-                    // Block until the main thread calls next() again.
-                    match chan.from_main.recv() {
-                        Ok(GenResume::Next(sent)) => {
-                            Ok(sent.map(|v| v.0).unwrap_or(Value::Undefined))
-                        }
-                        Err(_) => {
-                            // Main thread dropped the generator; stop execution.
-                            vm_ret(Value::Undefined)
-                        }
-                    }
-                } else {
-                    // Outside a generator body: yield is a no-op returning undefined.
-                    Ok(Value::Undefined)
+                #[cfg(target_arch = "wasm32")]
+                let _ = v;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(yielder) = self.gen_yielder.as_ref() {
+                    return match yielder.suspend(v) {
+                        crate::value::GenResume::Next(sent) => Ok(sent.unwrap_or(Value::Undefined)),
+                        // Abandoned: return from the body so the surrounding
+                        // `try`/`finally` still runs on the way out.
+                        crate::value::GenResume::Return => vm_ret(Value::Undefined),
+                    };
                 }
+                // Outside a generator body: yield is a no-op returning undefined.
+                Ok(Value::Undefined)
             }
         }
     }
