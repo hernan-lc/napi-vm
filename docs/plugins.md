@@ -189,6 +189,35 @@ new PluginHost({
 });
 ```
 
+### Size limits
+
+Permission to read a path is not permission to spend unbounded host memory on
+it. The default Node backend caps each read and write at 8 MiB and raises
+`ResourceLimitError` (`e.name === "ResourceLimit"` in guest code) past that:
+
+```ts
+import { createNodeFileSystem, PluginHost } from "napi-vm/plugins";
+
+new PluginHost({
+  policy,
+  fs: createNodeFileSystem({
+    maxReadBytes: 1 * 1024 * 1024,
+    maxWriteBytes: 256 * 1024,
+  }),
+});
+```
+
+The cap is deliberately separate from `PermissionDeniedError`: the path *was*
+authorized, and reporting a size problem as a permission failure sends plugin
+authors to their manifest instead of to the file. It is enforced against the
+same descriptor the data is read from, so the file cannot be swapped for a
+larger one between the check and the read, and non-regular files (devices,
+FIFOs) are refused rather than read forever.
+
+A custom `fs` implementation is responsible for its own limits — the VM's own
+16 MiB string ceiling only rejects the value after the host has already
+allocated it.
+
 ## Layout
 
 ```text

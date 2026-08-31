@@ -55,6 +55,19 @@ export function normalizeSegments(posixPath: string, absolute: boolean): string 
   return out.join("/");
 }
 
+/**
+ * True when a normalized relative path escapes its root.
+ *
+ * Only a literal `..` segment escapes. Testing `startsWith("..")` instead also
+ * rejects ordinary names that merely begin with two dots -- `..cache`,
+ * `..data` -- which are legal filenames on every platform this runs on. Every
+ * caller shares this one definition so the permission compiler and the runtime
+ * resolver cannot disagree about what an escape is.
+ */
+export function escapesRoot(normalized: string): boolean {
+  return normalized === ".." || normalized.startsWith("../");
+}
+
 const REGEX_META = /[.+^${}()|[\]\\]/g;
 
 function segmentToRegex(segment: string): string {
@@ -106,7 +119,7 @@ export function compilePattern(pattern: string, field: string): PathRule {
   const body = drive ? posix.slice(2) : posix;
   const normalized = normalizeSegments(body, absolute);
 
-  if (!absolute && normalized.startsWith("..")) {
+  if (!absolute && escapesRoot(normalized)) {
     throw new PluginManifestError(
       `${field} pattern "${pattern}" escapes the plugin root`,
     );

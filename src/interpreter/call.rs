@@ -191,6 +191,8 @@ impl Interpreter {
                         args,
                         to_gen: None,
                         from_gen: None,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        thread: None,
                         started: false,
                         done: false,
                         return_value: None,
@@ -504,16 +506,30 @@ impl Interpreter {
 /// resume signal. This gives true mid-body suspension: infinite generators work
 /// correctly, and yields inside loops/conditionals/try-finally all behave as
 /// specified.
+/// Channel endpoints for a spawned generator, plus its join handle.
+///
+/// The handle is what lets a caller order the generator thread's exit before
+/// the main thread continues; `wasm32` has no OS threads, so there is nothing
+/// to join there.
+#[cfg(not(target_arch = "wasm32"))]
+type GeneratorHandles = (
+    std::sync::mpsc::Sender<crate::value::GenResume>,
+    std::sync::mpsc::Receiver<crate::value::GenYield>,
+    Option<std::thread::JoinHandle<()>>,
+);
+#[cfg(target_arch = "wasm32")]
+type GeneratorHandles = (
+    std::sync::mpsc::Sender<crate::value::GenResume>,
+    std::sync::mpsc::Receiver<crate::value::GenYield>,
+);
+
 pub(crate) fn spawn_generator_thread(
     body: Rc<Vec<Statement>>,
     closure: Option<super::Env>,
     params: Rc<Vec<Rc<str>>>,
     args: Vec<Value>,
     builtins_env: Option<super::Env>,
-) -> (
-    std::sync::mpsc::Sender<crate::value::GenResume>,
-    std::sync::mpsc::Receiver<crate::value::GenYield>,
-) {
+) -> GeneratorHandles {
     use crate::value::{GenResume, GenYield, GeneratorInit, GeneratorValue};
 
     let (to_gen_tx, to_gen_rx) = std::sync::mpsc::channel::<GenResume>();
@@ -539,10 +555,14 @@ pub(crate) fn spawn_generator_thread(
     // spawn fails, `init` is dropped, both channels close, and the main
     // thread's `recv()` sees a disconnect, which it already handles as a
     // completed generator.
+    // The handle is kept so the caller can order this thread's exit -- and the
+    // release of the `Rc`s it holds -- before the main thread continues. See
+    // `crate::generator_transfer`, invariant 3.
     #[cfg(not(target_arch = "wasm32"))]
-    let _ = std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
-        .spawn(move || run_generator_thread(init));
+        .spawn(move || run_generator_thread(init))
+        .ok();
 
     // `wasm32-unknown-unknown` has no OS threads. Dropping `init` closes the
     // generator-side channel endpoints, so the driver observes a disconnect and
@@ -552,6 +572,9 @@ pub(crate) fn spawn_generator_thread(
     #[cfg(target_arch = "wasm32")]
     drop(init);
 
+    #[cfg(not(target_arch = "wasm32"))]
+    return (to_gen_tx, from_gen_rx, handle);
+    #[cfg(target_arch = "wasm32")]
     (to_gen_tx, from_gen_rx)
 }
 
@@ -673,6 +696,15 @@ pub(crate) fn generator_next(
         // the generator thread has access to standard library functions.
         let builtins_env = interp.global.borrow().parent_env();
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let (tx, rx, handle) = spawn_generator_thread(
+            inner.body.clone(),
+            inner.closure.clone(),
+            inner.params.clone(),
+            inner.args.clone(),
+            builtins_env,
+        );
+        #[cfg(target_arch = "wasm32")]
         let (tx, rx) = spawn_generator_thread(
             inner.body.clone(),
             inner.closure.clone(),
@@ -682,6 +714,10 @@ pub(crate) fn generator_next(
         );
         inner.to_gen = Some(tx);
         inner.from_gen = Some(rx);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            inner.thread = handle;
+        }
     }
 
     // Send the resume signal with the optional sent value.
@@ -695,24 +731,28 @@ pub(crate) fn generator_next(
     let from_gen = inner.from_gen.as_ref().unwrap();
     match from_gen.recv() {
         Ok(GenYield::Yielded(v)) => Ok(iter_result(v.0, false)),
+        // Every terminal outcome joins *before* this thread touches the
+        // returned value. Sending the last message is not the end of the
+        // generator thread's life: it then drops its interpreter, the closure
+        // environment and every intermediate value, all of which are `Rc`s the
+        // main thread also holds. Cloning `v.0` or building the result object
+        // before the join would race that teardown on a non-atomic refcount --
+        // which is exactly what ThreadSanitizer reports if these are reordered.
         Ok(GenYield::Returned(v)) => {
             inner.done = true;
+            inner.join_thread();
             inner.return_value = Some(v.0.clone());
-            inner.to_gen = None;
-            inner.from_gen = None;
             Ok(iter_result(v.0, true))
         }
         Ok(GenYield::Threw(msg)) => {
             inner.done = true;
-            inner.to_gen = None;
-            inner.from_gen = None;
+            inner.join_thread();
             Err(VmErr::Msg(msg))
         }
         Err(_) => {
             // Channel closed: the thread panicked or was dropped.
             inner.done = true;
-            inner.to_gen = None;
-            inner.from_gen = None;
+            inner.join_thread();
             Ok(iter_result(Value::Undefined, true))
         }
     }

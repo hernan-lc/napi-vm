@@ -7,10 +7,16 @@ IPC-style command/event bridge for deterministic tests.
 
 ## Quick start
 
+Prerequisites: **Rust** (1.96+), **Node.js** (18+) and **[Bun](https://bun.sh)**.
+Bun runs the main test suite; the library itself has no Bun dependency at
+runtime.
+
 ```bash
 npm install
 npm run build
-npm test
+npm test          # main suite (requires Bun)
+npm run test:node # Node compatibility suite
+npm run lint      # cargo fmt + clippy, then tsc --noEmit
 ```
 
 ```javascript
@@ -43,6 +49,22 @@ npm run ipc:smoke
 The first command runs the VM entirely in-process. The second opt-in command
 publishes live metadata for the LSP through `.napi-vm/runtime.json`; the
 temporary locator is ignored and removed when the session stops.
+
+## Disposing a VM
+
+A VM that has run `runAsync` holds a native handle for dispatching host calls,
+and that handle keeps the Node process alive. Call `dispose()` when you are
+finished with a VM that used `runAsync`, or the script will not exit:
+
+```javascript
+const vm = new Vm();
+vm.exposeAsyncFunction("fetchRow", async (id) => db.get(id));
+await vm.runAsync(`await fetchRow(1);`);
+vm.dispose();
+```
+
+`dispose()` is idempotent, and safe to call while an async worker is still in
+flight. VMs that only use the synchronous `run()` do not need it.
 
 ## Status
 

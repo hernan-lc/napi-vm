@@ -7,6 +7,9 @@ pub mod bindings;
 pub mod builtins;
 pub mod error;
 pub mod format;
+/// Isolated home for every `unsafe impl Send` over `Rc`-bearing VM state, with
+/// the safety proof those impls rest on. Nothing else may add one.
+pub mod generator_transfer;
 pub mod host;
 pub mod interpreter;
 pub mod lang;

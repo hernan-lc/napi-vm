@@ -22,7 +22,48 @@
 | `vm.listModules()` | List registered module names |
 | `vm.setLoopLimit(n)` | Set the per-execution loop budget |
 | `vm.setImportMetaMain(bool)` | Set `import.meta.main` |
+| `vm.dispose()` | Release host handles so the process can exit |
 | `debugParse(code)` | Parse source and return its AST string |
+
+### dispose
+
+A VM that has run `runAsync` holds a native handle for dispatching host calls,
+and that handle keeps the Node process alive. Call `dispose()` when finished
+with such a VM, or the script will not exit:
+
+```javascript
+const vm = new Vm();
+vm.exposeAsyncFunction("fetchRow", async (id) => db.get(id));
+await vm.runAsync(`await fetchRow(1);`);
+vm.dispose();
+```
+
+`dispose()` is idempotent and safe to call while an async worker is still in
+flight — handles are marked retired and the last in-flight callback releases
+them. After it returns, host functions are no longer callable from guest code;
+plain `run()` still works. VMs that never call `runAsync` do not need it.
+
+### Modules and revocation
+
+`registerModule` is transactional over the module's export table. The body is
+evaluated into a fresh export record that replaces the previous one only on
+success, so:
+
+- a body that throws leaves the previously registered version untouched, and
+  registers nothing if there was no previous version;
+- re-registering with fewer exports **drops** the ones the new source removed,
+  rather than merging into the old record.
+
+The transaction covers exports, not global side effects: a body that assigns a
+global and then throws leaves that global set. Use a fresh `Vm` if you need
+that isolation.
+
+`removeModule` is the revocation primitive. After it returns, `import` of that
+name fails with `Module not found`, `hasModule` reports `false`, and any bridge
+globals a `registerHostModule` created are revoked. It never disagrees with
+what `import` can resolve. Bindings a previous execution already imported into
+a global keep the value they captured — revocation applies to resolution, not
+to references the guest already holds.
 
 ### registerHostModule
 
@@ -52,7 +93,10 @@ point rolls every step back — including bindings this call had already
 replaced. The previous registration keeps working, handles included, because
 replaced handles are retired only once the swap commits.
 
-Export names must be plain identifiers and every value must be a function. The
+Export names must be usable as binding identifiers and every value must be a
+function. Validation asks the lexer directly, so every reserved word is
+rejected — including `null`, `true`, `async`, `from`, `of`, `get` and `set`,
+which look like plain identifiers but are keywords here. The
 core stays generic on purpose: permission checks, path resolution and policy
 belong to the host functions themselves — see
 [Plugins](plugins.md) for a full capability host built this way.

@@ -100,3 +100,21 @@ test("parseManifest round-trips a valid document", () => {
   const manifest = parseManifest(JSON.stringify(base()));
   expect(manifest.version).toBe("1.0.0");
 });
+
+test("an entry whose first segment merely starts with `..` is accepted", () => {
+  const manifest = validateManifest({
+    name: "p",
+    version: "1.0.0",
+    apiVersion: 1,
+    entry: "./..build/plugin.js",
+  });
+  expect(manifest.entry).toBe("..build/plugin.js");
+});
+
+test("an entry with a real `..` segment is still rejected", () => {
+  for (const entry of ["../plugin.js", "..", "a/../../plugin.js"]) {
+    expect(() =>
+      validateManifest({ name: "p", version: "1.0.0", apiVersion: 1, entry }),
+    ).toThrow(/inside the plugin directory/);
+  }
+});

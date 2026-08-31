@@ -6,7 +6,12 @@
 |---------|-------------|
 | `npm run build` | Build the optimized native addon |
 | `npm run build:debug` | Build the debug native addon |
-| `npm test` | Run the JavaScript regression suite |
+| `npm test` | Run the JavaScript regression suite (requires Bun) |
+| `npm run test:node` | Run the Node.js compatibility suite (`engines.node` range) |
+| `npm run lint` | Rust formatting + Clippy, then TypeScript type-checking |
+| `npm run lint:rust` | `cargo fmt --check` and `cargo clippy -D warnings` |
+| `npm run lint:ts` | `tsc --noEmit` for the package and the playground |
+| `npm run check:generated` | Rebuild the committed bindings and fail on drift |
 | `npm run ipc:smoke` | Test IPC commands and events |
 | `npm run runtime:smoke` | Test the local runtime locator/transport |
 | `npm run lsp` | Start the native `napi-vm-lsp` server |
@@ -25,10 +30,47 @@
 The quality gate is:
 
 ```bash
-npm run lint:rust
+npm run lint          # cargo fmt, clippy, and tsc --noEmit
 npm run build
-npm test
+npm test              # main suite, under Bun
+npm run test:node     # Node compatibility boundaries
 ```
+
+CI enforces each of these on every pull request, plus two checks that are easy
+to miss locally:
+
+- **`generated`** rebuilds `index.js`, `index.mjs` and `index.d.ts` and fails
+  if the committed copies differ. These are build outputs that are also
+  committed, so nothing but a check keeps them honest — they have previously
+  drifted to two different versions with an empty `index.d.ts`.
+- **`node-compat`** runs `tests/node/` on every Node version in
+  `engines.node`. The main suite runs under Bun, which has its own module
+  loader and native-addon implementation, so it cannot verify that claim.
+
+### Prerequisites
+
+Rust 1.96+, Node.js 18+, and [Bun](https://bun.sh) for the main test suite.
+
+## Sanitizers
+
+Generators run their body on a dedicated OS thread and move `Rc`-bearing state
+across it under `unsafe impl Send`. `tests/generator_stress.rs` exercises that
+boundary; ThreadSanitizer is the only thing that meaningfully checks it, since
+a refcount race is not reliably observable by running the program.
+
+```bash
+rustup component add rust-src --toolchain nightly
+RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -Zbuild-std \
+    --release --no-default-features --test generator_stress \
+    --target x86_64-unknown-linux-gnu -- --test-threads=1
+```
+
+This currently reports about one data race per run, down from ~7.6 before the
+generator threads were joined. It is not a clean gate yet, so it is not wired
+into PR CI — running it by hand before touching `interpreter::call`'s
+generator functions is the expectation. `src/generator_transfer.rs` documents
+the invariants, the surviving race, and why the durable fix is to remove the
+thread boundary rather than to keep adding happens-before edges.
 
 ## Benchmarks
 

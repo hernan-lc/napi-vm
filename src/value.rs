@@ -165,12 +165,6 @@ pub enum GenYield {
     Threw(String),
 }
 
-// Safety: the channel protocol guarantees mutual exclusion between the generator
-// thread and the main thread — only one is ever active at a time. Values sent
-// across the channel are not concurrently accessed.
-unsafe impl Send for GenResume {}
-unsafe impl Send for GenYield {}
-
 /// Mutable state shared across a generator's `next()` calls (behind an `Rc` so
 /// clones of the `Value::Generator` observe the same progress).
 ///
@@ -188,9 +182,63 @@ pub struct GeneratorInner {
     pub to_gen: Option<mpsc::Sender<GenResume>>,
     /// Receiver from the generator thread (yielded/returned values).
     pub from_gen: Option<mpsc::Receiver<GenYield>>,
+    /// Handle to the generator thread, held so its exit can be *ordered*
+    /// before the main thread continues.
+    ///
+    /// The thread drops clones of `Rc`s the main thread still holds -- the
+    /// body, the closure environment, every intermediate value -- and those
+    /// refcounts are not atomic. Without joining, that drop glue races the
+    /// main thread's own use of the same environment. See
+    /// [`crate::generator_transfer`], invariant 3.
+    ///
+    /// `None` before the first `next()`, after a successful join, or when the
+    /// thread could not be spawned.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub thread: Option<std::thread::JoinHandle<()>>,
     pub started: bool,
     pub done: bool,
     pub return_value: Option<Value>,
+}
+
+impl GeneratorInner {
+    /// Close the resume channel and wait for the generator thread to exit.
+    ///
+    /// Idempotent. Progress is guaranteed: a live generator thread is only
+    /// ever blocked on `from_main.recv()`, which fails as soon as `to_gen` is
+    /// dropped, and the body then unwinds to the end of the thread function.
+    /// A panicked thread is joined just the same; the panic is not propagated
+    /// because the generator's result has already been reported to the guest.
+    ///
+    /// The order of the three steps below is load-bearing:
+    ///
+    /// 1. drop `to_gen`, which is what lets a suspended thread wake and unwind;
+    /// 2. **join**, so the thread is gone before this one touches VM state again;
+    /// 3. only then drop `from_gen`.
+    ///
+    /// Dropping the receiver also drops any `GenYield` messages still sitting
+    /// in the channel, and those carry `GeneratorValue`s whose `Rc`s the
+    /// generator thread is concurrently releasing as it unwinds. Doing that
+    /// before the join is a data race on a non-atomic refcount -- one that
+    /// ThreadSanitizer catches in the nested-generator abandonment path.
+    pub fn join_thread(&mut self) {
+        self.to_gen = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+        self.from_gen = None;
+    }
+}
+
+impl Drop for GeneratorInner {
+    fn drop(&mut self) {
+        // An abandoned generator -- `for...of` with a `break`, or a generator
+        // value that simply goes out of scope -- leaves a thread suspended at
+        // a `yield`. Dropping it without joining would let it unwind, and
+        // release its `Rc` clones, concurrently with whatever the main thread
+        // does next.
+        self.join_thread();
+    }
 }
 
 impl std::fmt::Debug for GeneratorInner {
@@ -205,12 +253,9 @@ impl std::fmt::Debug for GeneratorInner {
 
 /// A generator-only wrapper for values transferred at a suspension point.
 ///
-/// # Safety
-/// The generator thread and the main thread never access shared `Rc<RefCell<_>>`
-/// state concurrently: the channel protocol guarantees mutual exclusion (the
-/// main thread blocks on `recv()` while the generator runs, and vice versa).
+/// Its `Send` impl, and the proof behind it, live in
+/// [`crate::generator_transfer`].
 pub struct GeneratorValue(pub Value);
-unsafe impl Send for GeneratorValue {}
 
 /// Generator state transferred once to its dedicated execution thread.
 ///
@@ -227,7 +272,6 @@ pub struct GeneratorInit {
     pub from_gen_tx: mpsc::Sender<GenYield>,
     pub builtins_env: Option<Env>,
 }
-unsafe impl Send for GeneratorInit {}
 
 impl Value {
     pub fn checked_object(props: Vec<(String, Value)>) -> Result<Self, VmErr> {

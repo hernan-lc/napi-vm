@@ -310,15 +310,17 @@ impl NapiHostBridge {
         Ok(id)
     }
 
+    /// Register a host function the guest may `await`.
+    ///
+    /// The dispatcher threadsafe-function is deliberately *not* created here.
+    /// Every consumer of it runs on the `runAsync` worker, and `run_async`
+    /// calls `prepare_for_async` before spawning that worker, so creating it
+    /// eagerly buys nothing -- and costs a great deal: a live TSFN keeps the
+    /// Node environment alive, so merely calling `exposeAsyncFunction` would
+    /// stop the host process from ever exiting on its own.
     pub(super) fn register_async(&self, func: sys::napi_value) -> Result<usize, VmErr> {
         let id = self.register(func)?;
         self.async_funcs.borrow_mut().insert(id);
-        if let Err(error) = self.ensure_dispatcher() {
-            self.async_funcs.borrow_mut().remove(&id);
-            self.funcs.borrow_mut().remove(&id);
-            self.state.retire(id);
-            return Err(error);
-        }
         Ok(id)
     }
 
@@ -384,8 +386,11 @@ impl NapiHostBridge {
                 &mut tsfn,
             )
         })?;
-        // The dispatcher must not keep an otherwise idle Node process alive;
-        // an active worker acquires its own TSFN reference explicitly.
+        // Unref so the dispatcher does not hold the *event loop* open. This is
+        // necessary but not sufficient: the TSFN also holds a reference on the
+        // N-API environment, which keeps the process alive until the handle is
+        // released outright. That release happens in `shutdown_on_main`, via
+        // `Vm.dispose()` or when the `Vm` is dropped.
         chk(unsafe { sys::napi_unref_threadsafe_function(self.env, tsfn) })?;
         Ok(tsfn)
     }

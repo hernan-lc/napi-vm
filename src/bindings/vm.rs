@@ -47,59 +47,16 @@ fn host_module_prefix(name: &str) -> String {
     out
 }
 
-/// Reserved words that would turn the generated wrapper into a syntax error.
-const RESERVED_EXPORT_NAMES: &[&str] = &[
-    "await",
-    "break",
-    "case",
-    "catch",
-    "class",
-    "const",
-    "continue",
-    "default",
-    "delete",
-    "do",
-    "else",
-    "export",
-    "extends",
-    "finally",
-    "for",
-    "function",
-    "if",
-    "import",
-    "in",
-    "instanceof",
-    "let",
-    "new",
-    "return",
-    "static",
-    "super",
-    "switch",
-    "this",
-    "throw",
-    "try",
-    "typeof",
-    "var",
-    "void",
-    "while",
-    "with",
-    "yield",
-];
-
 /// A key usable both as an ES export name and as part of a global identifier.
+///
+/// `registerHostModule` pastes each key into generated source twice -- once as
+/// `export function <key>` and once as part of the bridge global's name -- so
+/// the key has to be something the lexer actually hands back as an identifier.
+/// That question is answered by the lexer itself (`is_binding_identifier`)
+/// rather than a keyword list maintained here, which would drift out of sync
+/// and turn a rejectable input into ungrammatical generated code.
 fn is_export_identifier(key: &str) -> bool {
-    let mut chars = key.chars();
-    let first = match chars.next() {
-        Some(ch) => ch,
-        None => return false,
-    };
-    if !(first.is_ascii_alphabetic() || first == '_' || first == '$') {
-        return false;
-    }
-    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$') {
-        return false;
-    }
-    !RESERVED_EXPORT_NAMES.contains(&key)
+    crate::lexer::is_binding_identifier(key)
 }
 
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
@@ -291,18 +248,34 @@ impl VM {
         })
     }
 
+    /// Register (or replace) a guest module.
+    ///
+    /// Registration is transactional over the module's export table: the body
+    /// evaluates into a fresh export record, and that record replaces the
+    /// previous one only once evaluation succeeds. A body that throws leaves
+    /// the previously registered version of the module exactly as it was,
+    /// rather than a half-populated one.
+    ///
+    /// The transaction covers exports, not global side effects. A body that
+    /// assigns a global and *then* throws leaves that global set; unwinding
+    /// arbitrary interpreter state is not something this layer can promise.
+    /// Callers who need that isolation should use a fresh `Vm`.
     #[napi]
     pub fn register_module(&mut self, name: String, source: String) -> napi::Result<()> {
         let _busy = self.state.try_start()?;
         self.state.runtime.with_mut(|runtime| {
-            runtime.interp.cur_mod = Some(name.clone());
-            let result = execute_source(&mut runtime.interp, &source);
-            runtime.interp.cur_mod = None;
-            result
-                .map(|_| ())
-                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-            runtime.modules.insert(name, source);
-            Ok(())
+            let displaced = runtime.interp.begin_module(&name);
+            match execute_source(&mut runtime.interp, &source) {
+                Ok(_) => {
+                    runtime.interp.commit_module();
+                    runtime.modules.insert(name, source);
+                    Ok(())
+                }
+                Err(error) => {
+                    runtime.interp.restore_module(&name, displaced);
+                    Err(napi::Error::from_reason(error.to_string()))
+                }
+            }
         })
     }
 
@@ -436,9 +409,13 @@ impl VM {
 
                 // Phase 3 — evaluate the generated wrapper module.
                 if outcome.is_ok() {
-                    runtime.interp.cur_mod = Some(name.clone());
+                    // `begin_module` starts from an empty export record, so an
+                    // export dropped from this registration cannot survive in
+                    // the old one. Its return value is the same snapshot as
+                    // `prior_module`, which the rollback below already holds.
+                    let _displaced = runtime.interp.begin_module(&name);
                     let result = execute_source(&mut runtime.interp, &source);
-                    runtime.interp.cur_mod = None;
+                    runtime.interp.commit_module();
                     outcome = result
                         .map(|_| ())
                         .map_err(|error| napi::Error::from_reason(error.to_string()));
@@ -496,6 +473,32 @@ impl VM {
             })?;
 
         Ok(globals)
+    }
+
+    /// Release the host resources this VM holds, deterministically.
+    ///
+    /// A VM that has run `runAsync` owns a threadsafe-function for dispatching
+    /// host calls, and that handle keeps the N-API environment -- and so the
+    /// Node process -- alive. Dropping the `Vm` releases it, but a `Vm` held in
+    /// a module-level binding is never dropped, so a script that used
+    /// `runAsync` would hang at exit instead of returning to the shell.
+    ///
+    /// Calling this is idempotent and safe while an async worker is still in
+    /// flight: handles are marked retired and the last in-flight callback
+    /// releases them. After it returns, host functions are no longer callable
+    /// from guest code.
+    #[napi]
+    pub fn dispose(&mut self) {
+        if let Some(bridge) = self
+            .state
+            .bridge_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .cloned()
+        {
+            bridge.shutdown_on_main();
+        }
     }
 
     #[napi]
@@ -765,11 +768,29 @@ impl VM {
         Ok(unsafe { Unknown::from_raw_unchecked(raw_env, promise) })
     }
 
+    /// Unregister a module, making it unresolvable to `import` and revoking
+    /// any bridge globals a `registerHostModule` created for it.
+    ///
+    /// This is the capability-revocation primitive: after it returns, guest
+    /// code that imports `name` gets `Module not found`, and host functions
+    /// the module exported are no longer reachable through any binding it
+    /// installed. Bindings a *previous* execution already imported into a
+    /// global keep the value they captured -- revocation applies to
+    /// resolution, not to references the guest already holds.
+    ///
+    /// Returns whether anything was registered under `name`.
     #[napi]
     pub fn remove_module(&mut self, name: String) -> napi::Result<bool> {
         let _busy = self.state.try_start()?;
         Ok(self.state.runtime.with_mut(|runtime| {
-            let removed = runtime.modules.remove(&name).is_some();
+            // Two registries have to move together. `runtime.modules` is the
+            // source bookkeeping the public API reports on, but `import`
+            // resolves through the interpreter's export table -- dropping only
+            // the first leaves `hasModule` answering false for a module the
+            // guest can still import.
+            let removed_source = runtime.modules.remove(&name).is_some();
+            let removed_exports = runtime.interp.remove_module(&name);
+            let removed = removed_source || removed_exports;
             // A host module's capability is its bridge globals, not the wrapper
             // source: removing the module must revoke them too.
             if let Some(globals) = runtime.host_module_globals.remove(&name) {
@@ -781,6 +802,9 @@ impl VM {
         }))
     }
 
+    /// Whether `name` is registered. This never disagrees with what `import`
+    /// can resolve: registration and removal move the source registry and the
+    /// interpreter's export table together.
     #[napi]
     pub fn has_module(&self, name: String) -> napi::Result<bool> {
         let _busy = self.state.try_start()?;

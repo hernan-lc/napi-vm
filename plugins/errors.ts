@@ -1,7 +1,8 @@
 /**
  * Error types shared by the plugin host.
  *
- * `PermissionDeniedError` is the only one that crosses into the VM. The
+ * `PermissionDeniedError` and `ResourceLimitError` are the ones that cross
+ * into the VM. The
  * interpreter carries `name` across, so the guest sees
  * `e.name === "PermissionDenied"` with the bare detail as `e.message`, and a
  * host-side `callFunction` sees them rejoined as `"PermissionDenied: …"`.
@@ -34,5 +35,22 @@ export class PluginLoadError extends Error {
 
   constructor(detail: string, options?: { cause?: unknown }) {
     super(`PluginLoadError: ${detail}`, options);
+  }
+}
+
+/**
+ * A permitted operation refused for exceeding a host resource limit.
+ *
+ * Distinct from `PermissionDeniedError` on purpose: the path *was* authorized,
+ * so reporting it as a permission failure would send a plugin author looking
+ * at their manifest instead of at the size of the file.
+ *
+ * Like `PermissionDeniedError`, messages must never contain host paths.
+ */
+export class ResourceLimitError extends Error {
+  override readonly name = "ResourceLimit";
+
+  constructor(detail: string) {
+    super(detail);
   }
 }

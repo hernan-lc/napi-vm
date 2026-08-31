@@ -6,7 +6,12 @@
  */
 
 import { PluginManifestError } from "./errors";
-import { isAbsoluteGuestPath, normalizeSegments, toPosix } from "./path-rules";
+import {
+  escapesRoot,
+  isAbsoluteGuestPath,
+  normalizeSegments,
+  toPosix,
+} from "./path-rules";
 
 /** The only manifest API version this host understands. */
 export const SUPPORTED_API_VERSION = 1;
@@ -61,7 +66,7 @@ function validateEntry(value: unknown): string {
     throw new PluginManifestError("entry must be a path inside the plugin directory");
   }
   const normalized = normalizeSegments(posix, false);
-  if (normalized === "" || normalized.startsWith("..")) {
+  if (normalized === "" || escapesRoot(normalized)) {
     throw new PluginManifestError("entry must be a path inside the plugin directory");
   }
   return normalized;

@@ -73,9 +73,15 @@ test("re-registering with fewer exports revokes the dropped bridge global", () =
   vm.registerModule("app", `import { read } from "napi:fs";
     export function go() { return read(); }`);
   expect(vm.run(`import { go } from "app"; go();`)).toBe("r");
+  // The dropped export is gone from the module itself, not merely pointing at
+  // a revoked global: importing it binds `undefined`, and calling it fails.
   vm.registerModule("bad", `import { write } from "napi:fs";
+    export function probe() { return typeof write; }
     export function go() { return write(); }`);
-  expect(() => vm.run(`import { go } from "bad"; go();`)).toThrow(/write/);
+  expect(vm.run(`import { probe } from "bad"; probe();`)).toBe("undefined");
+  expect(() => vm.run(`import { go } from "bad"; go();`)).toThrow(
+    /TypeError: undefined is not a function/,
+  );
 });
 
 test("a failed re-registration leaves the previous exports intact", () => {
@@ -206,4 +212,39 @@ test("a failure after a binding was replaced rolls that binding back", () => {
   // never retired, because the swap did not commit.
   expect(vm.run(`${readGlobal}();`)).toBe("old");
   expect(vm.run(`typeof __hostmod_cap_anotherExport;`)).toBe("undefined");
+});
+
+test("keyword export names are rejected, not compiled into broken source", () => {
+  const vm = new Vm();
+  // Each of these lexes as a keyword, so `export function <name>` would be
+  // ungrammatical. They pass a naive ASCII-identifier shape check, which is
+  // why validation is derived from the lexer instead of a hand-kept list.
+  const keywords = [
+    "null",
+    "true",
+    "false",
+    "undefined",
+    "async",
+    "await",
+    "from",
+    "as",
+    "of",
+    "get",
+    "set",
+    "constructor",
+    "class",
+    "function",
+    "return",
+  ];
+  for (const name of keywords) {
+    expect(() => vm.registerHostModule("m", { [name]: () => 1 })).toThrow(
+      new RegExp(`'${name}' is not a usable export name`),
+    );
+    expect(vm.hasModule("m")).toBe(false);
+  }
+
+  // Keyword-adjacent names are still fine.
+  expect(() =>
+    vm.registerHostModule("ok", { nullish: () => 1, getter: () => 2 }),
+  ).not.toThrow();
 });

@@ -168,6 +168,66 @@ impl Interpreter {
         Ok(r)
     }
 
+    /// Install a fresh, empty export record for `name` and make it the module
+    /// under evaluation, returning the record it displaced.
+    ///
+    /// Export statements merge into whatever record is already registered
+    /// under the current module name (see `eval_stmt`), so a re-registration
+    /// has to start from an empty one. Merging into the old record would let
+    /// an export that the new source deliberately dropped stay importable —
+    /// and when exports carry authority, that is a revoked capability that
+    /// still answers. The displaced record is returned so a body that fails
+    /// part-way through can be rolled back with `restore_module`.
+    pub fn begin_module(&mut self, name: &str) -> Option<Module> {
+        let prior = self.modules.insert(
+            name.to_string(),
+            Module {
+                exports: HashMap::new(),
+                default: None,
+            },
+        );
+        self.cur_mod = Some(name.to_string());
+        prior
+    }
+
+    /// Leave module-evaluation context, keeping everything the body exported.
+    pub fn commit_module(&mut self) {
+        self.cur_mod = None;
+    }
+
+    /// Leave module-evaluation context and put `prior` back, discarding every
+    /// export the failed body managed to write.
+    ///
+    /// This restores the *export table* only. A module body can also mutate
+    /// globals before it throws, and those writes are not unwound here; see
+    /// `registerModule` in the N-API layer for what that means for callers.
+    pub fn restore_module(&mut self, name: &str, prior: Option<Module>) {
+        match prior {
+            Some(module) => {
+                self.modules.insert(name.to_string(), module);
+            }
+            None => {
+                self.modules.remove(name);
+            }
+        }
+        self.cur_mod = None;
+    }
+
+    /// Drop a module's export record so `import` can no longer resolve it.
+    ///
+    /// This is the half that actually revokes reachability: the N-API layer's
+    /// own source registry is bookkeeping, but `import` resolves through this
+    /// map, so a module left here stays importable no matter what the public
+    /// API reports.
+    pub fn remove_module(&mut self, name: &str) -> bool {
+        self.modules.remove(name).is_some()
+    }
+
+    /// Whether `name` has an export record that `import` would resolve.
+    pub fn has_module(&self, name: &str) -> bool {
+        self.modules.contains_key(name)
+    }
+
     /// Resolve a relative import from the module currently being evaluated.
     /// Module names use browser-style POSIX paths so the same source behaves
     /// consistently in the native VM and in the browser playground.

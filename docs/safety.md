@@ -21,6 +21,7 @@ bun examples/crash.ts
 | String exhaustion | Catchable `RangeError` | Hard string-size cap on concat, repeat, and join paths |
 | Infinite loops | Catchable `RangeError` | Per-execution loop budget, configurable with `setLoopLimit` |
 | Generator misuse | Safe completion | Scoped generator execution and controlled suspension |
+| Oversized plugin file reads | Catchable `ResourceLimit` | Per-call byte cap checked on the open descriptor, before the read |
 | Runtime/host errors | Catchable error objects | Error propagation into guest `catch` |
 
 Host capabilities are opt-in and enforced host-side. The plugin host in
@@ -28,6 +29,26 @@ Host capabilities are opt-in and enforced host-side. The plugin host in
 the host policy decides, and every privileged call canonicalizes its path —
 resolving `..` and symlinks — before matching it against the granted patterns.
 See [Plugins](plugins.md).
+
+Filesystem calls are additionally bounded and hardened at the host backend:
+every read and write has a byte cap (8 MiB by default, see
+`createNodeFileSystem`), the size is checked against the same descriptor the
+data is read from, and files are opened `O_NOFOLLOW`. The permission layer
+hands down canonical paths, so a symlink at the final component means one was
+swapped in after the check; refusing to follow it closes that window. Directory
+components in the middle of the path remain racy — closing that needs
+`openat2(RESOLVE_BENEATH)`, which `node:fs` does not expose.
+
+### Known unsound area: generator threads
+
+Generators execute on a dedicated OS thread and move `Rc`-bearing interpreter
+state across it under `unsafe impl Send`. Thread exits are now joined, which
+removes most of the concurrency, but ThreadSanitizer still reports roughly one
+data race per run of `tests/generator_stress.rs`. Guest code cannot steer this
+directly, but it is a genuine soundness gap rather than a theoretical one, and
+untrusted input that uses generators heavily is running over it. See
+`src/generator_transfer.rs` for the invariants, the measurement, and the
+reproduction command.
 
 The in-process VM is not a complete operating-system security boundary. CPU
 time is bounded per execution but synchronous code blocks the Node event loop,

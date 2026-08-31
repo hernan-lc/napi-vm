@@ -23,6 +23,7 @@ export {
   PermissionDeniedError,
   PluginLoadError,
   PluginManifestError,
+  ResourceLimitError,
 } from "./errors";
 
 export {
@@ -35,6 +36,7 @@ export {
 
 export {
   compilePattern,
+  escapesRoot,
   matchRule,
   normalizeSegments,
   toPosix,
@@ -58,7 +60,9 @@ export {
 
 export {
   createNodeFileSystem,
+  DEFAULT_MAX_FILE_BYTES,
   type HostFileSystem,
+  type NodeFileSystemOptions,
 } from "./host-filesystem";
 
 export {

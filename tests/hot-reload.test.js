@@ -53,14 +53,67 @@ test("removed module exports are no longer importable", () => {
   vm.run('import { val } from "dep";');
   expect(vm.run("val;")).toBe("42");
 
-  // Remove and re-register with a different value.
+  // The import must fail on the *same* VM: `removeModule` is the documented
+  // capability-revocation primitive, so a stale export record left behind
+  // means a module the host believes it revoked is still reachable.
   vm.removeModule("dep");
+  expect(() => vm.run('import { val } from "dep"; val;')).toThrow(
+    /Module not found: dep/,
+  );
+
+  // Re-registering on the same VM picks up the new module.
   vm.registerModule("dep", "export const val = 99;");
-  // A fresh import picks up the new module.
-  const vm2 = new Vm();
-  vm2.registerModule("dep", "export const val = 99;");
-  vm2.run('import { val } from "dep";');
-  expect(vm2.run("val;")).toBe("99");
+  expect(vm.run('import { val } from "dep"; val;')).toBe("99");
+});
+
+test("hasModule never disagrees with what import can resolve", () => {
+  const vm = new Vm();
+  vm.registerModule("dep", "export const val = 42;");
+  expect(vm.hasModule("dep")).toBe(true);
+
+  vm.removeModule("dep");
+  // The source registry and the interpreter's export table are separate maps;
+  // if they drift, `hasModule` reports false for something still importable.
+  expect(vm.hasModule("dep")).toBe(false);
+  expect(() => vm.run('import { val } from "dep"; val;')).toThrow(
+    /Module not found: dep/,
+  );
+});
+
+test("re-registering a module drops exports the new source removed", () => {
+  const vm = new Vm();
+  vm.registerModule("api", "export const keep = 1; export const removed = 2;");
+  expect(vm.run('import { removed } from "api"; removed;')).toBe("2");
+
+  vm.registerModule("api", "export const keep = 3;");
+  expect(vm.run('import { keep } from "api"; keep;')).toBe("3");
+  // Exports merged into the old record would leave `removed` alive at 2.
+  expect(vm.run('import { removed } from "api"; removed;')).toBe("undefined");
+});
+
+test("a module body that throws registers nothing", () => {
+  const vm = new Vm();
+  expect(() =>
+    vm.registerModule("bad", 'export const a = 1; throw new Error("boom");'),
+  ).toThrow(/boom/);
+
+  expect(vm.hasModule("bad")).toBe(false);
+  expect(vm.listModules()).not.toContain("bad");
+  // Exports written before the throw must not survive the failed registration.
+  expect(() => vm.run('import { a } from "bad"; a;')).toThrow(
+    /Module not found: bad/,
+  );
+});
+
+test("a failed re-registration leaves the previous module intact", () => {
+  const vm = new Vm();
+  vm.registerModule("api", "export const val = 1;");
+  expect(() =>
+    vm.registerModule("api", 'export const val = 2; throw new Error("boom");'),
+  ).toThrow(/boom/);
+
+  expect(vm.hasModule("api")).toBe(true);
+  expect(vm.run('import { val } from "api"; val;')).toBe("1");
 });
 
 // ── removeGlobal / hasGlobal ─────────────────────────────────────────

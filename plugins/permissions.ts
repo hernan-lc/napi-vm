@@ -19,6 +19,7 @@ import type { HostFileSystem } from "./host-filesystem";
 import type { FsPermission, PluginManifest } from "./manifest";
 import {
   compilePattern,
+  escapesRoot,
   isAbsoluteGuestPath,
   matchRule,
   normalizeSegments,
@@ -198,7 +199,7 @@ export class FsPermissionChecker {
     const drive = absolute && /^[A-Za-z]:\//.test(posix) ? posix.slice(0, 2) : "";
     const normalized = normalizeSegments(drive ? posix.slice(2) : posix, absolute);
 
-    if (!absolute && (normalized === ".." || normalized.startsWith("../"))) {
+    if (!absolute && escapesRoot(normalized)) {
       throw new PermissionDeniedError("path escapes plugin root");
     }
 

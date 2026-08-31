@@ -15,6 +15,9 @@
     "outDir": "./dist",
     "rootDir": "."
   },
+  // The playground is a Vite/Preact app with browser libs, JSX and
+  // `?raw` imports; it is checked by `playground/tsconfig.json` instead.
+  // Checking it here would silently apply the wrong settings to it.
   "include": ["**/*.ts"],
-  "exclude": ["node_modules", "dist", "target"]
+  "exclude": ["node_modules", "dist", "target", "playground"]
 }

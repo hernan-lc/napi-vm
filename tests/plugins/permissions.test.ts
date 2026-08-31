@@ -98,3 +98,24 @@ test("the all-rule matches anything", () => {
   expect(matchRule(rule, "anything/at/all")).toBe(true);
   expect(matchRule(rule, "/etc/passwd")).toBe(true);
 });
+
+// ── `..` prefix vs. a real traversal segment ─────────────────────────
+
+test("a filename that merely starts with two dots is not a traversal", () => {
+  // `..cache` is an ordinary (if unusual) directory name. Rejecting it because
+  // it starts with ".." confuses a prefix with a path segment.
+  expect(() => compilePattern("..cache/**", "permissions.fs.read")).not.toThrow();
+  expect(() => compilePattern("..data", "permissions.fs.read")).not.toThrow();
+  expect(() => compilePattern("./..cache/*.json", "permissions.fs.read")).not.toThrow();
+
+  expect(matches("..cache/**", "..cache/a.json")).toBe(true);
+  expect(matches("..data", "..data")).toBe(true);
+});
+
+test("a real `..` segment still escapes the root", () => {
+  for (const pattern of ["../outside", "..", "../../etc/**", "./../x", "a/../../b"]) {
+    expect(() => compilePattern(pattern, "permissions.fs.read")).toThrow(
+      /escapes the plugin root/,
+    );
+  }
+});
