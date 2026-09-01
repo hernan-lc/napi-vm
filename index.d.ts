@@ -17,6 +17,19 @@ export declare class Vm {
   constructor()
   run(source: string): string
   /**
+   * Define a guest module *without* evaluating it.
+   *
+   * The body runs the first time something imports the module. Deferring it
+   * is what makes a cyclic import graph expressible: define every module in
+   * the cycle, then import any one of them, and each body runs once with
+   * the partner's partially-populated exports visible through live
+   * bindings — which is what the ES module specification describes.
+   *
+   * `registerModule` remains the eager form, and reports a body's error at
+   * registration time; with `defineModule` the error surfaces at the import.
+   */
+  defineModule(name: string, source: string): void
+  /**
    * Register (or replace) a guest module.
    *
    * Registration is transactional over the module's export table: the body

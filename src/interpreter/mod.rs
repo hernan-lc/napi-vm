@@ -52,6 +52,15 @@ pub struct Interpreter {
     /// and top-level binding quotas must always target this frame.
     pub(crate) persistent_global: Env,
     pub modules: HashMap<String, Module>,
+    /// Sources of modules that have been *defined* but not yet evaluated.
+    /// `import` evaluates one on first use, which is what lets a cyclic graph
+    /// link: whichever module is imported first runs, and its own import of
+    /// the partner runs that one, whose import back is already in flight and
+    /// so returns the partially-populated record.
+    pub module_sources: HashMap<String, String>,
+    /// Modules whose bodies are currently running, so a cycle is detected
+    /// instead of recursing forever.
+    evaluating: std::collections::HashSet<String>,
     /// Optional bridge for calling host (Node.js) functions from inside the VM.
     /// Attached by the N-API layer when functions are exposed via
     /// `Vm.exposeFunction`; `None` for a standalone interpreter.
@@ -95,6 +104,8 @@ impl Interpreter {
             global: global.clone(),
             persistent_global: global,
             modules: HashMap::new(),
+            module_sources: HashMap::new(),
+            evaluating: std::collections::HashSet::new(),
             host: None,
             cur_mod: None,
             is_main: false,
@@ -133,6 +144,90 @@ impl Interpreter {
             self.global.borrow_mut().set(name, value);
             Ok(())
         }
+    }
+
+    /// Bind an imported name.
+    ///
+    /// When the export is a live cell the binding *shares* it, so a later
+    /// write in the exporting module is visible through the imported name —
+    /// which is the difference between an ES module import and a copy.
+    pub(crate) fn bind_import(&mut self, name: &str, value: Value) -> Result<(), VmErr> {
+        match &value {
+            Value::Binding(cell) => {
+                let mut scope = self.global.borrow_mut();
+                // Importing a name that already denotes this very cell is a
+                // no-op. It happens because module bodies share one scope, so
+                // `import { n } from 'm'` inside the program that registered
+                // `m` names the binding it is about to re-declare — and
+                // re-declaring it `const` would make the exporting module's
+                // own writes fail.
+                if let Some(Value::Binding(existing)) = &scope.own_binding(name)
+                    && Rc::ptr_eq(existing, cell)
+                {
+                    return Ok(());
+                }
+                scope.bind_cell(name, cell.clone(), crate::interpreter::BindKind::Const);
+                Ok(())
+            }
+            _ => self.set_binding(name, value),
+        }
+    }
+
+    /// The export record of the module being evaluated, created on first use.
+    pub(crate) fn current_module(&mut self) -> &mut Module {
+        let name = self.cur_mod.clone().unwrap_or_default();
+        self.modules.entry(name).or_insert_with(|| Module {
+            exports: std::collections::HashMap::new(),
+            default: None,
+        })
+    }
+
+    /// Look up the export entries named by `specifiers` in another module,
+    /// preserving their live cells so a re-export forwards the binding rather
+    /// than a snapshot of its value.
+    pub(crate) fn resolve_reexports(
+        &mut self,
+        source: &str,
+        specifiers: &[(String, String)],
+    ) -> Result<Vec<(String, Value)>, VmErr> {
+        let resolved = self
+            .resolve_module_name(source)
+            .ok_or_else(|| VmErr::Msg(format!("Module not found: {}", source)))?;
+        self.ensure_module(&resolved)?;
+        let other = self
+            .modules
+            .get(&resolved)
+            .ok_or_else(|| VmErr::Msg(format!("Module not found: {}", source)))?;
+        Ok(specifiers
+            .iter()
+            .map(|(local, exported)| {
+                let value = if local == "default" {
+                    other.default.clone()
+                } else {
+                    other.exports.get(local).cloned()
+                };
+                (exported.clone(), value.unwrap_or(Value::Undefined))
+            })
+            .collect())
+    }
+
+    /// Build a module namespace object: every named export, plus `default`
+    /// when the module has one.
+    ///
+    /// Exports keep their live cells, so `ns.count` reflects the exporting
+    /// module's current value rather than its value at import time.
+    pub(crate) fn namespace_object(module: &Module) -> Result<Value, VmErr> {
+        let mut props: Vec<(String, Value)> = module
+            .exports
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        // A namespace object's keys are sorted, not insertion-ordered.
+        props.sort_by(|a, b| a.0.cmp(&b.0));
+        if let Some(default) = &module.default {
+            props.push(("default".to_string(), default.clone()));
+        }
+        Value::checked_object(props)
     }
 
     /// Assign an identifier, creating it in the active scope when it does not
@@ -386,6 +481,63 @@ impl Interpreter {
         self.cur_mod = None;
     }
 
+    /// Record a module's source without running it. `import` evaluates it on
+    /// first use.
+    pub fn define_module(&mut self, name: &str, source: String) {
+        self.module_sources.insert(name.to_string(), source);
+    }
+
+    /// Make sure `name` has an export record, evaluating its deferred source
+    /// if that is what it takes.
+    ///
+    /// A module already being evaluated returns immediately: that is a cycle,
+    /// and the specification's answer is to let the importer see the record as
+    /// far as it has been filled in. Live bindings are what make that useful —
+    /// a function imported from a half-initialized module still sees the final
+    /// value once the body finishes.
+    pub fn ensure_module(&mut self, name: &str) -> Result<bool, VmErr> {
+        if self.modules.contains_key(name) || self.evaluating.contains(name) {
+            return Ok(true);
+        }
+        let Some(source) = self.module_sources.get(name).cloned() else {
+            return Ok(false);
+        };
+        let outer = self.cur_mod.take();
+        let displaced = self.begin_module(name);
+        self.evaluating.insert(name.to_string());
+        let result = self.eval_module_source(&source);
+        self.evaluating.remove(name);
+        match result {
+            Ok(()) => {
+                self.cur_mod = outer;
+                Ok(true)
+            }
+            Err(error) => {
+                self.restore_module(name, displaced);
+                self.cur_mod = outer;
+                Err(error)
+            }
+        }
+    }
+
+    /// Parse and run one module body. Kept beside `ensure_module` so deferred
+    /// evaluation does not have to reach back into the N-API layer.
+    fn eval_module_source(&mut self, source: &str) -> Result<(), VmErr> {
+        let tokens = crate::lexer::Lexer::new(source).tokenize_with_spans();
+        let mut parser = crate::parser::Parser::new_with_spans(tokens);
+        let statements = match parser.parse_program() {
+            Ok(statements) => statements,
+            Err(_) if parser.depth_exceeded => {
+                return Err(VmErr::Msg(
+                    "RangeError: Maximum parse depth exceeded".to_string(),
+                ));
+            }
+            Err(error) => return Err(VmErr::Msg(error.to_string())),
+        };
+        self.run(&statements)?;
+        Ok(())
+    }
+
     /// Drop a module's export record so `import` can no longer resolve it.
     ///
     /// This is the half that actually revokes reachability: the N-API layer's
@@ -393,12 +545,13 @@ impl Interpreter {
     /// map, so a module left here stays importable no matter what the public
     /// API reports.
     pub fn remove_module(&mut self, name: &str) -> bool {
-        self.modules.remove(name).is_some()
+        let had_source = self.module_sources.remove(name).is_some();
+        self.modules.remove(name).is_some() || had_source
     }
 
     /// Whether `name` has an export record that `import` would resolve.
     pub fn has_module(&self, name: &str) -> bool {
-        self.modules.contains_key(name)
+        self.modules.contains_key(name) || self.module_sources.contains_key(name)
     }
 
     /// Resolve a relative import from the module currently being evaluated.

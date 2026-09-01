@@ -248,6 +248,26 @@ impl VM {
         })
     }
 
+    /// Define a guest module *without* evaluating it.
+    ///
+    /// The body runs the first time something imports the module. Deferring it
+    /// is what makes a cyclic import graph expressible: define every module in
+    /// the cycle, then import any one of them, and each body runs once with
+    /// the partner's partially-populated exports visible through live
+    /// bindings — which is what the ES module specification describes.
+    ///
+    /// `registerModule` remains the eager form, and reports a body's error at
+    /// registration time; with `defineModule` the error surfaces at the import.
+    #[napi]
+    pub fn define_module(&mut self, name: String, source: String) -> napi::Result<()> {
+        let _busy = self.state.try_start()?;
+        self.state.runtime.with_mut(|runtime| {
+            runtime.interp.define_module(&name, source.clone());
+            runtime.modules.insert(name, source);
+        });
+        Ok(())
+    }
+
     /// Register (or replace) a guest module.
     ///
     /// Registration is transactional over the module's export table: the body
@@ -268,6 +288,9 @@ impl VM {
             match execute_source(&mut runtime.interp, &source) {
                 Ok(_) => {
                     runtime.interp.commit_module();
+                    // Keep the source too, so a module registered eagerly can
+                    // still take part in a cycle that `defineModule` links.
+                    runtime.interp.define_module(&name, source.clone());
                     runtime.modules.insert(name, source);
                     Ok(())
                 }

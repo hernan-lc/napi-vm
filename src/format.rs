@@ -200,6 +200,8 @@ fn render_plain_value(
     output: &mut BoundedOutput,
 ) -> Result<(), VmErr> {
     match v {
+        // A live module binding renders as the value it names.
+        Value::Binding(cell) => render_plain_value(&cell.borrow(), visited, depth, output),
         Value::Undefined => output.push_str("undefined"),
         Value::Null => output.push_str("null"),
         Value::Bool(b) => output.push_str(if *b { "true" } else { "false" }),
@@ -391,6 +393,7 @@ fn render_inspect_value(
         );
     }
     match v {
+        Value::Binding(cell) => render_inspect_value(&cell.borrow(), depth, pretty, context),
         Value::Undefined => painter.write_wrapped(context.output, "2;37", "undefined"),
         Value::Null => painter.write_wrapped(context.output, "1;90", "null"),
         Value::Bool(b) => {

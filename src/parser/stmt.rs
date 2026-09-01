@@ -94,6 +94,13 @@ impl Parser {
                     self.semi();
                     return Some(Statement::Expr(expr));
                 }
+                // `import('m')` at statement position is an expression.
+                if matches!(self.cur(), Token::LParen) {
+                    self.pos = saved_pos;
+                    let e = self.expr()?;
+                    self.semi();
+                    return Some(Statement::Expr(e));
+                }
                 self.pos = saved_pos;
                 self.import()
             }

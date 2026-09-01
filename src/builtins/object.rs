@@ -77,7 +77,7 @@ fn own_slot(v: &Value, key: &str) -> Option<Value> {
         .borrow()
         .iter()
         .find(|(k, _)| k == key)
-        .map(|(_, value)| value.clone())
+        .map(|(_, value)| value.deref_binding())
 }
 
 /// Is this slot an accessor stored under the `get …` / `set …` naming that the

@@ -242,6 +242,9 @@ impl Interpreter {
             UnOp::Typeof if super::call::callable_slot(v, super::call::CALL_SLOT).is_some() => {
                 Value::String("function".to_string())
             }
+            UnOp::Typeof if matches!(v, Value::Binding(_)) => {
+                return self.un_op(op, &v.deref_binding());
+            }
             UnOp::Typeof => Value::String(
                 match v {
                     Value::Undefined => "undefined",
@@ -261,6 +264,8 @@ impl Interpreter {
                     Value::Generator { .. } => "object",
                     Value::Symbol(_) => "symbol",
                     Value::Error(_) => "object",
+                    // Resolved by the guard above; unreachable here.
+                    Value::Binding(_) => "undefined",
                 }
                 .to_string(),
             ),
@@ -363,6 +368,7 @@ impl Interpreter {
         output: &mut crate::format::BoundedOutput,
     ) -> Result<(), VmErr> {
         match v {
+            Value::Binding(cell) => self.vs_rec(&cell.borrow(), visited, depth, output),
             Value::Undefined => output.push_str("undefined"),
             Value::Null => output.push_str("null"),
             Value::Bool(b) => output.push_str(if *b { "true" } else { "false" }),

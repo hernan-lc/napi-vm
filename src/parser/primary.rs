@@ -301,6 +301,13 @@ impl Parser {
                     self.adv();
                     return Some(Expr::ImportMeta);
                 }
+                // `import(specifier)`: the dynamic form, an expression rather
+                // than a declaration.
+                if self.eat(&Token::LParen) {
+                    let specifier = self.assign()?;
+                    self.expect(&Token::RParen);
+                    return Some(Expr::DynamicImport(Box::new(specifier)));
+                }
                 self.semi();
                 Some(Expr::Undefined)
             }

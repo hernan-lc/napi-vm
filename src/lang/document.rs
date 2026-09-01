@@ -919,6 +919,8 @@ impl Builder<'_> {
             Expr::String(_) | Expr::Template { .. } => Type::String,
             // A tag can return anything, so its call site is unconstrained.
             Expr::TaggedTemplate { .. } => Type::Unknown,
+            // `import(…)` resolves to a namespace object.
+            Expr::DynamicImport(_) => Type::Unknown,
             Expr::Bool(_) => Type::Boolean,
             Expr::Null => Type::Null,
             Expr::Undefined => Type::Undefined,

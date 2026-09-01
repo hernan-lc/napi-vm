@@ -108,6 +108,7 @@ fn json_serialize(
             let props = props.borrow();
             let mut first = true;
             for (k, v) in props.iter() {
+                let v = &v.deref_binding();
                 // `JSON.stringify` walks own *enumerable* string keys only,
                 // skipping `undefined` values and the VM's internal slots.
                 if matches!(v, Value::Undefined)

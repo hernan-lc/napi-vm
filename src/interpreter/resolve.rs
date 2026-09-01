@@ -146,7 +146,12 @@ impl Interpreter {
         Ok(v)
     }
 
+    /// Read a property, resolving a live module binding to the value it names.
     pub(crate) fn prop(&self, o: &Value, p: &Value) -> Result<Value, VmErr> {
+        Ok(self.prop_raw(o, p)?.deref_binding())
+    }
+
+    fn prop_raw(&self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         match (o, p) {
             // `window.x` / `globalThis.x` / `self.x` read a real global.
             (Value::GlobalObject, Value::String(k)) => Ok(self

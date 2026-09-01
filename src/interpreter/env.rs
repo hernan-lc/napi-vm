@@ -251,7 +251,10 @@ impl Environment {
     pub fn lookup(&self, n: &str) -> Lookup {
         if let Some(binding) = self.vars.get(n) {
             return if binding.initialized {
-                Lookup::Value(binding.value.clone())
+                // A module import is an indirection to the exporting binding,
+                // so reading it must follow the link rather than hand back the
+                // link itself.
+                Lookup::Value(binding.value.deref_binding())
             } else {
                 Lookup::Uninitialized
             };
@@ -312,6 +315,39 @@ impl Environment {
         }
     }
 
+    /// Turn the binding named `n` into a *live* one and hand back the cell it
+    /// now reads and writes through, so an importer can share it.
+    ///
+    /// Idempotent: a binding that is already live returns its existing cell,
+    /// which is what makes re-exporting the same name from several modules
+    /// converge on one storage location rather than a chain of copies.
+    pub fn export_cell(&mut self, n: &str) -> Option<Rc<RefCell<Value>>> {
+        let binding = self.vars.get_mut(n)?;
+        if let Value::Binding(cell) = &binding.value {
+            return Some(cell.clone());
+        }
+        let cell = Rc::new(RefCell::new(std::mem::replace(
+            &mut binding.value,
+            Value::Undefined,
+        )));
+        binding.value = Value::Binding(cell.clone());
+        binding.initialized = true;
+        Some(cell)
+    }
+
+    /// The raw value bound to `n` in *this* frame, without following a live
+    /// binding. Used to recognize a re-import of a name already linked to the
+    /// same cell.
+    pub fn own_binding(&self, n: &str) -> Option<Value> {
+        self.vars.get(n).map(|b| b.value.clone())
+    }
+
+    /// Bind `n` to an existing live cell — how `import` links a name to the
+    /// exporting module's binding instead of copying its current value.
+    pub fn bind_cell(&mut self, n: &str, cell: Rc<RefCell<Value>>, kind: BindKind) {
+        self.declare(n, Value::Binding(cell), kind, true);
+    }
+
     /// The declaration kind of `n` in this frame only, if bound.
     pub fn kind_of(&self, n: &str) -> Option<BindKind> {
         self.vars.get(n).map(|b| b.kind)
@@ -363,7 +399,12 @@ impl Environment {
             if !binding.initialized {
                 return AssignOutcome::Uninitialized;
             }
-            binding.value = v;
+            // Writing through a live binding updates the cell the exporting
+            // module and every importer share.
+            match &binding.value {
+                Value::Binding(cell) => *cell.borrow_mut() = v,
+                _ => binding.value = v,
+            }
             return AssignOutcome::Assigned;
         }
         match self.parent {

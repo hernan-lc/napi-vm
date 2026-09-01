@@ -322,6 +322,14 @@ pub enum Value {
         id: usize,
     },
     Symbol(Rc<SymbolData>),
+    /// A *live binding*: an indirection an ES module export and its importers
+    /// share, so a write on either side is seen by the other.
+    ///
+    /// This never reaches guest code. Every path that reads a binding or a
+    /// property resolves it first (see [`Value::deref_binding`]); it exists
+    /// only in an environment slot, in a module's export table, and in a
+    /// namespace object's slots.
+    Binding(Rc<RefCell<Value>>),
     Error(Box<ErrorData>),
 }
 
@@ -540,6 +548,15 @@ impl Value {
         Ok(Self::String(value))
     }
 
+    /// Read through a live module binding. A value that is not one is
+    /// returned unchanged, so this is safe to apply anywhere.
+    pub fn deref_binding(&self) -> Value {
+        match self {
+            Value::Binding(cell) => cell.borrow().clone(),
+            other => other.clone(),
+        }
+    }
+
     pub fn get_prop(&self, key: &str) -> Option<Value> {
         match self {
             Value::Object { .. } => {
@@ -549,7 +566,7 @@ impl Value {
                         return None;
                     };
                     if let Some((_, value)) = props.borrow().iter().find(|(name, _)| name == key) {
-                        return Some(value.clone());
+                        return Some(value.deref_binding());
                     }
                     let next = props.proto()?;
                     current = next.as_ref().clone();
@@ -719,6 +736,13 @@ impl Value {
                     && let Some(cell) = Rc::get_mut(&mut cd.statics)
                 {
                     work.extend(cell.get_mut().drain(..).map(|(_, v)| v));
+                }
+            }
+            Value::Binding(cell) => {
+                if Rc::strong_count(cell) == 1
+                    && let Some(inner) = Rc::get_mut(cell)
+                {
+                    work.push(std::mem::replace(inner.get_mut(), Value::Undefined));
                 }
             }
             Value::Promise { value, .. } => {

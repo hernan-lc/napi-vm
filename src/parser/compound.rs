@@ -13,7 +13,9 @@ const DEFAULT_BINDING: &str = "*default*";
 fn declared_names(stmt: &Statement) -> Vec<String> {
     match stmt {
         Statement::VarDecl { name, .. } if !name.is_empty() => vec![name.clone()],
-        Statement::Block(stmts) => stmts.iter().flat_map(declared_names).collect(),
+        Statement::Block(stmts) | Statement::Declarations(stmts) => {
+            stmts.iter().flat_map(declared_names).collect()
+        }
         _ => vec![],
     }
 }
@@ -164,7 +166,10 @@ impl Parser {
             };
             if let Some(decl) = decl {
                 let name = decl_name(&decl).pop()?;
-                return Some(Statement::Block(vec![
+                // `Declarations` and not `Block`: the desugaring must leave
+                // the binding in the scope the `export` was written in, not in
+                // a nested one that ends at the semicolon.
+                return Some(Statement::Declarations(vec![
                     decl,
                     Statement::ExportDefault(Box::new(Expr::Identifier(name))),
                 ]));
@@ -172,12 +177,42 @@ impl Parser {
             let e = self.expr()?;
             self.semi();
             Some(Statement::ExportDefault(Box::new(e)))
+        } else if self.eat(&Token::Star) {
+            // `export * from 'm'` / `export * as ns from 'm'`.
+            let alias = if self.eat(&Token::KwAs) {
+                Some(self.ident()?)
+            } else {
+                None
+            };
+            if !self.eat(&Token::KwFrom) {
+                return None;
+            }
+            let source = match self.cur() {
+                Token::String(x) => {
+                    let v = x.clone();
+                    self.adv();
+                    v
+                }
+                _ => return None,
+            };
+            self.semi();
+            Some(Statement::ExportAll { source, alias })
         } else if self.eat(&Token::LBrace) {
             let mut sp = Vec::new();
             while self.until(&Token::RBrace) {
-                let l = self.ident()?;
-                let e = if self.eat(&Token::KwAs) {
+                // `export { default as x }` names the default export, so the
+                // keyword is a valid specifier here.
+                let l = if self.eat(&Token::KwDefault) {
+                    "default".to_string()
+                } else {
                     self.ident()?
+                };
+                let e = if self.eat(&Token::KwAs) {
+                    if self.eat(&Token::KwDefault) {
+                        "default".to_string()
+                    } else {
+                        self.ident()?
+                    }
                 } else {
                     l.clone()
                 };
@@ -254,13 +289,24 @@ impl Parser {
             }
         };
         let specifiers: Vec<(String, String)> = names.into_iter().map(|n| (n.clone(), n)).collect();
-        Some(Statement::Block(vec![
+        // `Declarations` and not `Block`, so `export let x = 1` declares `x`
+        // in the module scope rather than in the desugaring's own block.
+        Some(Statement::Declarations(vec![
             decl,
             Statement::ExportNamed {
                 specifiers,
                 source: None,
             },
         ]))
+    }
+
+    /// A name inside an `import { … }` list. `default` is a keyword but a
+    /// legal specifier: `import { default as x } from 'm'`.
+    fn import_specifier_name(&mut self) -> Option<String> {
+        if self.eat(&Token::KwDefault) {
+            return Some("default".to_string());
+        }
+        self.ident()
     }
 
     pub(super) fn import(&mut self) -> Option<Statement> {
@@ -272,13 +318,13 @@ impl Parser {
                 if self.eat(&Token::LBrace) {
                     let mut nd = Vec::new();
                     while self.until(&Token::RBrace) {
-                        let l = self.ident()?;
-                        let i = if self.eat(&Token::KwAs) {
+                        let imported = self.import_specifier_name()?;
+                        let local = if self.eat(&Token::KwAs) {
                             self.ident()?
                         } else {
-                            l.clone()
+                            imported.clone()
                         };
-                        nd.push((l, i));
+                        nd.push((imported, local));
                         if !matches!(self.cur(), Token::RBrace) {
                             self.eat(&Token::Comma);
                         }
@@ -318,13 +364,13 @@ impl Parser {
         } else if self.eat(&Token::LBrace) {
             let mut nd = Vec::new();
             while self.until(&Token::RBrace) {
-                let l = self.ident()?;
-                let i = if self.eat(&Token::KwAs) {
+                let imported = self.import_specifier_name()?;
+                let local = if self.eat(&Token::KwAs) {
                     self.ident()?
                 } else {
-                    l.clone()
+                    imported.clone()
                 };
-                nd.push((l, i));
+                nd.push((imported, local));
                 if !matches!(self.cur(), Token::RBrace) {
                     self.eat(&Token::Comma);
                 }

@@ -151,6 +151,8 @@ pub enum Expr {
     This,
     Super,
     ImportMeta,
+    /// `import(specifier)`: resolves to the module's namespace object.
+    DynamicImport(Box<Expr>),
     Template {
         quasis: Vec<String>,
         exprs: Vec<Expr>,
@@ -276,6 +278,13 @@ pub enum Statement {
     ExportNamed {
         specifiers: Vec<(String, String)>,
         source: Option<String>,
+    },
+    /// `export * from 'm'` and `export * as ns from 'm'`. With `alias`, the
+    /// other module's namespace object is exported under that one name;
+    /// without it, every named export of `m` is re-exported.
+    ExportAll {
+        source: String,
+        alias: Option<String>,
     },
     Import {
         module: String,
@@ -461,6 +470,7 @@ fn collect_stmt_var_names(stmt: &Statement, out: &mut Vec<String>) {
         | Statement::Throw(_)
         | Statement::ExportDefault(_)
         | Statement::ExportNamed { .. }
+        | Statement::ExportAll { .. }
         | Statement::Import { .. }
         | Statement::Empty => {}
     }
@@ -600,6 +610,7 @@ fn stmt_references(s: &Statement, name: &str) -> bool {
         | Statement::LabeledBreak(_)
         | Statement::LabeledContinue(_)
         | Statement::ExportNamed { .. }
+        | Statement::ExportAll { .. }
         | Statement::Import { .. }
         | Statement::Empty => false,
     }
@@ -670,6 +681,7 @@ fn expr_references(e: &Expr, name: &str) -> bool {
         | Expr::This
         | Expr::Super
         | Expr::ImportMeta => false,
+        Expr::DynamicImport(specifier) => expr_references(specifier, name),
     }
 }
 
