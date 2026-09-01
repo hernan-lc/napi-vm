@@ -148,8 +148,27 @@ Every claim below was checked against the current build.
   body's side effects happen at the first `next()` rather than interleaved
   with the consumer, `next(v)` cannot send a value in, abandoning a `for…of`
   early does not stop a body that has already run, and an unbounded generator
-  hits a cap and raises a catchable `RangeError`. Real suspension needs a
-  resumable evaluator (a CPS transform of generator bodies).
+  hits a cap and raises a catchable `RangeError`.
+
+  Real suspension needs one of three things, none of them small:
+
+  - **A resumable evaluator** — `eval_expr`/`eval_stmt` rewritten to run on an
+    explicit continuation stack instead of the native one, so a `yield` can
+    return to the driver mid-expression. This is the general answer and works
+    for every body, but it is a rewrite of the interpreter core.
+  - **A CPS transform of generator bodies** — compile a body containing
+    `yield` into a state machine. Narrower in blast radius, but the subtle
+    cases (a `yield` inside a loop condition, inside `try`/`finally`, inside a
+    closure's default argument) are where such transforms go wrong.
+  - **Asyncify** — binaryen's stack-switching transform over the built module.
+    Cheapest to implement, but it is a build-pipeline dependency this repo
+    deliberately does not have (see the `wasm-opt` note in `Cargo.toml`), and
+    it costs module size and speed on every path, not just generators.
+
+  A *partial* transform — handling the recognizable shapes and buffering the
+  rest — is worse than the current behaviour, which is at least uniform and
+  documented. It would make a browser generator's semantics depend on whether
+  its body matched a pattern.
 - **N-API boundary** — an exported VM function cannot be called *while the VM
   is already running*: the interpreter is single-threaded, so a host callback
   that fires from inside a VM execution is refused with "VM is busy" rather
