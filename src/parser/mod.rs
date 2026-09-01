@@ -439,8 +439,11 @@ mod tests {
         ] {
             let stmts = parse(source);
             assert_eq!(stmts.len(), 1);
-            let Statement::Block(inner) = &stmts[0] else {
-                panic!("expected a desugared block for {source}");
+            // `export default <declaration>` desugars to a scope-transparent
+            // declarator group: the binding must land in the module scope, not
+            // in a block of its own.
+            let Statement::Declarations(inner) = &stmts[0] else {
+                panic!("expected a desugared declaration group for {source}");
             };
             assert!(matches!(&inner[0], Statement::ClassDecl { .. }));
             assert!(matches!(&inner[1], Statement::ExportDefault(_)));
@@ -456,8 +459,11 @@ mod tests {
         ] {
             let stmts = parse(source);
             assert_eq!(stmts.len(), 1);
-            let Statement::Block(inner) = &stmts[0] else {
-                panic!("expected a desugared block for {source}");
+            // `export default <declaration>` desugars to a scope-transparent
+            // declarator group: the binding must land in the module scope, not
+            // in a block of its own.
+            let Statement::Declarations(inner) = &stmts[0] else {
+                panic!("expected a desugared declaration group for {source}");
             };
             assert!(matches!(&inner[0], Statement::FnDecl { .. }));
             assert!(matches!(&inner[1], Statement::ExportDefault(_)));

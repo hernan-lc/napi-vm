@@ -768,23 +768,14 @@ impl Builder<'_> {
             Statement::Expr(expr) => {
                 self.expr(expr, env);
             }
-            Statement::Block(body) => {
-                // `export <declaration>` is represented by the parser as a
-                // block containing the declaration and a trailing
-                // `ExportNamed`. Keep that declaration in the surrounding
-                // module environment so later declarations can use it:
-                // `export class Store {}; export function createStore() {
-                // return new Store(); }`.
-                let is_export_declaration = matches!(
-                    body.last(),
-                    Some(Statement::ExportNamed { source: None, .. })
-                );
-                if is_export_declaration {
-                    for statement in body {
-                        self.statement(statement, env);
-                    }
-                } else {
-                    self.statements(body, env);
+            Statement::Block(body) => self.statements(body, env),
+            // A declarator group — including the `export <declaration>`
+            // desugaring — shares the enclosing scope, so its declarations
+            // stay visible to what follows: `export class Store {}; export
+            // function createStore() { return new Store(); }`.
+            Statement::Declarations(body) => {
+                for statement in body {
+                    self.statement(statement, env);
                 }
             }
             Statement::If { then, else_, .. } => {
@@ -1229,6 +1220,7 @@ impl Builder<'_> {
                     }
                 }
                 Statement::Block(body)
+                | Statement::Declarations(body)
                 | Statement::While { body, .. }
                 | Statement::DoWhile { body, .. }
                 | Statement::For { body, .. }

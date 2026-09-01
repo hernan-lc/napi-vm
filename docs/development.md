@@ -7,6 +7,7 @@
 | `npm run build` | Build the optimized native addon |
 | `npm run build:debug` | Build the debug native addon |
 | `npm test` | Run the JavaScript regression suite (requires Bun) |
+| `npm run test:rust` | Run the Rust unit and integration tests |
 | `npm run test:node` | Run the Node.js compatibility suite (`engines.node` range) |
 | `npm run lint` | Rust formatting + Clippy, then TypeScript type-checking |
 | `npm run lint:rust` | `cargo fmt --check` and `cargo clippy -D warnings` |
@@ -34,7 +35,13 @@ npm run lint          # cargo fmt, clippy, and tsc --noEmit
 npm run build
 npm test              # main suite, under Bun
 npm run test:node     # Node compatibility boundaries
+npm run test:rust     # Rust unit and integration tests
 ```
+
+`test:rust` is easy to forget because most of the suite is JavaScript, but the
+lexer, parser, bignum, symbol index and language-analysis tests live in Rust
+and cover things the JavaScript suite cannot reach. A parser change that only
+those tests notice has slipped through before.
 
 CI enforces each of these on every pull request, plus two checks that are easy
 to miss locally:

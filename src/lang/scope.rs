@@ -155,7 +155,9 @@ fn walk_stmt(s: &Statement, scope: &mut Scope, runtime_handlers: &HashMap<String
             push(scope, name, CompletionKind::Variable, None);
             walk_stmts(body, scope, runtime_handlers);
         }
-        Statement::Block(b) => walk_stmts(b, scope, runtime_handlers),
+        // A declarator group is scope-transparent, but for collection
+        // purposes it walks the same way a block does.
+        Statement::Block(b) | Statement::Declarations(b) => walk_stmts(b, scope, runtime_handlers),
         Statement::Labeled { body, .. } => walk_stmt(body, scope, runtime_handlers),
         Statement::Try {
             body,

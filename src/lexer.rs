@@ -526,19 +526,14 @@ impl Lexer {
                     Token::Star
                 }
             },
-            '/' if self.regex_allowed() => self.read_regex(),
-            '/' => match self.src.get(self.pos + 1) {
-                Some('=') => {
-                    self.pos += 2;
-                    self.col += 2;
-                    Token::SlashEqual
-                }
-                _ => {
-                    self.pos += 1;
-                    self.col += 1;
-                    Token::Slash
-                }
+            '/' if self.regex_allowed() => match self.read_regex() {
+                Some(regex) => regex,
+                // Not a terminated regular expression after all, so it was a
+                // division operator in a position that merely looked like an
+                // expression start.
+                None => self.read_slash(),
             },
+            '/' => self.read_slash(),
             '%' => match self.src.get(self.pos + 1) {
                 Some('=') => {
                     self.pos += 2;
@@ -757,11 +752,29 @@ impl Lexer {
         }
     }
 
+    /// The `/` and `/=` operators.
+    fn read_slash(&mut self) -> Token {
+        match self.src.get(self.pos + 1) {
+            Some('=') => {
+                self.pos += 2;
+                self.col += 2;
+                Token::SlashEqual
+            }
+            _ => {
+                self.pos += 1;
+                self.col += 1;
+                Token::Slash
+            }
+        }
+    }
+
     /// Scan `/pattern/flags`, positioned at the opening slash.
     ///
     /// A `/` inside a character class does not end the literal, which is why
     /// the scan tracks class depth rather than looking for the next slash.
-    fn read_regex(&mut self) -> Token {
+    /// Returns `None` for an unterminated literal, leaving the cursor where it
+    /// started so the caller can lex a division operator instead.
+    fn read_regex(&mut self) -> Option<Token> {
         let start = self.pos;
         self.pos += 1;
         self.col += 1;
@@ -769,11 +782,8 @@ impl Lexer {
         let mut in_class = false;
         loop {
             let Some(&c) = self.src.get(self.pos) else {
-                // Unterminated: fall back to a division operator so the parser
-                // reports a syntax error at a sensible place.
-                self.pos = start + 1;
-                self.col += 1;
-                return Token::Slash;
+                self.pos = start;
+                return None;
             };
             self.pos += 1;
             self.col += 1;
@@ -795,10 +805,11 @@ impl Lexer {
                     pattern.push(c);
                 }
                 '/' if !in_class => break,
+                // A line terminator ends a regular-expression literal's
+                // reach; what looked like one is a division operator.
                 '\n' => {
-                    self.pos = start + 1;
-                    self.col += 1;
-                    return Token::Slash;
+                    self.pos = start;
+                    return None;
                 }
                 _ => pattern.push(c),
             }
@@ -812,7 +823,7 @@ impl Lexer {
             self.pos += 1;
             self.col += 1;
         }
-        Token::Regex(pattern, flags)
+        Some(Token::Regex(pattern, flags))
     }
 
     fn read_str(&mut self, q: char) -> Token {

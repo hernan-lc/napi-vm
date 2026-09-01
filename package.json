@@ -27,6 +27,7 @@
     "check:generated": "bun run build:all && git diff --exit-code -- index.js index.mjs index.d.ts",
     "test": "bun test",
     "test:node": "node --test tests/node/*.test.js",
+    "test:rust": "cargo test --release",
     "bench": "node bench/bench.js",
     "bench:stress": "bun bench/stress.ts",
     "bench:rust": "cargo bench",
