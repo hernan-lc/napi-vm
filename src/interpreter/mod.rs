@@ -148,6 +148,25 @@ pub struct Interpreter {
     loops_remaining: u64,
 }
 
+/// Does this statement contribute to the enclosing script's completion value?
+///
+/// Declarations and the empty statement produce *empty* in the specification's
+/// terms, which is not the same as producing `undefined`: an empty completion
+/// leaves the previous statement's value in place.
+fn produces_completion_value(statement: &Statement) -> bool {
+    !matches!(
+        statement,
+        Statement::Empty
+            | Statement::VarDecl { .. }
+            | Statement::FnDecl { .. }
+            | Statement::ClassDecl { .. }
+            | Statement::Import { .. }
+            | Statement::ExportNamed { .. }
+            | Statement::ExportAll { .. }
+            | Statement::ExportDefault(_)
+    )
+}
+
 impl Default for Interpreter {
     fn default() -> Self {
         Self::new()
@@ -351,7 +370,15 @@ impl Interpreter {
     pub fn run(&mut self, stmts: &[Statement]) -> Result<Value, VmErr> {
         let mut r = Value::Undefined;
         for s in stmts {
-            r = self.eval_stmt(s)?;
+            let value = self.eval_stmt(s)?;
+            // A statement that produces no completion value leaves the
+            // previous one standing: `1;;` evaluates to 1, not `undefined`.
+            // Declarations and the empty statement are the cases that matter,
+            // and getting this wrong made a trailing `;` erase a script's
+            // result.
+            if produces_completion_value(s) {
+                r = value;
+            }
         }
         Ok(r)
     }

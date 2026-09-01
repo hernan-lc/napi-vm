@@ -53,8 +53,16 @@ test("chained compound assignment", () => {
 });
 
 test("assignment expression returns value", () => {
-  expect(runCode("let x = 5;")).toBe("5");
+  expect(runCode("let x; x = 5;")).toBe("5");
   expect(runCode("let x = 0; x = 42;")).toBe("42");
+});
+
+test("a declaration produces no completion value", () => {
+  // A declaration completes *empty*, not `undefined`, so it does not become
+  // the script's result — and a trailing empty statement does not erase one.
+  expect(runCode("let x = 5;")).toBe("undefined");
+  expect(runCode("1;;")).toBe("1");
+  expect(runCode("function f() {} 5;")).toBe("5");
 });
 
 test("variable shadowing in functions", () => {
