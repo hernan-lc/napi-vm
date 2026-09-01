@@ -122,6 +122,7 @@ pub fn array_method(name: &str) -> Option<Value> {
         "flatMap" => array_flat_map,
         "reduceRight" => array_reduce_right,
         "at" => array_at,
+        "splice" => array_splice,
         "findIndex" => array_find_index,
         "findLast" => array_find_last,
         "findLastIndex" => array_find_last_index,
@@ -135,6 +136,49 @@ pub fn array_method(name: &str) -> Option<Value> {
         _ => return None,
     };
     Some(nf(name, f))
+}
+
+/// `splice(start, deleteCount, ...items)`: remove a range in place and insert
+/// replacements, returning what was removed.
+fn array_splice(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let Value::Array(cell) = &this else {
+        return Value::checked_array(vec![]);
+    };
+    let length = cell.borrow().len();
+    let start = match a.first() {
+        Some(v) => {
+            let n = v.to_number();
+            if !n.is_finite() {
+                if n > 0.0 { length } else { 0 }
+            } else if n < 0.0 {
+                ((length as f64 + n).max(0.0)) as usize
+            } else {
+                (n as usize).min(length)
+            }
+        }
+        None => 0,
+    };
+    let remove = match a.get(1) {
+        // No `deleteCount` removes everything from `start` onwards.
+        None => length - start,
+        Some(v) => {
+            let n = v.to_number();
+            if !n.is_finite() || n <= 0.0 {
+                0
+            } else {
+                (n as usize).min(length - start)
+            }
+        }
+    };
+    let inserted: Vec<Value> = a.iter().skip(2).cloned().collect();
+    if length - remove + inserted.len() > crate::value::MAX_ARRAY_LEN {
+        return Err(crate::value::limit_err("Maximum array length exceeded"));
+    }
+    let removed: Vec<Value> = cell
+        .borrow_mut()
+        .splice(start..start + remove, inserted)
+        .collect();
+    Value::checked_array(removed)
 }
 
 /// `at(index)`: a negative index counts back from the end.

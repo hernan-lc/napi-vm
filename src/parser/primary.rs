@@ -169,10 +169,13 @@ impl Parser {
                                     // use the named Method/Getter/Setter forms.
                                     // Otherwise, emit a Computed property whose
                                     // value is a function expression.
+                                    // Only a *literal* computed key has a
+                                    // name known at parse time. An identifier
+                                    // is a variable to evaluate — `{ [k]() {} }`
+                                    // names the property `k` holds, not "k".
                                     let key_str = match &e {
                                         Expr::String(s) => Some(s.clone()),
                                         Expr::Number(n) => Some(n.to_string()),
-                                        Expr::Identifier(n) => Some(n.clone()),
                                         _ => None,
                                     };
                                     if let Some(key_str) = key_str {

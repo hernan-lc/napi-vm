@@ -90,7 +90,25 @@ impl Interpreter {
                     Value::Object { props: oprops, .. } => oprops.borrow().clone(),
                     _ => vec![],
                 };
+                let mut taken: Vec<&str> = Vec::new();
                 for (key, pat) in props {
+                    // `{ ...rest }` takes whatever the named keys did not.
+                    if key == "..."
+                        && let Some(Pattern::Rest(target)) = pat
+                    {
+                        let remaining: Vec<(String, Value)> = obj
+                            .iter()
+                            .filter(|(k, _)| {
+                                !taken.contains(&k.as_str())
+                                    && !crate::interpreter::is_internal_key(k)
+                            })
+                            .cloned()
+                            .collect();
+                        let rest = Value::checked_object(remaining)?;
+                        self.destructure(target, &rest)?;
+                        continue;
+                    }
+                    taken.push(key);
                     let mut found = Value::Undefined;
                     for (k, v) in &obj {
                         if k == key {

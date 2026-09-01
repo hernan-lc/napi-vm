@@ -19,7 +19,7 @@ pub(super) fn install(e: &mut Environment) {
 /// overflows the native stack.
 const MAX_JSON_DEPTH: usize = 512;
 
-fn json_stringify(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+fn json_stringify(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let v = a.first().cloned().unwrap_or(Value::Undefined);
     if matches!(v, Value::Undefined) {
         return Ok(Value::Undefined);
@@ -30,7 +30,84 @@ fn json_stringify(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value,
     // instead of recursing until the native stack overflows.
     let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
     json_serialize(&v, &mut out, &mut visited, 0)?;
-    Ok(Value::String(out))
+
+    // The third argument indents the output: a number of spaces, or a literal
+    // string. Re-indenting the compact form keeps one serializer.
+    let indent = match a.get(2) {
+        Some(Value::Number(n)) if *n >= 1.0 => " ".repeat((*n as usize).min(10)),
+        Some(Value::String(s)) => s.chars().take(10).collect(),
+        Some(other) if !matches!(other, Value::Undefined | Value::Null) => {
+            let rendered = interp.vs(other)?;
+            rendered.chars().take(10).collect()
+        }
+        _ => String::new(),
+    };
+    if indent.is_empty() {
+        return Ok(Value::String(out));
+    }
+    Value::checked_string(reindent(&out, &indent)?)
+}
+
+/// Expand compact JSON onto indented lines.
+///
+/// Operating on the finished text rather than threading a width through the
+/// serializer keeps one code path for both forms; the input is JSON this
+/// module just produced, so the scan only has to respect string literals.
+fn reindent(compact: &str, indent: &str) -> Result<String, VmErr> {
+    let mut out = String::with_capacity(compact.len() * 2);
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for c in compact.chars() {
+        if out.len() > crate::value::MAX_STRING_LEN {
+            return Err(crate::value::limit_err("Maximum string length exceeded"));
+        }
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            '{' | '[' => {
+                depth += 1;
+                out.push(c);
+                out.push('\n');
+                out.push_str(&indent.repeat(depth));
+            }
+            '}' | ']' => {
+                depth = depth.saturating_sub(1);
+                // An empty object or array stays on one line.
+                if out.ends_with(&format!("\n{}", indent.repeat(depth + 1))) {
+                    out.truncate(out.len() - 1 - indent.repeat(depth + 1).len());
+                } else {
+                    out.push('\n');
+                    out.push_str(&indent.repeat(depth));
+                }
+                out.push(c);
+            }
+            ',' => {
+                out.push(c);
+                out.push('\n');
+                out.push_str(&indent.repeat(depth));
+            }
+            ':' => {
+                out.push(c);
+                out.push(' ');
+            }
+            other => out.push(other),
+        }
+    }
+    Ok(out)
 }
 
 fn append_json_str(out: &mut String, value: &str) -> Result<(), VmErr> {

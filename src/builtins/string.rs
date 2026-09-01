@@ -60,6 +60,139 @@ fn string_raw(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value
     Value::checked_string(out)
 }
 
+/// `at(index)`: a negative index counts back from the end.
+fn string_at(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let chars: Vec<char> = str_this(interp, &this)?.chars().collect();
+    let index = a.first().map(|v| v.to_number()).unwrap_or(0.0);
+    let index = if index < 0.0 {
+        chars.len() as f64 + index
+    } else {
+        index
+    };
+    if !index.is_finite() || index < 0.0 || index >= chars.len() as f64 {
+        return Ok(Value::Undefined);
+    }
+    Ok(Value::String(chars[index as usize].to_string()))
+}
+
+/// Shared implementation of `padStart` and `padEnd`.
+fn pad(
+    interp: &mut Interpreter,
+    this: &Value,
+    a: &[Value],
+    at_start: bool,
+) -> Result<Value, VmErr> {
+    let text = str_this(interp, this)?;
+    let current = text.chars().count();
+    let target = a.first().map(|v| v.to_number()).unwrap_or(0.0);
+    if !target.is_finite() || target <= current as f64 {
+        return Ok(Value::String(text));
+    }
+    let target = target as usize;
+    if target > crate::value::MAX_STRING_LEN {
+        return Err(crate::value::limit_err("Maximum string length exceeded"));
+    }
+    let filler = match a.get(1) {
+        Some(Value::Undefined) | None => " ".to_string(),
+        Some(v) => interp.vs(v)?,
+    };
+    if filler.is_empty() {
+        return Ok(Value::String(text));
+    }
+    // Repeat the filler and cut it to the exact width needed.
+    let needed = target - current;
+    let padding: String = filler.chars().cycle().take(needed).collect();
+    bounded_string(if at_start {
+        format!("{}{}", padding, text)
+    } else {
+        format!("{}{}", text, padding)
+    })
+}
+
+fn string_pad_start(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    pad(interp, &this, &a, true)
+}
+fn string_pad_end(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    pad(interp, &this, &a, false)
+}
+
+fn string_trim_start(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::String(
+        str_this(interp, &this)?.trim_start().to_string(),
+    ))
+}
+fn string_trim_end(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::String(
+        str_this(interp, &this)?.trim_end().to_string(),
+    ))
+}
+
+fn string_last_index_of(
+    interp: &mut Interpreter,
+    this: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let text = str_this(interp, &this)?;
+    let needle = match a.first() {
+        Some(Value::String(n)) => n.clone(),
+        Some(v) => interp.vs(v)?,
+        None => String::new(),
+    };
+    // Reported in characters, not bytes, like every other string index here.
+    Ok(Value::Number(match text.rfind(&needle) {
+        Some(byte) => text[..byte].chars().count() as f64,
+        None => -1.0,
+    }))
+}
+
+fn string_code_point_at(
+    interp: &mut Interpreter,
+    this: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let text = str_this(interp, &this)?;
+    let index = a.first().map(|v| v.to_number()).unwrap_or(0.0);
+    if !index.is_finite() || index < 0.0 {
+        return Ok(Value::Undefined);
+    }
+    Ok(text
+        .chars()
+        .nth(index as usize)
+        .map(|c| Value::Number(c as u32 as f64))
+        .unwrap_or(Value::Undefined))
+}
+
+fn string_concat(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let mut out = str_this(interp, &this)?;
+    for value in &a {
+        out.push_str(&interp.vs(value)?);
+        if out.len() > crate::value::MAX_STRING_LEN {
+            return Err(crate::value::limit_err("Maximum string length exceeded"));
+        }
+    }
+    bounded_string(out)
+}
+
+/// `localeCompare`: the sandbox has no locale data, so this is an ordinary
+/// code-point comparison — which is what it degrades to for ASCII anyway.
+fn string_locale_compare(
+    interp: &mut Interpreter,
+    this: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let left = str_this(interp, &this)?;
+    let right = match a.first() {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => interp.vs(v)?,
+        None => String::new(),
+    };
+    Ok(Value::Number(match left.cmp(&right) {
+        std::cmp::Ordering::Less => -1.0,
+        std::cmp::Ordering::Equal => 0.0,
+        std::cmp::Ordering::Greater => 1.0,
+    }))
+}
+
 fn string_from_char_code(_: &mut Interpreter, _this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let mut s = String::new();
     for v in a {
@@ -96,6 +229,15 @@ pub fn string_method(name: &str) -> Option<Value> {
         "replace" => string_replace,
         "replaceAll" => string_replace_all,
         "charCodeAt" => string_char_code_at,
+        "at" => string_at,
+        "padStart" => string_pad_start,
+        "padEnd" => string_pad_end,
+        "trimStart" => string_trim_start,
+        "trimEnd" => string_trim_end,
+        "lastIndexOf" => string_last_index_of,
+        "codePointAt" => string_code_point_at,
+        "concat" => string_concat,
+        "localeCompare" => string_locale_compare,
         _ => return None,
     };
     Some(nf(name, f))

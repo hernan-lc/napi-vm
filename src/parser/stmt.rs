@@ -216,10 +216,26 @@ impl Parser {
                 self.adv();
                 let mut props = Vec::new();
                 while self.until(&Token::RBrace) {
+                    // `{ ...rest }` collects the remaining properties.
+                    if self.eat(&Token::DotDotDot) {
+                        let rest = self.pattern()?;
+                        props.push(("...".to_string(), Some(Pattern::Rest(Box::new(rest)))));
+                        if !matches!(self.cur(), Token::RBrace) {
+                            self.eat(&Token::Comma);
+                        }
+                        continue;
+                    }
                     let key = self.ident()?;
                     let mut pat = None;
                     if self.eat(&Token::Colon) {
                         pat = Some(self.pattern()?);
+                    }
+                    // `{ a = 1 }` and `{ a: b = 1 }` supply a default for a
+                    // property that is absent or `undefined`.
+                    if self.eat(&Token::Equal) {
+                        let default = self.assign()?;
+                        let target = pat.unwrap_or(Pattern::Ident(key.clone()));
+                        pat = Some(Pattern::Default(Box::new(target), Box::new(default)));
                     }
                     props.push((key, pat));
                     if !matches!(self.cur(), Token::RBrace) {

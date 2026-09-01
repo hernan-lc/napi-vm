@@ -52,7 +52,21 @@ fn label_matches(label: &Option<String>, signal: &Option<String>) -> bool {
     }
 }
 
+/// Scope slot holding the superclass prototype inside a class member, so
+/// `super.method()` can resolve without the AST carrying a class link.
+pub(crate) const SUPER_PROTO: &str = "__super_proto__";
+
 impl Interpreter {
+    /// Resolve `super.<key>` — a lookup on the superclass prototype.
+    fn super_member(&mut self, key: &Value) -> Result<Value, VmErr> {
+        let proto = self
+            .global
+            .borrow()
+            .get(SUPER_PROTO)
+            .ok_or_else(|| VmErr::Msg("'super' used outside a derived class".to_string()))?;
+        self.get_prop_value(&proto, key)
+    }
+
     /// Build a class value from its parts: prototype methods and accessors,
     /// static members, instance fields desugared into the constructor, and
     /// static blocks run once the class exists.
@@ -75,6 +89,18 @@ impl Interpreter {
         let super_proto = match &super_cls {
             Some(Value::Class(c)) => Some(c.prototype.clone()),
             _ => None,
+        };
+
+        // Methods, getters and setters close over a scope carrying the
+        // superclass prototype, so `super.method()` inside one can find it.
+        // The constructor gets `__super_ctor` separately, below.
+        let member_closure = match &super_proto {
+            Some(proto) => {
+                let env = Rc::new(RefCell::new(Environment::child(self.global.clone())));
+                env.borrow_mut().set(SUPER_PROTO, proto.as_ref().clone());
+                env
+            }
+            None => self.global.clone(),
         };
 
         // Gather the constructor, instance fields, and methods.
@@ -100,7 +126,7 @@ impl Interpreter {
                         name: Some(mname.as_str().into()),
                         params: intern_params(mp),
                         body: Rc::new(mb.clone()),
-                        closure: Some(self.global.clone()),
+                        closure: Some(member_closure.clone()),
                         is_arrow: false,
                         is_async: *is_async,
                         is_generator: *is_generator,
@@ -144,7 +170,7 @@ impl Interpreter {
                         name: Some(format!("get {}", gname).into()),
                         params: Rc::new(vec![]),
                         body: Rc::new(gb.clone()),
-                        closure: Some(self.global.clone()),
+                        closure: Some(member_closure.clone()),
                         is_arrow: false,
                         is_async: false,
                         is_generator: false,
@@ -166,7 +192,7 @@ impl Interpreter {
                         name: Some(format!("set {}", sname).into()),
                         params: Rc::new(vec![Rc::from(param.as_str())]),
                         body: Rc::new(sb.clone()),
-                        closure: Some(self.global.clone()),
+                        closure: Some(member_closure.clone()),
                         is_arrow: false,
                         is_async: false,
                         is_generator: false,
@@ -1287,6 +1313,18 @@ impl Interpreter {
                             })?;
                         self.invoke_ctor(&super_ctor, this_val, a)
                     }
+                    // `super.m(...)`: the method comes from the superclass
+                    // prototype, but `this` stays the current receiver.
+                    Expr::Member {
+                        object,
+                        property,
+                        computed: _,
+                    } if matches!(object.as_ref(), Expr::Super) => {
+                        let this_val = self.global.borrow().get("this").unwrap_or(Value::Undefined);
+                        let prop = self.eval_expr(property)?;
+                        let method = self.super_member(&prop)?;
+                        self.call_this(&method, this_val, a)
+                    }
                     // Method call: bind `this` to the receiver object.
                     Expr::Member {
                         object,
@@ -1321,6 +1359,15 @@ impl Interpreter {
                         self.call_this(&c, Value::Undefined, a)
                     }
                 }
+            }
+            // `super.x` reads through the superclass prototype.
+            Expr::Member {
+                object,
+                property,
+                computed: _,
+            } if matches!(object.as_ref(), Expr::Super) => {
+                let p = self.eval_expr(property)?;
+                self.super_member(&p)
             }
             Expr::Member {
                 object,

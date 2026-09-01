@@ -144,6 +144,22 @@ impl Interpreter {
             }
             return self.get_prop_value(&target, p);
         }
+        // Reading a property of `null` or `undefined` is a `TypeError`, not
+        // `undefined`. Silently answering `undefined` hides the mistake and
+        // makes optional chaining pointless — `o?.a` exists precisely because
+        // `o.a` throws.
+        if matches!(o, Value::Null | Value::Undefined) {
+            let key = self.property_key(p)?;
+            return Err(VmErr::Msg(format!(
+                "TypeError: Cannot read properties of {} (reading '{}')",
+                if matches!(o, Value::Null) {
+                    "null"
+                } else {
+                    "undefined"
+                },
+                key
+            )));
+        }
         let v = self.prop(o, p)?;
         let is_getter = match &v {
             Value::Function(f) => {

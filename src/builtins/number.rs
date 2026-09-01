@@ -91,9 +91,75 @@ fn number_is_safe_integer(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Resul
 pub fn number_method(name: &str) -> Option<Value> {
     let f: NativeFn = match name {
         "toFixed" => number_to_fixed,
+        "toString" | "toLocaleString" => number_to_string,
+        "toPrecision" => number_to_precision,
+        "valueOf" => number_value_of,
         _ => return None,
     };
     Some(nf(name, f))
+}
+
+/// `toString(radix)`. Base 10 renders like every other number here; another
+/// base renders the integer part in that base, as the specification does for
+/// an integral value.
+fn number_to_string(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let value = this.to_number();
+    let radix = a.first().map(|v| v.to_number()).unwrap_or(10.0);
+    if !(2.0..=36.0).contains(&radix) {
+        return Err(VmErr::Msg(
+            "RangeError: toString() radix must be between 2 and 36".to_string(),
+        ));
+    }
+    let radix = radix as u32;
+    if radix == 10 {
+        return Ok(Value::String(crate::format::number_string(value)));
+    }
+    if !value.is_finite() {
+        return Ok(Value::String(crate::format::number_string(value)));
+    }
+    let negative = value < 0.0;
+    let mut magnitude = value.abs().trunc() as u128;
+    let mut digits = Vec::new();
+    if magnitude == 0 {
+        digits.push(b'0');
+    }
+    while magnitude > 0 {
+        let digit = (magnitude % radix as u128) as u32;
+        digits.push(std::char::from_digit(digit, radix).unwrap_or('0') as u8);
+        magnitude /= radix as u128;
+    }
+    if negative {
+        digits.push(b'-');
+    }
+    digits.reverse();
+    Ok(Value::String(
+        String::from_utf8(digits).unwrap_or_else(|_| "0".to_string()),
+    ))
+}
+
+/// `toPrecision(digits)`: `digits` significant figures.
+fn number_to_precision(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let value = this.to_number();
+    let Some(digits) = a.first().map(|v| v.to_number()) else {
+        return Ok(Value::String(crate::format::number_string(value)));
+    };
+    if !(1.0..=100.0).contains(&digits) {
+        return Err(VmErr::Msg(
+            "RangeError: toPrecision() argument must be between 1 and 100".to_string(),
+        ));
+    }
+    let digits = digits as usize;
+    if value == 0.0 {
+        return Ok(Value::String(format!("{:.*}", digits - 1, 0.0)));
+    }
+    // Significant figures = decimal places, shifted by the exponent.
+    let exponent = value.abs().log10().floor() as i32;
+    let decimals = (digits as i32 - 1 - exponent).max(0) as usize;
+    Ok(Value::String(format!("{:.*}", decimals, value)))
+}
+
+fn number_value_of(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::Number(this.to_number()))
 }
 
 fn number_to_fixed(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
