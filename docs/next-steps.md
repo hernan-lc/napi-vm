@@ -115,27 +115,63 @@ explicit work stack rather than recursing), and the `Env` chain a body's
 frame holds — every one of those releases `Rc`s the *driver* on the main
 stack still owns.
 
-**Next, and pushed with this:** two things that answer "where" without another
-guess.
+**The faulting stack**, from
+[run 33533168355](https://github.com/hernan-lc/napi-vm/actions/runs/33533168355)
+— and note the failing test moved *earlier*: ten abandonments are enough, so
+the bug is structural, not cumulative, and nothing about `cloned_…`'s aliasing
+is involved.
 
-1. `generator_stress` gains `abandoning_a_few_suspended_generators` (10) and
-   `abandoning_many_suspended_generators` (100) — the same abandonment with
-   the aliasing removed. They sort before `cloned_…`, so the last name the
-   log prints separates *structural* (10 is enough) from *cumulative* (only
-   100 faults) from *specific to that test's aliasing* (both pass).
-2. An `if: failure()` step re-runs the faulting binary under `cdb`, the
-   Windows SDK debugger on the runner image, and prints `!analyze -v` plus
-   `kP 100`. `CARGO_PROFILE_RELEASE_DEBUG: line-tables-only` on that job is
-   what makes those frames readable. It is diagnostic only — it cannot change
-   the verdict, and it is a no-op once the suite is green.
+```
+Interpreter::eval_stmt                            ← main stack, mid-execution
+  Interpreter::run_block
+    Rc::drop_slow<RefCell<Environment>>           ← block scope ends
+      smallvec::drop<[(Rc<str>, Binding); 8]>
+        drop_in_place<UnsafeCell<GeneratorInner>>
+          Coroutine::force_unwind_slow
+            stack_init_trampoline_return          ← switch to the coroutine stack
+              coroutine_func<make_generator_coroutine::closure_env$0>
+                Interpreter::run_program_body → run → eval_expr
+                  GenYielder::suspend
+                    std::panic::resume_unwind → _CxxThrowException
+                      RtlDispatchException → FindHandler
+                        UnwindNestedFrames → RtlUnwindEx
+                          __FrameHandler3::SetState(pFuncInfo = NULL)   ← FAULT
 
-An access violation is not a Rust panic: no backtrace, no message, just an
-exit code. That step is the difference between reading the faulting frame and
-guessing at it again.
+FAILURE_BUCKET_ID: NULL_CLASS_PTR_READ_c0000005_VCRUNTIME140.dll!__FrameHandler3::SetState
+UNALIGNED_STACK_POINTER: 3d0010004025c28b
+```
 
-**Options if it proves hard:** mark `generator_stress` as
-`#[cfg_attr(windows, ignore)]` with the reason recorded, and file it — better
-than leaving CI red or, worse, deleting the coverage that found it.
+The MSVC unwinder faults on a frame with a null `FuncInfo` and a garbage
+stack pointer: it is decoding something that is not a real frame. The rest is
+by design — `GenYielder::suspend` re-raising the forced-unwind panic is
+exactly how `corosensei` propagates one on Windows, where an exception cannot
+cross the stack-switch trampoline.
+
+**The one variable nothing has isolated** is *who is on the main stack when
+the drop happens*. Every abandonment that faults is dropped from
+`eval_stmt → run_block → Environment` teardown, with the driver's evaluator
+frames live beneath the switch. The single abandonment that passes
+(`a_generator_exhausting_the_loop_budget_unwinds_cleanly`) unwinds from a
+quiescent stack, after `run()` has already returned. Windows unwinding
+consults the thread's TEB stack bounds, which the switch swaps — a live deep
+main stack is the plausible difference, and it is the last untested one.
+
+**Next, and pushed with this:** two ladders that settle it in one run, both
+named so libtest's name ordering runs them before the fault.
+
+1. `generator_stress` gains `abandoning_a_single_suspended_generator` (does
+   *one* fault?) and `abandoning_after_the_program_ends` — the same ten
+   abandonments, but held reachable until the program finishes so they unwind
+   during `Interpreter` teardown instead of from inside `run_block`. If that
+   passes while `abandoning_ten_…` faults, the trigger is confirmed.
+2. `coroutine_backend` gains `t7`/`t8`: the same drop-while-suspended as `t3`,
+   but performed 64 frames deep in the *caller's* stack, and with both stacks
+   deep at once. Stages 1–6 all drop from a shallow test frame, which is the
+   one way they differ from the real thing. If `t7` faults, there is a
+   pure-`corosensei` reproducer to file upstream after all.
+
+The `cdb` capture stays in place, so whichever test dies also prints its
+stack.
 
 ### 3. Windows aarch64 — `corosensei` does not build at all — fixed
 
@@ -216,7 +252,7 @@ than an unimplemented stub, revert `7ab6b0b`.
 ## Health
 
 - **Tests:** 1378 (bun) · 184 Rust · 27 LSP protocol · 17 Node-compat ·
-  19 generator stress · 7 WASM · 6 coroutine backend.
+  21 generator stress · 8 coroutine backend · 7 WASM.
 - **Gate:** `lint`, `build`, `test`, `test:node`, `test:rust`, `test:wasm` —
   all green locally, on every target including `wasm32`, `wasm32-wasip2` and
   `aarch64-pc-windows-msvc`.

@@ -157,6 +157,63 @@ fn t5_coroutines_dropped_while_suspended_deep() {
 }
 
 #[test]
+fn t7_dropped_from_deep_in_the_callers_stack() {
+    // The variable stages 1-6 never move: *who is on the main stack* when the
+    // drop happens. Those all drop from a shallow test frame; the captured
+    // Windows fault drops from `eval_stmt -> run_block -> Environment`
+    // teardown, with the driver's evaluator frames live beneath it.
+    //
+    // Windows unwinding consults the thread's TEB stack bounds, which the
+    // switch swaps. If a deep, live main stack changes what the unwinder sees
+    // while it walks the coroutine stack, it shows up here and nowhere else.
+    fn drop_at_depth(depth: u32) {
+        let _frame = [depth; 32];
+        if depth != 0 {
+            return drop_at_depth(depth - 1);
+        }
+        let mut c = spawn(|y, _| {
+            y.suspend(1);
+            0
+        });
+        c.resume(());
+        drop(c);
+    }
+
+    for _ in 0..ROUNDS {
+        drop_at_depth(64);
+    }
+}
+
+#[test]
+fn t8_deep_coroutine_dropped_from_deep_in_the_callers_stack() {
+    // Both stacks deep at once, which is the shape a real generator has: a
+    // body suspended inside nested evaluator calls, abandoned by a driver
+    // that is itself nested.
+    fn suspend_at_depth(y: &Yielder<(), u32>, depth: u32) -> u32 {
+        let _frame = [depth; 32];
+        if depth == 0 {
+            y.suspend(1);
+            return 0;
+        }
+        suspend_at_depth(y, depth - 1)
+    }
+
+    fn drop_at_depth(depth: u32) {
+        let _frame = [depth; 32];
+        if depth != 0 {
+            return drop_at_depth(depth - 1);
+        }
+        let mut c = spawn(|y, _| suspend_at_depth(y, 32));
+        c.resume(());
+        drop(c);
+    }
+
+    for _ in 0..ROUNDS {
+        drop_at_depth(32);
+    }
+}
+
+#[test]
 fn t6_nested_coroutines_dropped_while_both_suspended() {
     // `nested_generators_abandoned_mid_flight`: an outer coroutine is itself
     // the caller resuming an inner one, so dropping the outer force-unwinds a

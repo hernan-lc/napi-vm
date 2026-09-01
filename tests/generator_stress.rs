@@ -107,19 +107,72 @@ fn generators_abandoned_while_suspended() {
     assert_eq!(out, "200");
 }
 
-/// The same abandonment as above, at two scales.
+/// Bisecting a `STATUS_ACCESS_VIOLATION` that only Windows x86_64 shows.
 ///
-/// These exist to bisect a `STATUS_ACCESS_VIOLATION` that only Windows
-/// x86_64 shows, in `cloned_generator_values_share_one_coroutine`. libtest
-/// runs single-threaded tests in name order, and a fault kills the process,
-/// so the last name printed is the answer: `a_few` faulting means the bug is
-/// structural, only `many` faulting means it is cumulative, and both passing
-/// means something specific to that test's aliasing is involved.
+/// libtest runs single-threaded tests in name order and a process fault kills
+/// the run, so the last name printed is the answer. These four are named to
+/// sort into a ladder that varies one thing at a time:
 ///
-/// `tests/coroutine_backend.rs` already rules out the coroutine backend
-/// itself: it survives 200 of these unwinds with no interpreter attached.
+/// | | abandons | dropped from |
+/// |---|---|---|
+/// | `abandoning_a_single_…`   | 1   | inside the evaluator |
+/// | `abandoning_after_the_…`  | 10  | interpreter teardown, program over |
+/// | `abandoning_many_…`       | 100 | inside the evaluator |
+/// | `abandoning_ten_…`        | 10  | inside the evaluator |
+///
+/// `tests/coroutine_backend.rs` already cleared the coroutine backend: it
+/// survives 200 of these unwinds with no interpreter attached. The captured
+/// faulting stack puts the drop under `eval_stmt → run_block → Environment`
+/// teardown — that is, while the *driver* is deep in the evaluator on the
+/// main stack — where the one passing abandonment
+/// (`a_generator_exhausting_the_loop_budget_unwinds_cleanly`) unwinds from a
+/// quiescent stack after `run()` has already returned. That is the variable
+/// `abandoning_after_the_program_ends` holds fixed.
 #[test]
-fn abandoning_a_few_suspended_generators() {
+fn abandoning_a_single_suspended_generator() {
+    // If even one faults, the bug is entirely structural and nothing about
+    // repetition matters.
+    let out = run(r#"
+        function* counter() { yield 1; yield 2; yield 3; }
+        let sum = 0;
+        {
+            const g = counter();
+            sum = sum + g.next().value;
+            sum = sum + g.next().value;
+            sum = sum + g.next().value;
+        }
+        sum;
+    "#);
+    assert_eq!(out, "6");
+}
+
+#[test]
+fn abandoning_after_the_program_ends() {
+    // Same ten abandonments, but the generators stay reachable until the
+    // program finishes, so their coroutines are force-unwound during
+    // `Interpreter` teardown rather than from inside `run_block`. If this
+    // passes while `abandoning_ten_suspended_generators` faults, the trigger
+    // is unwinding while the driver's evaluator frames are live.
+    let out = run(r#"
+        function* counter() { yield 1; yield 2; yield 3; }
+        const held = [];
+        let sum = 0;
+        let i = 0;
+        while (i < 10) {
+            const g = counter();
+            held.push(g);
+            sum = sum + g.next().value;
+            sum = sum + g.next().value;
+            sum = sum + g.next().value;
+            i = i + 1;
+        }
+        sum;
+    "#);
+    assert_eq!(out, "60");
+}
+
+#[test]
+fn abandoning_ten_suspended_generators() {
     let out = run(r#"
         function* counter() { yield 1; yield 2; yield 3; }
         let sum = 0;
