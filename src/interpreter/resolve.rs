@@ -148,6 +148,49 @@ impl Interpreter {
         self.vs(value)
     }
 
+    /// Does `+` have to reduce this value to a primitive first?
+    ///
+    /// Objects and arrays do: `1 + [2]` is `"12"`, because the array becomes
+    /// the string `"2"` before the operator sees it. Everything else is
+    /// already primitive, and `bin_op` handles it directly.
+    pub(crate) fn needs_concat_coercion(value: &Value) -> bool {
+        matches!(
+            value,
+            Value::Object { .. } | Value::Array(_) | Value::Error(_) | Value::Proxy(_)
+        )
+    }
+
+    /// Reduce an operand of `+` to a primitive, the way `ToPrimitive` with no
+    /// hint does: `valueOf` first, then `toString`, taking whichever returns a
+    /// primitive.
+    ///
+    /// The order is what makes `1 + obj` numeric addition when `obj` has a
+    /// `valueOf`, and string concatenation when it only has a `toString`.
+    ///
+    /// `bin_op` cannot do this itself: it runs from `&self` positions, so it
+    /// has no way to call guest code. Doing it here, before the operator sees
+    /// the values, keeps that restriction.
+    pub(crate) fn coerce_for_concat(&mut self, value: &Value) -> Result<Value, VmErr> {
+        if !Self::needs_concat_coercion(value) {
+            return Ok(value.clone());
+        }
+        for method in ["valueOf", "toString"] {
+            let callable = self.member(value, method)?;
+            if !matches!(
+                callable,
+                Value::Function(_) | Value::NativeFunction { .. } | Value::HostFunction { .. }
+            ) {
+                continue;
+            }
+            let produced = self.call_this(&callable, value.clone(), vec![])?;
+            if !Self::needs_concat_coercion(&produced) {
+                return Ok(produced);
+            }
+        }
+        // Neither yielded a primitive: fall back to the built-in rendering.
+        Ok(Value::String(self.vs(value)?))
+    }
+
     /// Read a string-keyed property, running a getter if one is installed.
     pub(crate) fn member(&mut self, o: &Value, key: &str) -> Result<Value, VmErr> {
         self.get_prop_value(o, &Value::String(key.to_string()))

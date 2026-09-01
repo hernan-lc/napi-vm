@@ -25,6 +25,9 @@ Every claim below was checked against the current build.
 
 - Arithmetic, operators, control flow (including labelled `break` and
   `continue`), functions, closures, recursion
+- **Coercion**: `ToPrimitive` for `+` (a guest `valueOf` then `toString`), and
+  the numeric conversions — `1 + [2]` is `"12"`, `[2] * 3` is `6`, `{} * 3` is
+  `NaN` (`tests/errors.test.js`)
 - **Lexical scoping**: block scope, `let`/`const`/`var` as distinct kinds,
   the temporal dead zone, `var`/function hoisting, per-iteration `let`
   bindings in `for` loops (`tests/scoping.test.js`)
@@ -152,11 +155,6 @@ Every claim below was checked against the current build.
   that fires from inside a VM execution is refused with "VM is busy" rather
   than running two executions at once. Generators cross as `undefined`, since
   a host iterator would need the same re-entrancy.
-- **String coercion** — a guest `toString` is honoured by `String(x)`,
-  template literals and `console.*`, but not by `+` concatenation. `vs`, the
-  universal stringifier, runs from `&self` positions including inside the
-  fused read-modify-write that holds the scope mutably borrowed; calling a
-  method there would re-enter the interpreter mid-borrow.
 - **LSP** — document formatting and code actions are not implemented.
   Formatting would need a printer that reconstructs source from the AST, which
   does not retain comments; a formatter that deletes them is worse than none.

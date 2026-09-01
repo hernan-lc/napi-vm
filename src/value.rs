@@ -925,9 +925,20 @@ impl Value {
             }
             Value::BigInt(value) => value.to_f64(),
             Value::Date(ms) => ms.get(),
+            // An array converts through its string form, which is why `[1] * 3`
+            // is 3, `[] * 3` is 0 and `[1, 2] * 3` is NaN.
+            Value::Array(cell) => {
+                let items = cell.borrow();
+                match items.len() {
+                    0 => 0.0,
+                    1 => items[0].to_number(),
+                    _ => f64::NAN,
+                }
+            }
             Value::StringIterator { .. } => 0.0,
             Value::Null => 0.0,
-            Value::Undefined => f64::NAN,
+            // An object has no numeric value: `{} * 3` is NaN, not 0.
+            Value::Undefined | Value::Object { .. } | Value::Error(_) => f64::NAN,
             _ => 0.0,
         }
     }

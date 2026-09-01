@@ -1242,6 +1242,15 @@ impl Interpreter {
                 let r = self.eval_expr(right)?;
                 // A proxy's `has` trap answers `in`. It runs guest code, so it
                 // cannot live in `bin_op`, which does not borrow mutably.
+                // `+` may need to run a guest `toString`, which `bin_op`
+                // cannot do from `&self`. Coerce the operands first.
+                if matches!(op, crate::parser::BinOp::Add)
+                    && (Self::needs_concat_coercion(&l) || Self::needs_concat_coercion(&r))
+                {
+                    let left = self.coerce_for_concat(&l)?;
+                    let right = self.coerce_for_concat(&r)?;
+                    return self.bin_op(*op, &left, &right);
+                }
                 if matches!(op, crate::parser::BinOp::In)
                     && let Some(proxy) = r.as_proxy()
                 {
@@ -1542,22 +1551,47 @@ impl Interpreter {
                 let v = self.eval_expr(value)?;
                 match target.as_ref() {
                     Expr::Identifier(n) => {
+                        let v = if matches!(op, AssignOp::Add) {
+                            self.coerce_for_concat(&v)?
+                        } else {
+                            v
+                        };
                         let fv = if let Some(bin) = op.bin_op() {
                             // Fused read-modify-write: one `borrow_mut` + one
                             // scan instead of a read borrow then a write borrow.
                             // `bin_op` can still fail (e.g. string-length cap);
                             // capture the error and leave the slot unchanged.
                             let mut err = None;
+                            // An object on the *left* of `+=` needs its
+                            // `toString`, which cannot run while the scope is
+                            // borrowed. Detect it here and redo the whole
+                            // assignment outside the borrow, leaving the slot
+                            // untouched in the meantime.
+                            let mut deferred = None;
                             let res = {
                                 let mut env = self.global.borrow_mut();
-                                env.modify(n, |cur| match self.bin_op(bin, &cur, &v) {
-                                    Ok(new) => new,
-                                    Err(e) => {
-                                        err = Some(e);
-                                        cur
+                                env.modify(n, |cur| {
+                                    if matches!(bin, crate::parser::BinOp::Add)
+                                        && Self::needs_concat_coercion(&cur)
+                                    {
+                                        deferred = Some(cur.clone());
+                                        return cur;
+                                    }
+                                    match self.bin_op(bin, &cur, &v) {
+                                        Ok(new) => new,
+                                        Err(e) => {
+                                            err = Some(e);
+                                            cur
+                                        }
                                     }
                                 })
                             };
+                            if let Some(current) = deferred {
+                                let left = self.coerce_for_concat(&current)?;
+                                let combined = self.bin_op(bin, &left, &v)?;
+                                self.assign_or_set_binding(n, combined.clone())?;
+                                return Ok(combined);
+                            }
                             if let Some(e) = err {
                                 return Err(e);
                             }

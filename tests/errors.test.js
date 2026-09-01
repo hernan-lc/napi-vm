@@ -110,3 +110,60 @@ test("a non-string return is coerced", () => {
 test("an object without toString still renders opaquely", () => {
   expect(runCode("String({});")).toBe("[object Object]");
 });
+
+// --- Coercion in operators --------------------------------------------------
+
+test("a custom toString is used by concatenation", () => {
+  expect(runCode("const o = { toString() { return 'O'; } }; '' + o;")).toBe("O");
+  expect(runCode("const o = { toString() { return 'O'; } }; o + '!';")).toBe("O!");
+});
+
+test("compound concatenation uses it on either side", () => {
+  expect(runCode("const o = { toString() { return 'O'; } }; let s = 'a'; s += o; s;")).toBe("aO");
+  expect(runCode("let o = { toString() { return 'O'; } }; o += '!'; o;")).toBe("O!");
+});
+
+test("valueOf wins over toString for the default hint", () => {
+  expect(runCode("const o = { valueOf() { return 5; } }; 1 + o;")).toBe("6");
+  expect(runCode("const o = { valueOf() { return 2 }, toString() { return 't'; } }; o + 1;")).toBe(
+    "3",
+  );
+});
+
+test("a toString returning a number makes + numeric", () => {
+  expect(runCode("const o = { toString() { return 5; } }; 1 + o;")).toBe("6");
+});
+
+test("an object without either renders opaquely", () => {
+  expect(runCode("1 + {};")).toBe("1[object Object]");
+  expect(runCode("'' + new Error('x');")).toBe("Error: x");
+});
+
+test("arrays reduce to their string form", () => {
+  expect(runCode("1 + [2];")).toBe("12");
+  expect(runCode("1 + [];")).toBe("1");
+  expect(runCode("1 + [1, 2];")).toBe("11,2");
+  expect(runCode("[1] + [2];")).toBe("12");
+});
+
+test("numeric operators coerce through the string form too", () => {
+  expect(runCode("[2] * 3;")).toBe("6");
+  expect(runCode("[] * 3;")).toBe("0");
+  expect(runCode("[1, 2] * 3;")).toBe("NaN");
+  expect(runCode("1 - [1];")).toBe("0");
+});
+
+test("an object has no numeric value", () => {
+  expect(runCode("1 - {};")).toBe("NaN");
+  expect(runCode("Number({});")).toBe("NaN");
+});
+
+test("Number() follows the same rules", () => {
+  expect(runCode("Number([1]);")).toBe("1");
+  expect(runCode("Number([]);")).toBe("0");
+  expect(runCode("+[3];")).toBe("3");
+});
+
+test("numeric compound assignment is unaffected", () => {
+  expect(runCode("let i = 0; for (let k = 0; k < 3; k++) i += 1; i;")).toBe("3");
+});
