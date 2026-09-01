@@ -996,6 +996,84 @@ fn run_buffered_generator(
     Ok((produced.into(), returned))
 }
 
+/// `Generator.prototype.throw`: raise a value at the suspension point, so a
+/// `try`/`catch` around the `yield` inside the body sees it.
+pub(crate) fn generator_throw(
+    _interp: &mut Interpreter,
+    this: Value,
+    args: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let thrown = args.into_iter().next().unwrap_or(Value::Undefined);
+    let Value::Generator { inner } = &this else {
+        return Err(VmErr::Throw(thrown));
+    };
+
+    // Nothing is suspended on a target without stack switching, and a
+    // generator that has not started or has finished re-throws at the caller.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut coroutine = {
+            let mut state = inner.borrow_mut();
+            if state.done || !state.started {
+                state.done = true;
+                return Err(VmErr::Throw(thrown));
+            }
+            match state.coroutine.take() {
+                Some(coroutine) => coroutine,
+                None => return vm_err("TypeError: Generator is already running"),
+            }
+        };
+        let outcome = coroutine.resume(GenResume::Throw(thrown));
+        let mut state = inner.borrow_mut();
+        match outcome {
+            corosensei::CoroutineResult::Yield(value) => {
+                // The body caught it and yielded again.
+                state.coroutine = Some(coroutine);
+                Ok(iter_result(value, false))
+            }
+            corosensei::CoroutineResult::Return(GenOutcome::Returned(value)) => {
+                state.done = true;
+                state.return_value = Some(value.clone());
+                Ok(iter_result(value, true))
+            }
+            corosensei::CoroutineResult::Return(GenOutcome::Threw(value)) => {
+                state.done = true;
+                Err(VmErr::Throw(value))
+            }
+            corosensei::CoroutineResult::Return(GenOutcome::Failed(message)) => {
+                state.done = true;
+                Err(VmErr::Msg(message))
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        inner.borrow_mut().done = true;
+        Err(VmErr::Throw(thrown))
+    }
+}
+
+/// `Generator.prototype.return`: finish the generator, running any `finally`
+/// blocks around the suspension point, and report the given value.
+pub(crate) fn generator_return(
+    _interp: &mut Interpreter,
+    this: Value,
+    args: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let value = args.into_iter().next().unwrap_or(Value::Undefined);
+    if let Value::Generator { inner } = &this {
+        #[cfg(not(target_arch = "wasm32"))]
+        inner.borrow_mut().close();
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut state = inner.borrow_mut();
+            state.done = true;
+            state.buffered.clear();
+        }
+    }
+    Ok(iter_result(value, true))
+}
+
 /// Build an iterator result object `{ value, done }`.
 pub(crate) fn iter_result(value: Value, done: bool) -> Value {
     Value::object(vec![

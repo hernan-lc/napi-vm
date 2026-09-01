@@ -264,6 +264,16 @@ impl Interpreter {
                         name: "next".into(),
                         callable: super::call::generator_next,
                     })
+                } else if k == "throw" {
+                    Ok(Value::NativeFunction {
+                        name: "throw".into(),
+                        callable: super::call::generator_throw,
+                    })
+                } else if k == "return" {
+                    Ok(Value::NativeFunction {
+                        name: "return".into(),
+                        callable: super::call::generator_return,
+                    })
                 } else if k == "__symbol_iterator__" {
                     // Generators are their own iterators: [Symbol.iterator]()
                     // returns `this`.

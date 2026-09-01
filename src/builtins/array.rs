@@ -121,9 +121,200 @@ pub fn array_method(name: &str) -> Option<Value> {
         "flat" => array_flat,
         "flatMap" => array_flat_map,
         "reduceRight" => array_reduce_right,
+        "at" => array_at,
+        "findIndex" => array_find_index,
+        "findLast" => array_find_last,
+        "findLastIndex" => array_find_last_index,
+        "lastIndexOf" => array_last_index_of,
+        "shift" => array_shift,
+        "unshift" => array_unshift,
+        "fill" => array_fill,
+        "keys" => array_keys,
+        "values" => array_values,
+        "entries" => array_entries,
         _ => return None,
     };
     Some(nf(name, f))
+}
+
+/// `at(index)`: a negative index counts back from the end.
+fn array_at(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let items = arr_items(&this);
+    let index = a.first().map(|v| v.to_number()).unwrap_or(0.0);
+    let index = if index < 0.0 {
+        items.len() as f64 + index
+    } else {
+        index
+    };
+    if !index.is_finite() || index < 0.0 || index >= items.len() as f64 {
+        return Ok(Value::Undefined);
+    }
+    Ok(items[index as usize].clone())
+}
+
+/// Walk the elements, returning the first that satisfies `predicate`.
+/// `reverse` searches from the end; `want_index` returns the position rather
+/// than the element.
+fn search(
+    interp: &mut Interpreter,
+    this: &Value,
+    a: &[Value],
+    reverse: bool,
+    want_index: bool,
+) -> Result<Value, VmErr> {
+    let items = arr_items(this);
+    let predicate = a.first().cloned().unwrap_or(Value::Undefined);
+    let positions: Vec<usize> = if reverse {
+        (0..items.len()).rev().collect()
+    } else {
+        (0..items.len()).collect()
+    };
+    for index in positions {
+        let hit = interp.call_this(
+            &predicate,
+            Value::Undefined,
+            vec![
+                items[index].clone(),
+                Value::Number(index as f64),
+                this.clone(),
+            ],
+        )?;
+        if hit.is_truthy() {
+            return Ok(if want_index {
+                Value::Number(index as f64)
+            } else {
+                items[index].clone()
+            });
+        }
+    }
+    Ok(if want_index {
+        Value::Number(-1.0)
+    } else {
+        Value::Undefined
+    })
+}
+
+fn array_find_index(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    search(interp, &this, &a, false, true)
+}
+fn array_find_last(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    search(interp, &this, &a, true, false)
+}
+fn array_find_last_index(
+    interp: &mut Interpreter,
+    this: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
+    search(interp, &this, &a, true, true)
+}
+
+fn array_last_index_of(
+    interp: &mut Interpreter,
+    this: Value,
+    a: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let items = arr_items(&this);
+    let needle = a.first().cloned().unwrap_or(Value::Undefined);
+    for index in (0..items.len()).rev() {
+        if interp.seq(&items[index], &needle) {
+            return Ok(Value::Number(index as f64));
+        }
+    }
+    Ok(Value::Number(-1.0))
+}
+
+/// `shift()`: remove and return the first element.
+fn array_shift(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    let Value::Array(cell) = &this else {
+        return Ok(Value::Undefined);
+    };
+    let mut items = cell.borrow_mut();
+    if items.is_empty() {
+        return Ok(Value::Undefined);
+    }
+    Ok(items.remove(0))
+}
+
+/// `unshift(...values)`: prepend, returning the new length.
+fn array_unshift(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let Value::Array(cell) = &this else {
+        return Ok(Value::Number(0.0));
+    };
+    let mut items = cell.borrow_mut();
+    if items.len().saturating_add(a.len()) > crate::value::MAX_ARRAY_LEN {
+        return Err(crate::value::limit_err("Maximum array length exceeded"));
+    }
+    for (offset, value) in a.into_iter().enumerate() {
+        items.insert(offset, value);
+    }
+    Ok(Value::Number(items.len() as f64))
+}
+
+/// `fill(value, start, end)`.
+fn array_fill(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let Value::Array(cell) = &this else {
+        return Ok(this.clone());
+    };
+    let length = cell.borrow().len();
+    let resolve = |value: Option<&Value>, default: usize| -> usize {
+        match value {
+            Some(Value::Undefined) | None => default,
+            Some(v) => {
+                let n = v.to_number();
+                if !n.is_finite() {
+                    return if n > 0.0 { length } else { 0 };
+                }
+                if n < 0.0 {
+                    ((length as f64 + n).max(0.0)) as usize
+                } else {
+                    (n as usize).min(length)
+                }
+            }
+        }
+    };
+    let start = resolve(a.get(1), 0);
+    let end = resolve(a.get(2), length).max(start);
+    let value = a.first().cloned().unwrap_or(Value::Undefined);
+    let mut items = cell.borrow_mut();
+    for slot in items.iter_mut().take(end).skip(start) {
+        *slot = value.clone();
+    }
+    drop(items);
+    Ok(this)
+}
+
+/// Build an iterator over a projection of the elements. `keys()`, `values()`
+/// and `entries()` differ only in what each step produces.
+fn iterate_projection(
+    interp: &mut Interpreter,
+    this: &Value,
+    project: impl Fn(usize, &Value) -> Value,
+) -> Result<Value, VmErr> {
+    let projected: Vec<Value> = arr_items(this)
+        .iter()
+        .enumerate()
+        .map(|(index, value)| project(index, value))
+        .collect();
+    let array = Value::checked_array(projected)?;
+    let iterator = interp.prop(
+        &array,
+        &Value::String(crate::interpreter::SYMBOL_ITERATOR_SLOT.to_string()),
+    )?;
+    interp.call_this(&iterator, array, vec![])
+}
+
+fn array_keys(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    iterate_projection(interp, &this, |index, _| Value::Number(index as f64))
+}
+
+fn array_values(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    iterate_projection(interp, &this, |_, value| value.clone())
+}
+
+fn array_entries(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    iterate_projection(interp, &this, |index, value| {
+        Value::array(vec![Value::Number(index as f64), value.clone()])
+    })
 }
 
 fn array_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {

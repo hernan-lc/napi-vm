@@ -98,10 +98,12 @@ test("DOM APIs are sandboxed objects", () => {
   expect(vm.run("typeof AbortController;")).toBe("object");
 });
 
-test("TextEncoder/TextDecoder sandboxed", () => {
+test("TextEncoder/TextDecoder are pure transforms", () => {
   const vm = new Vm();
-  expect(vm.run("typeof TextEncoder;")).toBe("object");
-  expect(vm.run("typeof TextDecoder;")).toBe("object");
+  // Encoding and decoding are pure transforms, so they are implemented
+  // rather than stubbed; they reach nothing outside the sandbox.
+  expect(vm.run("typeof TextEncoder;")).toBe("function");
+  expect(vm.run("typeof TextDecoder;")).toBe("function");
 });
 
 test("Blob/File/FormData sandboxed", () => {
@@ -157,9 +159,11 @@ test("Proxy intercepts guest objects only", () => {
   expect(vm.run("new Proxy({ a: 1 }, {}).a;")).toBe("1");
 });
 
-test("structuredClone is sandboxed", () => {
+test("structuredClone is a pure deep copy, not host reach", () => {
   const vm = new Vm();
-  expect(vm.run("typeof structuredClone;")).toBe("object");
+  // It copies values the guest already holds; it reaches nothing.
+  expect(vm.run("typeof structuredClone;")).toBe("function");
+  expect(vm.run("structuredClone({ a: 1 }).a;")).toBe("1");
 });
 
 test("queueMicrotask runs on the VM's own queue", () => {

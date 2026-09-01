@@ -15,6 +15,7 @@ pub(crate) mod regexp;
 mod string;
 mod symbol;
 mod typedarray;
+mod web;
 
 pub(crate) use promise::promise_method;
 
@@ -435,6 +436,7 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     typedarray::install(e);
     proxy::install(e);
     function::install(e);
+    web::install(e);
     symbol::install(e);
     // Global functions.
     e.set("parseInt", nf("parseInt", number::parse_int));
