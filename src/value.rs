@@ -273,6 +273,65 @@ pub struct RegExpData {
     pub last_index: std::cell::Cell<usize>,
 }
 
+/// The bytes behind an `ArrayBuffer`, shared by every view onto it.
+pub type Buffer = Rc<RefCell<Vec<u8>>>;
+
+/// A typed array's element type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedKind {
+    Int8,
+    Uint8,
+    /// `Uint8ClampedArray`: saturates instead of wrapping, and rounds to
+    /// nearest instead of truncating.
+    Uint8Clamped,
+    Int16,
+    Uint16,
+    Int32,
+    Uint32,
+    Float32,
+    Float64,
+    BigInt64,
+    BigUint64,
+}
+
+impl TypedKind {
+    pub fn size(self) -> usize {
+        match self {
+            TypedKind::Int8 | TypedKind::Uint8 | TypedKind::Uint8Clamped => 1,
+            TypedKind::Int16 | TypedKind::Uint16 => 2,
+            TypedKind::Int32 | TypedKind::Uint32 | TypedKind::Float32 => 4,
+            TypedKind::Float64 | TypedKind::BigInt64 | TypedKind::BigUint64 => 8,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TypedKind::Int8 => "Int8Array",
+            TypedKind::Uint8 => "Uint8Array",
+            TypedKind::Uint8Clamped => "Uint8ClampedArray",
+            TypedKind::Int16 => "Int16Array",
+            TypedKind::Uint16 => "Uint16Array",
+            TypedKind::Int32 => "Int32Array",
+            TypedKind::Uint32 => "Uint32Array",
+            TypedKind::Float32 => "Float32Array",
+            TypedKind::Float64 => "Float64Array",
+            TypedKind::BigInt64 => "BigInt64Array",
+            TypedKind::BigUint64 => "BigUint64Array",
+        }
+    }
+}
+
+/// A window onto a buffer: shared by the typed arrays and `DataView`, which
+/// differ only in how they interpret it.
+#[derive(Debug)]
+pub struct TypedArrayData {
+    pub kind: TypedKind,
+    pub buffer: Buffer,
+    pub byte_offset: usize,
+    /// Element count for a typed array; *byte* count for a `DataView`.
+    pub length: usize,
+}
+
 /// Payload of `Value::Error`, boxed so the enum itself stays small.
 #[derive(Debug, Clone)]
 pub struct ErrorData {
@@ -327,6 +386,13 @@ pub enum Value {
         id: usize,
     },
     Symbol(Rc<SymbolData>),
+    /// Raw bytes. Shared, so every view onto it sees the same storage.
+    ArrayBuffer(Buffer),
+    /// A typed view onto a buffer: an element type plus a window.
+    TypedArray(Rc<TypedArrayData>),
+    /// A `DataView`: the same window, read and written one element at a time
+    /// with an explicit type and byte order.
+    DataView(Rc<TypedArrayData>),
     /// An arbitrary-precision integer. A separate numeric type, not a wider
     /// `Number`: mixing the two in arithmetic is a `TypeError`, which is what
     /// keeps `BigInt` from silently losing precision.

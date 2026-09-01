@@ -261,6 +261,15 @@ impl Interpreter {
                 }
                 Ok(())
             }
+            // Writing an element of a typed array converts and wraps it to
+            // the element type; an out-of-range index is ignored, not grown.
+            (Value::TypedArray(view), key) => {
+                let index = self.tn(key);
+                if index.is_finite() && index >= 0.0 && index.fract() == 0.0 {
+                    crate::builtins::write_element(view, index as usize, &val)?;
+                }
+                Ok(())
+            }
             // `re.lastIndex = 0` resets a global pattern's scan position.
             (Value::RegExp(data), Value::String(k)) if k == "lastIndex" => {
                 let index = self.tn(&val);
@@ -581,7 +590,10 @@ impl Interpreter {
             && let Some(target) =
                 callable_slot(f, CONSTRUCT_SLOT).or_else(|| callable_slot(f, CALL_SLOT))
         {
-            return self.call_this(&target, Value::Undefined, args);
+            // The namespace object is the receiver, so a shared implementation
+            // can tell which built-in it was reached through — `Int8Array` and
+            // `Float64Array` differ only by what their namespace carries.
+            return self.call_this(&target, f.clone(), args);
         }
         match f {
             Value::Class(c) => {

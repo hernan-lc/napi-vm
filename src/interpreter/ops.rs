@@ -424,6 +424,7 @@ impl Interpreter {
                     Value::Symbol(_) => "symbol",
                     Value::Error(_) | Value::RegExp(_) => "object",
                     Value::BigInt(_) => "bigint",
+                    Value::ArrayBuffer(_) | Value::TypedArray(_) | Value::DataView(_) => "object",
                     // Internal values, resolved before they reach guest code.
                     #[cfg(not(target_arch = "wasm32"))]
                     Value::AsyncTask(_) => "object",
@@ -535,6 +536,20 @@ impl Interpreter {
                 output.push_str(&format!("/{}/{}", re.regex.source, re.regex.flags))
             }
             Value::BigInt(value) => output.push_str(&value.to_decimal()),
+            // A typed array stringifies as its elements, like an array.
+            Value::TypedArray(view) => {
+                for index in 0..view.length {
+                    if index > 0 {
+                        output.push_char(',')?;
+                    }
+                    let element =
+                        crate::builtins::read_element(view, index).unwrap_or(Value::Undefined);
+                    self.vs_rec(&element, visited, depth + 1, &mut *output)?;
+                }
+                Ok(())
+            }
+            Value::ArrayBuffer(_) => output.push_str("[object ArrayBuffer]"),
+            Value::DataView(_) => output.push_str("[object DataView]"),
             #[cfg(not(target_arch = "wasm32"))]
             Value::AsyncTask(_) => output.push_str("[object AsyncTask]"),
             Value::Undefined => output.push_str("undefined"),

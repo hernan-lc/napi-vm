@@ -206,6 +206,13 @@ fn render_plain_value(
         // A BigInt renders with an `n` suffix when inspected, matching the
         // literal syntax; plain string coercion drops it.
         Value::BigInt(value) => output.push_str(&value.to_decimal()),
+        Value::ArrayBuffer(bytes) => {
+            output.push_str(&format!("[object ArrayBuffer({})]", bytes.borrow().len()))
+        }
+        Value::TypedArray(view) => {
+            output.push_str(&format!("{}({})", view.kind.name(), view.length))
+        }
+        Value::DataView(view) => output.push_str(&format!("[object DataView({})]", view.length)),
         #[cfg(not(target_arch = "wasm32"))]
         Value::AsyncTask(_) => output.push_str("[object AsyncTask]"),
         Value::Undefined => output.push_str("undefined"),
@@ -408,6 +415,21 @@ fn render_inspect_value(
         Value::BigInt(value) => {
             painter.write_wrapped(context.output, "33", &format!("{}n", value.to_decimal()))
         }
+        Value::ArrayBuffer(bytes) => painter.write_wrapped(
+            context.output,
+            "2;37",
+            &format!("ArrayBuffer({})", bytes.borrow().len()),
+        ),
+        Value::TypedArray(view) => painter.write_wrapped(
+            context.output,
+            "2;37",
+            &format!("{}({})", view.kind.name(), view.length),
+        ),
+        Value::DataView(view) => painter.write_wrapped(
+            context.output,
+            "2;37",
+            &format!("DataView({})", view.length),
+        ),
         #[cfg(not(target_arch = "wasm32"))]
         Value::AsyncTask(_) => painter.write_wrapped(context.output, "2;37", "[object AsyncTask]"),
         Value::Undefined => painter.write_wrapped(context.output, "2;37", "undefined"),

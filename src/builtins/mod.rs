@@ -12,6 +12,7 @@ mod reflect;
 pub(crate) mod regexp;
 mod string;
 mod symbol;
+mod typedarray;
 
 pub(crate) use promise::promise_method;
 
@@ -24,6 +25,9 @@ pub use regexp::regexp_member;
 pub use string::string_method;
 pub use symbol::symbol_method;
 pub(crate) use symbol::{is_iterator_symbol, symbol_for, symbol_key_for, well_known};
+pub use typedarray::{
+    array_buffer_member, data_view_member, note_method, read_element, typed_member, write_element,
+};
 
 use crate::error::VmErr;
 use crate::interpreter::{Env, Interpreter};
@@ -424,6 +428,7 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     collections::install(e);
     regexp::install(e);
     bigint::install(e);
+    typedarray::install(e);
     symbol::install(e);
     // Global functions.
     e.set("parseInt", nf("parseInt", number::parse_int));

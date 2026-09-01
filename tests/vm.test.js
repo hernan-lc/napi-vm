@@ -114,7 +114,10 @@ test("web APIs exist", () => {
   expect(vm.run("typeof RegExp;")).toBe("function");
   expect(vm.run("typeof Error;")).toBe("function");
   expect(vm.run("typeof TypeError;")).toBe("function");
-  expect(vm.run("typeof ArrayBuffer;")).toBe("object");
+  // `ArrayBuffer` and the typed-array views are real constructors.
+  expect(vm.run("typeof ArrayBuffer;")).toBe("function");
+  expect(vm.run("typeof Uint8Array;")).toBe("function");
+  expect(vm.run("typeof DataView;")).toBe("function");
   expect(vm.run("typeof crypto;")).toBe("object");
   expect(vm.run("typeof navigator;")).toBe("object");
   expect(vm.run("typeof self;")).toBe("object");

@@ -296,6 +296,40 @@ impl Interpreter {
                 }
             }
 
+            // A typed array resolves an index to an element and anything
+            // else to a member. `note_method` records which name a delegating
+            // method was reached under, since a native function is a bare
+            // pointer that cannot carry it.
+            (Value::TypedArray(view), Value::Number(i)) => {
+                if !i.is_finite() || *i < 0.0 || i.fract() != 0.0 {
+                    return Ok(Value::Undefined);
+                }
+                Ok(crate::builtins::read_element(view, *i as usize).unwrap_or(Value::Undefined))
+            }
+            (Value::TypedArray(view), Value::String(k)) => {
+                if let Ok(index) = k.parse::<usize>() {
+                    return Ok(
+                        crate::builtins::read_element(view, index).unwrap_or(Value::Undefined)
+                    );
+                }
+                crate::builtins::note_method(k);
+                Ok(crate::builtins::typed_member(view, k).unwrap_or(Value::Undefined))
+            }
+            (Value::TypedArray(view), Value::Symbol(_))
+                if crate::builtins::is_iterator_symbol(p) =>
+            {
+                Ok(
+                    crate::builtins::typed_member(view, crate::interpreter::SYMBOL_ITERATOR_SLOT)
+                        .unwrap_or(Value::Undefined),
+                )
+            }
+            (Value::ArrayBuffer(bytes), Value::String(k)) => {
+                Ok(crate::builtins::array_buffer_member(bytes, k).unwrap_or(Value::Undefined))
+            }
+            (Value::DataView(view), Value::String(k)) => {
+                crate::builtins::note_method(k);
+                Ok(crate::builtins::data_view_member(view, k).unwrap_or(Value::Undefined))
+            }
             (Value::BigInt(_), Value::String(k)) => {
                 Ok(crate::builtins::bigint_method(k).unwrap_or(Value::Undefined))
             }

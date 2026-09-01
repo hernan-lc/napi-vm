@@ -756,7 +756,7 @@ impl Interpreter {
                     self.prop(source, &Value::String("__symbol_iterator__".to_string()))?;
                 self.call_this(&iter_fn, source.clone(), vec![])
             }
-            Value::Object { .. } => {
+            Value::Object { .. } | Value::TypedArray(_) => {
                 let iter_fn =
                     self.prop(source, &Value::String("__symbol_iterator__".to_string()))?;
                 if matches!(iter_fn, Value::Undefined) {
@@ -764,7 +764,10 @@ impl Interpreter {
                 }
                 self.call_this(&iter_fn, source.clone(), vec![])
             }
-            _ => vm_err("for...of needs iterable"),
+            other => {
+                let rendered = self.vs(other).unwrap_or_else(|_| "value".to_string());
+                vm_err(format!("TypeError: {} is not iterable", rendered))
+            }
         }
     }
 
@@ -987,13 +990,14 @@ impl Interpreter {
                                     }
                                     v.extend(s.chars().map(|c| Value::String(c.to_string())))
                                 }
-                                // Anything else iterable -- a generator, an
-                                // object with `Symbol.iterator` -- is drained
-                                // through the iterator protocol. Silently
+                                // Anything else goes through the iterator
+                                // protocol — a generator, a typed array, an
+                                // object with `Symbol.iterator`. Silently
                                 // producing nothing here made `[...gen()]`
-                                // return an empty array.
-                                Value::Generator { .. } | Value::Object { .. } => {
-                                    let items = self.drain_iterable(&inner_val)?;
+                                // return an empty array, so a value that is
+                                // not iterable now says so.
+                                other => {
+                                    let items = self.drain_iterable(other)?;
                                     if v.len().saturating_add(items.len())
                                         > crate::value::MAX_ARRAY_LEN
                                     {
@@ -1003,7 +1007,6 @@ impl Interpreter {
                                     }
                                     v.extend(items);
                                 }
-                                _ => {}
                             }
                         }
                         _ => v.push(self.eval_expr(x)?),
