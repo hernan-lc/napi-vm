@@ -33,9 +33,9 @@ fn push_call_arg(args: &mut Vec<Value>, value: Value) -> Result<(), VmErr> {
 /// Only generators need this today: their bodies may be suspended inside a
 /// `try`, and JavaScript runs those `finally` blocks when the loop exits
 /// early. Any other iterable is a plain object with no teardown to perform.
-#[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
+#[cfg_attr(not(stackful_coroutines), expect(unused_variables))]
 fn close_iterator(iterator: &Value) {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(stackful_coroutines)]
     if let Value::Generator { inner } = iterator {
         // A generator cannot be mid-`next()` here: this runs on the same
         // thread that just returned from it, so the cell is free.
@@ -1823,7 +1823,7 @@ impl Interpreter {
                 // Where suspension is unavailable, the value goes to the
                 // buffer the driver drains, and the `yield` expression itself
                 // evaluates to `undefined`.
-                #[cfg(target_arch = "wasm32")]
+                #[cfg(not(stackful_coroutines))]
                 if let Some(sink) = self.yield_sink.as_ref() {
                     if sink.borrow().len() >= crate::value::MAX_ARRAY_LEN {
                         return Err(crate::value::limit_err("Maximum generator output exceeded"));
@@ -1831,9 +1831,9 @@ impl Interpreter {
                     sink.borrow_mut().push(v);
                     return Ok(Value::Undefined);
                 }
-                #[cfg(target_arch = "wasm32")]
+                #[cfg(not(stackful_coroutines))]
                 let _ = v;
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(stackful_coroutines)]
                 if let Some(yielder) = self.gen_yielder.as_ref() {
                     return match yielder.suspend(v) {
                         crate::value::GenResume::Next(sent) => Ok(sent.unwrap_or(Value::Undefined)),
@@ -1871,7 +1871,7 @@ impl Interpreter {
                     }
 
                     // `yield*` re-yields into the same buffer.
-                    #[cfg(target_arch = "wasm32")]
+                    #[cfg(not(stackful_coroutines))]
                     {
                         if let Some(sink) = self.yield_sink.as_ref() {
                             if sink.borrow().len() >= crate::value::MAX_ARRAY_LEN {
@@ -1883,7 +1883,7 @@ impl Interpreter {
                         }
                         sent = Value::Undefined;
                     }
-                    #[cfg(not(target_arch = "wasm32"))]
+                    #[cfg(stackful_coroutines)]
                     match self.gen_yielder.as_ref() {
                         Some(yielder) => match yielder.suspend(value) {
                             crate::value::GenResume::Next(v) => {

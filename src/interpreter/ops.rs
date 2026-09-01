@@ -436,7 +436,7 @@ impl Interpreter {
                         return self.un_op(op, &proxy.target);
                     }
                     // Internal values, resolved before they reach guest code.
-                    #[cfg(not(target_arch = "wasm32"))]
+                    #[cfg(stackful_coroutines)]
                     Value::AsyncTask(_) => "object",
                     Value::Binding(_) => "undefined",
                 }
@@ -566,7 +566,7 @@ impl Interpreter {
             Value::Date(ms) => output.push_str(&crate::builtins::iso_string(ms.get())),
             Value::ArrayBuffer(_) => output.push_str("[object ArrayBuffer]"),
             Value::DataView(_) => output.push_str("[object DataView]"),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(stackful_coroutines)]
             Value::AsyncTask(_) => output.push_str("[object AsyncTask]"),
             Value::Undefined => output.push_str("undefined"),
             Value::Null => output.push_str("null"),

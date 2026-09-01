@@ -37,16 +37,38 @@ js-sys = "0.3"
 
 # `file://` URI parsing for the language server. Scoped to native targets
 # because `crate::lsp` (its only consumer) is not compiled for wasm32.
-#
-# `corosensei` provides the stackful coroutines that back generators. It is
-# target-scoped because it needs assembly stack-switching support, which
-# wasm32 does not have; that target keeps the degraded generator path.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 url = "2"
+
+# `corosensei` provides the stackful coroutines that back generators and async
+# function bodies. It needs hand-written stack-switching assembly and
+# `compile_error!`s on any target it has no backend for, so it is scoped to
+# exactly the targets it supports rather than to `not(wasm32)`.
+#
+# These two sections are the authority; `build.rs` mirrors them into the
+# `stackful_coroutines` cfg that the source reads. Keep them in sync.
+#
+# x86_64/x86 have both a SysV and a Windows backend.
+[target.'cfg(any(target_arch = "x86_64", target_arch = "x86"))'.dependencies]
+corosensei = "0.3.4"
+
+# These have a SysV backend only: `corosensei`'s aarch64/riscv/loongarch
+# modules are all gated `not(windows)`. `aarch64-pc-windows-msvc` therefore
+# takes the buffered generator path, as wasm32 does.
+[target.'cfg(all(not(target_os = "windows"), any(target_arch = "aarch64", target_arch = "riscv32", target_arch = "riscv64", target_arch = "loongarch64")))'.dependencies]
 corosensei = "0.3.4"
 
 [dev-dependencies]
 criterion = "0.5"
+
+# `tests/coroutine_backend.rs` drives `corosensei` directly, with no
+# interpreter in the way, so a fault in the coroutine machinery can be told
+# apart from a fault in this crate's teardown. Same target scoping as above.
+[target.'cfg(any(target_arch = "x86_64", target_arch = "x86"))'.dev-dependencies]
+corosensei = "0.3.4"
+
+[target.'cfg(all(not(target_os = "windows"), any(target_arch = "aarch64", target_arch = "riscv32", target_arch = "riscv64", target_arch = "loongarch64")))'.dev-dependencies]
+corosensei = "0.3.4"
 
 [[bin]]
 name = "napi-vm-lsp"

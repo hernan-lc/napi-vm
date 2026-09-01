@@ -185,10 +185,19 @@ jobs:
       - name: Build native module
         run: npx napi build --platform --release
 
-      # Run first, single-threaded: generators run on their own stacks via
-      # stack-switching, and a fault there aborts the whole test process. On
-      # one thread the harness names the test that died instead of leaving an
-      # interleaved log.
+      # These two run first and single-threaded: generators run on their own
+      # stacks via stack-switching, and a fault there aborts the whole test
+      # process. On one thread the harness names the test that died instead of
+      # leaving an interleaved log.
+      #
+      # The backend suite comes first because it drives `corosensei` directly,
+      # with no interpreter in the way. If it faults, the bug is in the
+      # stack-switching backend; if it passes and the stress suite faults, the
+      # bug is in this crate's teardown. Without it the two are
+      # indistinguishable from a `STATUS_ACCESS_VIOLATION` and an exit code.
+      - name: Run coroutine backend suite (deterministic)
+        run: cargo test --release --test coroutine_backend -- --test-threads=1 --nocapture
+
       - name: Run generator stress suite (deterministic)
         run: cargo test --release --test generator_stress -- --test-threads=1 --nocapture
 
@@ -420,10 +429,19 @@ jobs:
       - name: Build native module
         run: npx napi build --platform --release
 
-      # Run first, single-threaded: generators run on their own stacks via
-      # stack-switching, and a fault there aborts the whole test process. On
-      # one thread the harness names the test that died instead of leaving an
-      # interleaved log.
+      # These two run first and single-threaded: generators run on their own
+      # stacks via stack-switching, and a fault there aborts the whole test
+      # process. On one thread the harness names the test that died instead of
+      # leaving an interleaved log.
+      #
+      # The backend suite comes first because it drives `corosensei` directly,
+      # with no interpreter in the way. If it faults, the bug is in the
+      # stack-switching backend; if it passes and the stress suite faults, the
+      # bug is in this crate's teardown. Without it the two are
+      # indistinguishable from a `STATUS_ACCESS_VIOLATION` and an exit code.
+      - name: Run coroutine backend suite (deterministic)
+        run: cargo test --release --test coroutine_backend -- --test-threads=1 --nocapture
+
       - name: Run generator stress suite (deterministic)
         run: cargo test --release --test generator_stress -- --test-threads=1 --nocapture
 

@@ -10,7 +10,7 @@ use super::{Environment, Interpreter};
 use crate::error::{RuntimeErrorData, VmErr, vm_err};
 use crate::parser::{Pattern, Statement};
 use crate::span::Span;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 use crate::value::{GenOutcome, GenResume};
 use crate::value::{GeneratorInner, PromiseState, Value};
 
@@ -422,9 +422,9 @@ impl Interpreter {
                         closure: fd.closure.clone(),
                         params: fd.params.clone(),
                         args,
-                        #[cfg(not(target_arch = "wasm32"))]
+                        #[cfg(stackful_coroutines)]
                         coroutine: None,
-                        #[cfg(target_arch = "wasm32")]
+                        #[cfg(not(stackful_coroutines))]
                         buffered: std::collections::VecDeque::new(),
                         started: false,
                         done: false,
@@ -525,7 +525,7 @@ impl Interpreter {
                 // An async body runs on its own stack so `await` can suspend
                 // it. The frame is already built, so the coroutine starts
                 // straight into the body.
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(stackful_coroutines)]
                 if fd.is_async {
                     if self.gen_depth >= crate::interpreter::MAX_GENERATOR_DEPTH {
                         return Err(crate::value::limit_err("Maximum async nesting exceeded"));
@@ -818,7 +818,7 @@ impl Interpreter {
 /// recursion limit could turn it into a catchable `RangeError`. The stack is
 /// allocated with a guard page, so an overflow faults rather than corrupting
 /// neighbouring memory.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 const GENERATOR_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 /// Build the coroutine that runs a generator body.
@@ -827,7 +827,7 @@ const GENERATOR_STACK_SIZE: usize = 8 * 1024 * 1024;
 /// back to the caller at each `yield`. Returns `None` if the stack could not
 /// be allocated, which the caller reports as an immediately-completed
 /// generator rather than a crash.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 fn make_generator_coroutine(
     body: Rc<Vec<Statement>>,
     closure: Option<super::Env>,
@@ -900,7 +900,7 @@ fn make_generator_coroutine(
 
 /// `Generator.prototype.next`: resumes the generator (starting it on the first
 /// call), and produces a `{ value, done }` result object.
-#[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
+#[cfg_attr(not(stackful_coroutines), expect(unused_variables))]
 pub(crate) fn generator_next(
     interp: &mut Interpreter,
     this: Value,
@@ -911,9 +911,10 @@ pub(crate) fn generator_next(
         _ => return Ok(iter_result(Value::Undefined, true)),
     };
 
-    // `wasm32` has no stack switching, so a running body cannot be suspended.
-    // Instead the body runs once, to completion, on the first `next()`, and
-    // its yields are buffered for the remaining calls to drain.
+    // Without stack switching a running body cannot be suspended (see
+    // `build.rs` for which targets those are). Instead the body runs once, to
+    // completion, on the first `next()`, and its yields are buffered for the
+    // remaining calls to drain.
     //
     // That is not full generator semantics, and the difference is observable:
     // the body's side effects all happen at the first `next()` rather than
@@ -923,7 +924,7 @@ pub(crate) fn generator_next(
     // the loop budget instead of streaming. It is what this target can do
     // without a resumable evaluator, and it is what the values a finite
     // generator produces need.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(stackful_coroutines))]
     {
         {
             let mut inner = inner_rc.borrow_mut();
@@ -952,7 +953,7 @@ pub(crate) fn generator_next(
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(stackful_coroutines)]
     {
         // The coroutine is moved *out* of the shared cell for the duration of
         // the resume. Holding a `RefCell` borrow across it would panic if the
@@ -1030,7 +1031,7 @@ pub(crate) fn generator_next(
 /// Used only where suspension is unavailable. The body runs on a child
 /// interpreter with a *yield sink* installed, which is what `yield` and
 /// `yield*` push into on that target.
-#[cfg(target_arch = "wasm32")]
+#[cfg(not(stackful_coroutines))]
 fn run_buffered_generator(
     interp: &mut Interpreter,
     body: Rc<Vec<Statement>>,
@@ -1076,7 +1077,7 @@ pub(crate) fn generator_throw(
 
     // Nothing is suspended on a target without stack switching, and a
     // generator that has not started or has finished re-throws at the caller.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(stackful_coroutines)]
     {
         let mut coroutine = {
             let mut state = inner.borrow_mut();
@@ -1112,7 +1113,7 @@ pub(crate) fn generator_throw(
             }
         }
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(stackful_coroutines))]
     {
         inner.borrow_mut().done = true;
         Err(VmErr::Throw(thrown))
@@ -1128,9 +1129,9 @@ pub(crate) fn generator_return(
 ) -> Result<Value, VmErr> {
     let value = args.into_iter().next().unwrap_or(Value::Undefined);
     if let Value::Generator { inner } = &this {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(stackful_coroutines)]
         inner.borrow_mut().close();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(not(stackful_coroutines))]
         {
             let mut state = inner.borrow_mut();
             state.done = true;

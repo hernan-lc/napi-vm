@@ -7,7 +7,7 @@ mod ops;
 mod promise;
 mod resolve;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 pub use async_fn::AsyncTask;
 pub use env::{AssignOutcome, BindKind, Env, Environment, Lookup, ModifyOutcome, Module};
 
@@ -115,17 +115,17 @@ pub struct Interpreter {
     /// When executing inside a generator body, this is the handle used to
     /// suspend at a `yield`. `None` for every other interpreter, including the
     /// one that drives the generator.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(stackful_coroutines)]
     pub(crate) gen_yielder: Option<crate::value::GenYielder>,
     /// When executing inside an *async* function body, the handle used to
     /// suspend at an `await`. Distinct from `gen_yielder` so an async
     /// generator can suspend for either reason.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(stackful_coroutines)]
     pub(crate) await_yielder: Option<crate::value::GenYielder>,
     /// Where a `yield` sends its value on a target with no stack switching.
     /// `None` outside a generator body, and always `None` where generators
     /// suspend for real.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(not(stackful_coroutines))]
     pub(crate) yield_sink: Option<Rc<RefCell<Vec<Value>>>>,
     /// The one event loop, shared with every generator and async body so a
     /// promise settled on another stack schedules work the outer drain runs.
@@ -137,8 +137,8 @@ pub struct Interpreter {
     source_lines: Vec<String>,
     /// How many generator bodies are executing beneath this interpreter.
     /// Zero for the driver; one more than its parent inside a generator body.
-    /// Unused on `wasm32`, which has no coroutines to nest.
-    #[cfg_attr(target_arch = "wasm32", expect(dead_code))]
+    /// Unused where there are no coroutines to nest (see `build.rs`).
+    #[cfg_attr(not(stackful_coroutines), expect(dead_code))]
     pub(crate) gen_depth: u32,
     /// Configured per-execution loop-iteration cap.
     loop_budget: u64,
@@ -186,11 +186,11 @@ impl Interpreter {
             cur_mod: None,
             is_main: false,
             active_label: None,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(stackful_coroutines)]
             gen_yielder: None,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(stackful_coroutines)]
             await_yielder: None,
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(not(stackful_coroutines))]
             yield_sink: None,
             jobs: Jobs::default(),
             call_stack: Vec::new(),
