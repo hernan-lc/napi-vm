@@ -216,7 +216,7 @@ fn render_plain_value(
             output.push_str(&format!("{}({})", view.kind.name(), view.length))
         }
         Value::DataView(view) => output.push_str(&format!("[object DataView({})]", view.length)),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(stackful_coroutines)]
         Value::AsyncTask(_) => output.push_str("[object AsyncTask]"),
         Value::Undefined => output.push_str("undefined"),
         Value::Null => output.push_str("null"),
@@ -444,7 +444,7 @@ fn render_inspect_value(
             "2;37",
             &format!("DataView({})", view.length),
         ),
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(stackful_coroutines)]
         Value::AsyncTask(_) => painter.write_wrapped(context.output, "2;37", "[object AsyncTask]"),
         Value::Undefined => painter.write_wrapped(context.output, "2;37", "undefined"),
         Value::Null => painter.write_wrapped(context.output, "1;90", "null"),

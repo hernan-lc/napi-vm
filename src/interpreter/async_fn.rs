@@ -11,28 +11,28 @@
 //! 1, 3, 2; suspending prints 1, 2, 3, because the continuation after `await`
 //! is a microtask like any other.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 use std::cell::RefCell;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 use std::rc::Rc;
 
 use super::Interpreter;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 use super::{Environment, Realm};
 use crate::error::VmErr;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 use crate::value::{GenOutcome, GenResume, PromiseInner};
 use crate::value::{PromiseState, Value};
 
 /// The suspended body of one in-flight async call.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 pub struct AsyncTask {
     coroutine: Option<crate::value::GenCoroutine>,
     /// The promise the call returned, settled when the body finishes.
     result: Rc<RefCell<PromiseInner>>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 impl std::fmt::Debug for AsyncTask {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "AsyncTask")
@@ -55,7 +55,7 @@ impl Interpreter {
             return bridge.await_host(id);
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(stackful_coroutines)]
         if let Some(yielder) = self.await_yielder.as_ref() {
             // Suspend, handing the awaited value to the driver. It resumes us
             // with the settled value, or with a throw for a rejection.
@@ -108,12 +108,12 @@ impl Interpreter {
 
 /// Stack size for an async body's coroutine. Matches the generator stack for
 /// the same reason: `MAX_CALL_DEPTH` is calibrated against an 8MB stack.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 const ASYNC_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 /// Start an async function body on its own stack and return the promise for
 /// its completion.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 pub(crate) fn spawn_async(
     interp: &mut Interpreter,
     body: Rc<Vec<crate::parser::Statement>>,
@@ -181,7 +181,7 @@ pub(crate) fn spawn_async(
 }
 
 /// Resume an async body once and act on where it stopped.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 fn step(
     interp: &mut Interpreter,
     task: &Rc<RefCell<AsyncTask>>,
@@ -234,14 +234,14 @@ fn step(
 }
 
 /// Hidden slot carrying the suspended task through the reaction functions.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 const TASK_SLOT: &str = "__symbol_async_task__";
 
 /// Build the `(onFulfilled, onRejected)` pair that resumes `task`.
 ///
 /// A native function is a bare pointer, so the task travels in a hidden
 /// property of a callable object rather than in a capture.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 fn resume_handlers(task: &Rc<RefCell<AsyncTask>>) -> (Value, Value) {
     let handle = Value::AsyncTask(task.clone());
     let make = |callable: fn(&mut Interpreter, Value, Vec<Value>) -> Result<Value, VmErr>| {
@@ -259,7 +259,7 @@ fn resume_handlers(task: &Rc<RefCell<AsyncTask>>) -> (Value, Value) {
     (make(resume_with_value), make(resume_with_throw))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 fn task_of(this: &Value) -> Option<Rc<RefCell<AsyncTask>>> {
     match &this.get_prop(TASK_SLOT)? {
         Value::AsyncTask(task) => Some(task.clone()),
@@ -267,7 +267,7 @@ fn task_of(this: &Value) -> Option<Rc<RefCell<AsyncTask>>> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 fn resume_with_value(
     interp: &mut Interpreter,
     this: Value,
@@ -283,7 +283,7 @@ fn resume_with_value(
     Ok(Value::Undefined)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 fn resume_with_throw(
     interp: &mut Interpreter,
     this: Value,

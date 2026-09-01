@@ -442,7 +442,7 @@ pub enum Value {
     RegExp(Rc<RegExpData>),
     /// A suspended async call, carried through the reaction functions that
     /// resume it. Internal: it never reaches guest code.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(stackful_coroutines)]
     AsyncTask(Rc<RefCell<crate::interpreter::AsyncTask>>),
     /// A *live binding*: an indirection an ES module export and its importers
     /// share, so a write on either side is seen by the other.
@@ -543,7 +543,7 @@ pub enum GenOutcome {
 /// gets back either a yielded `Value` or the final [`GenOutcome`]. The
 /// coroutine runs on its own stack but on the *calling thread*: nothing is
 /// sent anywhere, so no `Send` bound and no `unsafe` are involved.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 pub type GenCoroutine = corosensei::Coroutine<GenResume, Value, GenOutcome>;
 
 /// Handle a generator body uses to suspend itself at a `yield`.
@@ -570,7 +570,7 @@ pub type GenCoroutine = corosensei::Coroutine<GenResume, Value, GenOutcome>;
 /// This is a self-referential borrow expressed as a pointer. It is not the
 /// old cross-thread `unsafe impl Send` over `Rc`: nothing is shared between
 /// threads here, so there is no refcount to race on.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 pub struct GenYielder {
     inner: *const corosensei::Yielder<GenResume, Value>,
     /// Pins this handle to one thread: a raw pointer is already `!Send`, and
@@ -578,7 +578,7 @@ pub struct GenYielder {
     _not_send: std::marker::PhantomData<*const ()>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 impl GenYielder {
     /// Wrap the yielder borrowed from the running coroutine's stack.
     ///
@@ -622,21 +622,22 @@ pub struct GeneratorInner {
     /// The suspended body. `None` before the first `next()`, once the
     /// generator has finished, and -- transiently -- while it is running,
     /// which is how re-entrant `next()` is detected.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(stackful_coroutines)]
     pub coroutine: Option<GenCoroutine>,
     /// Values the body produced, on targets with no stack switching.
     ///
-    /// `wasm32` cannot suspend a running body, so the body runs once to
-    /// completion and its yields are buffered here for `next()` to drain. See
-    /// `call::generator_next` for what that changes.
-    #[cfg(target_arch = "wasm32")]
+    /// A target without stack switching cannot suspend a running body, so it
+    /// runs once to completion and its yields are buffered here for `next()`
+    /// to drain. See `call::generator_next` for what that changes, and
+    /// `build.rs` for which targets take this path.
+    #[cfg(not(stackful_coroutines))]
     pub buffered: std::collections::VecDeque<Value>,
     pub started: bool,
     pub done: bool,
     pub return_value: Option<Value>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(stackful_coroutines)]
 impl GeneratorInner {
     /// Close a suspended generator the way JavaScript's `return()` does:
     /// resume the body once so its `finally` blocks run, then discard it.

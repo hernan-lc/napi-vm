@@ -19,7 +19,7 @@
 //!     --target x86_64-unknown-linux-gnu -- --test-threads=1
 //! ```
 
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(stackful_coroutines)]
 
 use napi_vm::interpreter::Interpreter;
 use napi_vm::lexer::Lexer;
