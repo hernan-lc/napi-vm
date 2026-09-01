@@ -122,6 +122,11 @@ pub struct Interpreter {
     /// generator can suspend for either reason.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) await_yielder: Option<crate::value::GenYielder>,
+    /// Where a `yield` sends its value on a target with no stack switching.
+    /// `None` outside a generator body, and always `None` where generators
+    /// suspend for real.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) yield_sink: Option<Rc<RefCell<Vec<Value>>>>,
     /// The one event loop, shared with every generator and async body so a
     /// promise settled on another stack schedules work the outer drain runs.
     pub jobs: Jobs,
@@ -166,6 +171,8 @@ impl Interpreter {
             gen_yielder: None,
             #[cfg(not(target_arch = "wasm32"))]
             await_yielder: None,
+            #[cfg(target_arch = "wasm32")]
+            yield_sink: None,
             jobs: Jobs::default(),
             call_stack: Vec::new(),
             source_lines: Vec::new(),

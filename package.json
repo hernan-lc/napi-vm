@@ -28,6 +28,7 @@
     "test": "bun test",
     "test:node": "node --test tests/node/*.test.js",
     "test:rust": "cargo test --release",
+    "test:wasm": "npm run playground:build && node --test tests/wasm/*.test.mjs",
     "bench": "node bench/bench.js",
     "bench:stress": "bun bench/stress.ts",
     "bench:rust": "cargo bench",

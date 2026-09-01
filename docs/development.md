@@ -36,12 +36,17 @@ npm run build
 npm test              # main suite, under Bun
 npm run test:node     # Node compatibility boundaries
 npm run test:rust     # Rust unit and integration tests
+npm run test:wasm     # the browser build, loaded under Node
 ```
 
 `test:rust` is easy to forget because most of the suite is JavaScript, but the
 lexer, parser, bignum, symbol index and language-analysis tests live in Rust
 and cover things the JavaScript suite cannot reach. A parser change that only
 those tests notice has slipped through before.
+
+`test:wasm` builds the browser package and loads it under Node. The two
+targets compile different code — generators especially — so a change that
+passes everything else can still break the playground. It has.
 
 CI enforces each of these on every pull request, plus two checks that are easy
 to miss locally:

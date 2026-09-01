@@ -364,6 +364,8 @@ impl Interpreter {
                         args,
                         #[cfg(not(target_arch = "wasm32"))]
                         coroutine: None,
+                        #[cfg(target_arch = "wasm32")]
+                        buffered: std::collections::VecDeque::new(),
                         started: false,
                         done: false,
                         return_value: None,
@@ -843,15 +845,45 @@ pub(crate) fn generator_next(
         _ => return Ok(iter_result(Value::Undefined, true)),
     };
 
-    // `wasm32` has no stack-switching support, so generators degrade to empty
-    // iterators there rather than failing at runtime. Real suspension would
-    // need the threads proposal or a CPS transform of generator bodies.
+    // `wasm32` has no stack switching, so a running body cannot be suspended.
+    // Instead the body runs once, to completion, on the first `next()`, and
+    // its yields are buffered for the remaining calls to drain.
+    //
+    // That is not full generator semantics, and the difference is observable:
+    // the body's side effects all happen at the first `next()` rather than
+    // interleaved with the consumer, `next(v)` cannot send a value in (every
+    // `yield` evaluates to `undefined`), abandoning a `for…of` early does not
+    // stop a body that has already run, and an unbounded generator exhausts
+    // the loop budget instead of streaming. It is what this target can do
+    // without a resumable evaluator, and it is what the values a finite
+    // generator produces need.
     #[cfg(target_arch = "wasm32")]
     {
+        {
+            let mut inner = inner_rc.borrow_mut();
+            if !inner.started {
+                inner.started = true;
+                let body = inner.body.clone();
+                let closure = inner.closure.clone();
+                let params = inner.params.clone();
+                let args = inner.args.clone();
+                drop(inner);
+                let (produced, returned) =
+                    run_buffered_generator(interp, body, closure, params, args)?;
+                let mut inner = inner_rc.borrow_mut();
+                inner.buffered = produced;
+                inner.return_value = Some(returned);
+            }
+        }
         let mut inner = inner_rc.borrow_mut();
-        inner.started = true;
-        inner.done = true;
-        return Ok(iter_result(Value::Undefined, true));
+        match inner.buffered.pop_front() {
+            Some(value) => return Ok(iter_result(value, false)),
+            None => {
+                inner.done = true;
+                let returned = inner.return_value.clone().unwrap_or(Value::Undefined);
+                return Ok(iter_result(returned, true));
+            }
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -925,6 +957,43 @@ pub(crate) fn generator_next(
             }
         }
     }
+}
+
+/// Run a generator body to completion, collecting everything it yields.
+///
+/// Used only where suspension is unavailable. The body runs on a child
+/// interpreter with a *yield sink* installed, which is what `yield` and
+/// `yield*` push into on that target.
+#[cfg(target_arch = "wasm32")]
+fn run_buffered_generator(
+    interp: &mut Interpreter,
+    body: Rc<Vec<Statement>>,
+    closure: Option<super::Env>,
+    params: Rc<Vec<Rc<str>>>,
+    args: Vec<Value>,
+) -> Result<(std::collections::VecDeque<Value>, Value), VmErr> {
+    let sink: Rc<RefCell<Vec<Value>>> = Rc::new(RefCell::new(Vec::new()));
+    let parent_env = closure.unwrap_or_else(|| interp.global.clone());
+    let frame = Rc::new(RefCell::new(Environment::child(parent_env)));
+    for (index, param) in params.iter().enumerate() {
+        let arg = args.get(index).cloned().unwrap_or(Value::Undefined);
+        frame.borrow_mut().set(param, arg);
+    }
+
+    let saved_scope = std::mem::replace(&mut interp.global, frame);
+    let saved_sink = interp.yield_sink.replace(sink.clone());
+    let outcome = interp.run_program_body(&body);
+    interp.yield_sink = saved_sink;
+    interp.global = saved_scope;
+
+    let returned = match outcome {
+        Ok(value) | Err(VmErr::Ret(value)) => value,
+        Err(error) => return Err(error),
+    };
+    let produced = Rc::try_unwrap(sink)
+        .map(RefCell::into_inner)
+        .unwrap_or_else(|shared| shared.borrow().clone());
+    Ok((produced.into(), returned))
 }
 
 /// Build an iterator result object `{ value, done }`.

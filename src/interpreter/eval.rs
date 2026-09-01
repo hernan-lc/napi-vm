@@ -1627,6 +1627,17 @@ impl Interpreter {
                     Some(e) => self.eval_expr(e)?,
                     None => Value::Undefined,
                 };
+                // Where suspension is unavailable, the value goes to the
+                // buffer the driver drains, and the `yield` expression itself
+                // evaluates to `undefined`.
+                #[cfg(target_arch = "wasm32")]
+                if let Some(sink) = self.yield_sink.as_ref() {
+                    if sink.borrow().len() >= crate::value::MAX_ARRAY_LEN {
+                        return Err(crate::value::limit_err("Maximum generator output exceeded"));
+                    }
+                    sink.borrow_mut().push(v);
+                    return Ok(Value::Undefined);
+                }
                 #[cfg(target_arch = "wasm32")]
                 let _ = v;
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1666,9 +1677,17 @@ impl Interpreter {
                         return Ok(value);
                     }
 
+                    // `yield*` re-yields into the same buffer.
                     #[cfg(target_arch = "wasm32")]
                     {
-                        let _ = value;
+                        if let Some(sink) = self.yield_sink.as_ref() {
+                            if sink.borrow().len() >= crate::value::MAX_ARRAY_LEN {
+                                return Err(crate::value::limit_err(
+                                    "Maximum generator output exceeded",
+                                ));
+                            }
+                            sink.borrow_mut().push(value);
+                        }
                         sent = Value::Undefined;
                     }
                     #[cfg(not(target_arch = "wasm32"))]

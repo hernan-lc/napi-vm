@@ -598,6 +598,13 @@ pub struct GeneratorInner {
     /// which is how re-entrant `next()` is detected.
     #[cfg(not(target_arch = "wasm32"))]
     pub coroutine: Option<GenCoroutine>,
+    /// Values the body produced, on targets with no stack switching.
+    ///
+    /// `wasm32` cannot suspend a running body, so the body runs once to
+    /// completion and its yields are buffered here for `next()` to drain. See
+    /// `call::generator_next` for what that changes.
+    #[cfg(target_arch = "wasm32")]
+    pub buffered: std::collections::VecDeque<Value>,
     pub started: bool,
     pub done: bool,
     pub return_value: Option<Value>,
