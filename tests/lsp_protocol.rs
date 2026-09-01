@@ -561,3 +561,126 @@ fn document_highlight_marks_every_occurrence() {
     assert!(highlights[0].get("uri").is_none());
     assert_eq!(client.shutdown_and_exit(59), 0);
 }
+
+#[test]
+fn formatting_reindents_without_moving_lines() {
+    let uri = "file:///tmp/napi-vm-format.js";
+    let mut client = client_with(uri, "function f() {\nreturn 1;\n}\n");
+    client.request(
+        60,
+        "textDocument/formatting",
+        json!({
+            "textDocument": { "uri": uri },
+            "options": { "tabSize": 2, "insertSpaces": true }
+        }),
+    );
+    let response = client.wait_for_response(60);
+    let edits = response
+        .pointer("/result")
+        .and_then(Value::as_array)
+        .expect("edits");
+    assert_eq!(edits.len(), 1);
+    let text = edits[0]
+        .get("newText")
+        .and_then(Value::as_str)
+        .expect("new text");
+    assert_eq!(text, "function f() {\n  return 1;\n}\n");
+    assert_eq!(client.shutdown_and_exit(61), 0);
+}
+
+#[test]
+fn formatting_preserves_comments() {
+    let uri = "file:///tmp/napi-vm-format-comments.js";
+    let mut client = client_with(uri, "function f() {\n// keep me\nreturn 1;\n}\n");
+    client.request(
+        62,
+        "textDocument/formatting",
+        json!({ "textDocument": { "uri": uri }, "options": { "tabSize": 2, "insertSpaces": true } }),
+    );
+    let response = client.wait_for_response(62);
+    let text = response
+        .pointer("/result/0/newText")
+        .and_then(Value::as_str)
+        .expect("new text");
+    assert!(text.contains("// keep me"), "the comment survives: {text}");
+    assert_eq!(client.shutdown_and_exit(63), 0);
+}
+
+#[test]
+fn already_formatted_source_produces_no_edits() {
+    let uri = "file:///tmp/napi-vm-format-clean.js";
+    let mut client = client_with(uri, "const a = 1;\n");
+    client.request(
+        64,
+        "textDocument/formatting",
+        json!({ "textDocument": { "uri": uri }, "options": { "tabSize": 2, "insertSpaces": true } }),
+    );
+    let response = client.wait_for_response(64);
+    assert_eq!(
+        response.pointer("/result").and_then(Value::as_array),
+        Some(&Vec::new())
+    );
+    assert_eq!(client.shutdown_and_exit(65), 0);
+}
+
+#[test]
+fn a_code_action_fixes_an_unclosed_delimiter() {
+    let uri = "file:///tmp/napi-vm-action.js";
+    let mut client = client_with(uri, "const a = (1;\n");
+    client.request(
+        66,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 1, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        }),
+    );
+    let response = client.wait_for_response(66);
+    let actions = response
+        .pointer("/result")
+        .and_then(Value::as_array)
+        .expect("actions");
+    let fix = actions
+        .iter()
+        .find(|a| a.get("kind").and_then(Value::as_str) == Some("quickfix"))
+        .expect("a quick fix");
+    assert_eq!(
+        fix.get("title").and_then(Value::as_str),
+        Some("Insert the missing ')'")
+    );
+    assert_eq!(client.shutdown_and_exit(67), 0);
+}
+
+#[test]
+fn a_code_action_offers_to_fix_indentation() {
+    let uri = "file:///tmp/napi-vm-action-format.js";
+    let mut client = client_with(uri, "function f() {\nreturn 1;\n}\n");
+    client.request(
+        68,
+        "textDocument/codeAction",
+        json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 3, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        }),
+    );
+    let response = client.wait_for_response(68);
+    let actions = response
+        .pointer("/result")
+        .and_then(Value::as_array)
+        .expect("actions");
+    assert!(
+        actions
+            .iter()
+            .any(|a| a.get("title").and_then(Value::as_str) == Some("Fix indentation")),
+        "an indentation fix is offered"
+    );
+    assert_eq!(client.shutdown_and_exit(69), 0);
+}

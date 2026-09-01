@@ -135,8 +135,8 @@ Every claim below was checked against the current build.
   each installed only when the manifest asks *and* the host policy permits
   (`tests/plugins/capabilities.test.ts`, `docs/plugins.md`)
 - **LSP**: synchronization, completion, hover, document symbols, definition,
-  references, document highlight, rename, signature help, inlay hints and
-  semantic tokens (`tests/lsp_protocol.rs`)
+  references, document highlight, rename, signature help, inlay hints,
+  semantic tokens, formatting and code actions (`tests/lsp_protocol.rs`)
 
 ## Partial
 
@@ -155,9 +155,12 @@ Every claim below was checked against the current build.
   that fires from inside a VM execution is refused with "VM is busy" rather
   than running two executions at once. Generators cross as `undefined`, since
   a host iterator would need the same re-entrancy.
-- **LSP** — document formatting and code actions are not implemented.
-  Formatting would need a printer that reconstructs source from the AST, which
-  does not retain comments; a formatter that deletes them is worse than none.
+- **LSP formatting** — indentation only. A formatter that reconstructed source
+  from the AST would delete every comment, since the parser does not keep them,
+  so this one works on the text and changes exactly two things: each line's
+  indentation, and trailing whitespace. It never moves a newline — automatic
+  semicolon insertion depends on where they are — which is also why the output
+  is less tidy than a full pretty-printer's.
 
 ## Unsupported
 

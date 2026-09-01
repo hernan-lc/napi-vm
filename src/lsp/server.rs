@@ -266,6 +266,8 @@ impl Server {
                                 "renameProvider": { "prepareProvider": true },
                                 "signatureHelpProvider": { "triggerCharacters": ["(", ","] },
                                 "inlayHintProvider": true,
+                                "documentFormattingProvider": true,
+                                "codeActionProvider": true,
                                 "semanticTokensProvider": {
                                     "legend": {
                                         "tokenTypes": crate::lang::semantic::LEGEND,
@@ -515,6 +517,96 @@ impl Server {
                     .collect();
                 if let Some(id) = id {
                     response(id, Value::Array(hints));
+                }
+            }
+            "textDocument/formatting" => {
+                let text = self.document_text(&params);
+                let options = crate::lang::format_source::FormatOptions {
+                    indent_width: params
+                        .pointer("/options/insertSpaces")
+                        .and_then(Value::as_bool)
+                        .map(|spaces| {
+                            if spaces {
+                                params
+                                    .pointer("/options/tabSize")
+                                    .and_then(Value::as_u64)
+                                    .unwrap_or(2) as usize
+                            } else {
+                                0
+                            }
+                        })
+                        .unwrap_or(2),
+                };
+                let formatted = crate::lang::format_source::format_source(&text, &options);
+                // One edit spanning the document. The formatter only changes
+                // indentation, so a whole-document replacement is the simplest
+                // faithful encoding of what it did.
+                let result = if formatted == text {
+                    Value::Array(Vec::new())
+                } else {
+                    let last = text.split('\n').count().saturating_sub(1);
+                    json!([{
+                        "range": {
+                            "start": { "line": 0, "character": 0 },
+                            "end": { "line": last, "character": u32::MAX },
+                        },
+                        "newText": formatted,
+                    }])
+                };
+                if let Some(id) = id {
+                    response(id, result);
+                }
+            }
+            "textDocument/codeAction" => {
+                let text = self.document_text(&params);
+                let diagnostics = crate::lang::diagnose(&text);
+                let start = params
+                    .pointer("/range/start/line")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize
+                    + 1;
+                let end = params
+                    .pointer("/range/end/line")
+                    .and_then(Value::as_u64)
+                    .map(|line| line as usize + 1)
+                    .unwrap_or(usize::MAX);
+                let uri = document_uri(&params);
+                let actions: Vec<Value> =
+                    crate::lang::actions::code_actions(&text, &diagnostics, start, end)
+                        .into_iter()
+                        .map(|action| {
+                            let edits: Vec<Value> = action
+                                .edits
+                                .iter()
+                                .map(|edit| {
+                                    let (line, start) =
+                                        diagnostic_position(&text, edit.line, edit.start_column);
+                                    let (end_line, end) = if edit.end_column == usize::MAX {
+                                        (
+                                            text.split('\n').count().saturating_sub(1),
+                                            u32::MAX as usize,
+                                        )
+                                    } else {
+                                        diagnostic_position(&text, edit.line, edit.end_column)
+                                    };
+                                    json!({
+                                        "range": {
+                                            "start": { "line": line, "character": start },
+                                            "end": { "line": end_line, "character": end },
+                                        },
+                                        "newText": edit.text,
+                                    })
+                                })
+                                .collect();
+                            json!({
+                                "title": action.title,
+                                "kind": action.kind,
+                                "edit": { "changes": { uri: edits } },
+                            })
+                        })
+                        .collect();
+                if let Some(id) = id {
+                    response(id, Value::Array(actions));
                 }
             }
             "textDocument/semanticTokens/full" => {

@@ -12,10 +12,12 @@
 //! modules), which keeps them trivially testable and safe to call from any
 //! host.
 
+pub mod actions;
 pub mod catalog;
 mod complete;
 mod diagnostics;
 mod document;
+pub mod format_source;
 mod metadata;
 pub mod navigation;
 mod scope;
