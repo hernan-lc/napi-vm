@@ -571,13 +571,7 @@ impl Interpreter {
             Value::Undefined => output.push_str("undefined"),
             Value::Null => output.push_str("null"),
             Value::Bool(b) => output.push_str(if *b { "true" } else { "false" }),
-            Value::Number(n) => {
-                if n.fract() == 0.0 && n.abs() < 1e15 {
-                    output.push_str(&format!("{:.0}", n))
-                } else {
-                    output.push_str(&n.to_string())
-                }
-            }
+            Value::Number(n) => output.push_str(&crate::format::number_string(*n)),
             Value::String(s) => output.push_str(s),
             Value::Object { .. } => match crate::builtins::describe_collection(v) {
                 Some(rendered) => output.push_str(&rendered),

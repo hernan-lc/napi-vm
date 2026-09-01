@@ -396,6 +396,12 @@ pub enum Pattern {
     Object(Vec<(String, Option<Pattern>)>),
     Rest(Box<Pattern>),
     Default(Box<Pattern>, Box<Expr>),
+    /// A property as a destructuring target: `[o.p] = [1]`. Only reachable
+    /// from a destructuring *assignment*, since a declaration binds names.
+    Member {
+        object: Box<Expr>,
+        property: Box<Expr>,
+    },
 }
 
 impl Pattern {
@@ -418,6 +424,8 @@ pub fn pattern_names(pattern: &Pattern) -> Vec<String> {
 fn collect_pattern_names(pattern: &Pattern, out: &mut Vec<String>) {
     match pattern {
         Pattern::Ident(name) => out.push(name.clone()),
+        // A property target binds no name.
+        Pattern::Member { .. } => {}
         Pattern::Array(items) => {
             for item in items {
                 collect_pattern_names(item, out);
@@ -757,6 +765,9 @@ fn expr_references(e: &Expr, name: &str) -> bool {
 fn pattern_references(p: &Pattern, name: &str) -> bool {
     match p {
         Pattern::Ident(_) | Pattern::Rest(_) => false,
+        Pattern::Member { object, property } => {
+            expr_references(object, name) || expr_references(property, name)
+        }
         Pattern::Array(elems) => elems.iter().any(|e| pattern_references(e, name)),
         Pattern::Object(props) => props.iter().any(|(_, p)| {
             p.as_ref()

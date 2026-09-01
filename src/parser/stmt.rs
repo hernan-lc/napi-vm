@@ -189,7 +189,7 @@ impl Parser {
         }
     }
 
-    fn pattern(&mut self) -> Option<Pattern> {
+    pub(crate) fn pattern(&mut self) -> Option<Pattern> {
         match self.cur() {
             Token::LBracket => {
                 self.adv();
@@ -583,6 +583,32 @@ impl Parser {
                         defaults.push(Self::default_guard(&name, d));
                     }
                     names.push(name);
+                }
+                // A destructured parameter — `function f({ a, b })`. The
+                // slot takes a synthetic name and the body opens with a
+                // declaration that unpacks it, which reuses the declaration
+                // path rather than duplicating the binding logic.
+                Token::LBracket | Token::LBrace => {
+                    let Some(pattern) = self.pattern() else {
+                        break;
+                    };
+                    let slot = format!("*pattern{}*", names.len());
+                    let mut init: Expr = Expr::Identifier(slot.clone());
+                    if self.eat(&Token::Equal)
+                        && let Some(default) = self.assign()
+                    {
+                        // `function f({ a } = {})`: the default applies to the
+                        // whole parameter before it is unpacked.
+                        defaults.push(Self::default_guard(&slot, default));
+                        init = Expr::Identifier(slot.clone());
+                    }
+                    defaults.push(Statement::VarDecl {
+                        kind: VarKind::Let,
+                        name: String::new(),
+                        init: Some(Box::new(init)),
+                        destructuring: Some(Box::new(pattern)),
+                    });
+                    names.push(slot);
                 }
                 _ => {
                     self.adv();

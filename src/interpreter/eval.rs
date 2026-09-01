@@ -52,6 +52,64 @@ fn label_matches(label: &Option<String>, signal: &Option<String>) -> bool {
     }
 }
 
+/// Reinterpret an array or object *literal* on the left of `=` as a
+/// destructuring pattern.
+///
+/// The grammar cannot tell `[a, b]` apart from a pattern until the `=` is
+/// reached, so the parser produces a literal and this converts it. Anything
+/// that is not a valid target yields `None`, which the caller reports.
+fn expr_to_pattern(expr: &Expr) -> Option<crate::parser::Pattern> {
+    use crate::parser::Pattern;
+    Some(match expr {
+        Expr::Identifier(name) => Pattern::Ident(name.clone()),
+        Expr::Member {
+            object, property, ..
+        } => Pattern::Member {
+            object: object.clone(),
+            property: property.clone(),
+        },
+        Expr::Array(items) => Pattern::Array(
+            items
+                .iter()
+                .map(|item| match item {
+                    Expr::Spread(inner) => {
+                        expr_to_pattern(inner).map(|p| Pattern::Rest(Box::new(p)))
+                    }
+                    // A hole (`[, a] = …`) skips a position.
+                    Expr::Undefined => Some(Pattern::Ident("hole".to_string())),
+                    other => expr_to_pattern(other),
+                })
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        Expr::Object(props) => Pattern::Object(
+            props
+                .iter()
+                .map(|prop| match prop {
+                    ObjectProp::Shorthand(name) => Some((name.clone(), None)),
+                    ObjectProp::KeyValue(key, value) => {
+                        Some((key.clone(), Some(expr_to_pattern(value)?)))
+                    }
+                    ObjectProp::Spread(inner) => Some((
+                        "...".to_string(),
+                        Some(Pattern::Rest(Box::new(expr_to_pattern(inner)?))),
+                    )),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        // `[a = 1] = []` supplies a default.
+        Expr::Assignment {
+            target,
+            op: AssignOp::Assign,
+            value,
+        } => Pattern::Default(
+            Box::new(expr_to_pattern(target)?),
+            Box::new(value.as_ref().clone()),
+        ),
+        _ => return None,
+    })
+}
+
 /// Scope slot holding the superclass prototype inside a class member, so
 /// `super.method()` can resolve without the AST carrying a class link.
 pub(crate) const SUPER_PROTO: &str = "__super_proto__";
@@ -1497,6 +1555,15 @@ impl Interpreter {
                         };
                         self.assign_member(&obj, &prop, fv.clone())?;
                         Ok(fv)
+                    }
+                    // A destructuring *assignment*: `[a, b] = [b, a]`,
+                    // `({ x } = o)`. Unlike a declaration it binds nothing
+                    // new, so each name is assigned through the scope chain.
+                    Expr::Array(_) | Expr::Object(_) if matches!(op, AssignOp::Assign) => {
+                        let pattern = expr_to_pattern(target)
+                            .ok_or_else(|| VmErr::Msg("Invalid assignment target".to_string()))?;
+                        self.destructure(&pattern, &v)?;
+                        Ok(v)
                     }
                     _ => vm_err("Invalid assignment target"),
                 }

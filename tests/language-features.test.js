@@ -14,12 +14,12 @@ test("IEEE-754 double precision addition", () => {
   expect(runCode("0.1 + 0.2;")).toBe("0.30000000000000004");
 });
 
-test("positive division by zero yields inf", () => {
-  expect(runCode("1 / 0;")).toBe("inf");
+test("positive division by zero yields Infinity", () => {
+  expect(runCode("1 / 0;")).toBe("Infinity");
 });
 
-test("negative division by zero yields -inf", () => {
-  expect(runCode("-1 / 0;")).toBe("-inf");
+test("negative division by zero yields -Infinity", () => {
+  expect(runCode("-1 / 0;")).toBe("-Infinity");
 });
 
 test("zero divided by zero yields NaN", () => {
@@ -30,9 +30,9 @@ test("very large integer literal round-trips", () => {
   expect(runCode("100000000000000000000;")).toBe("100000000000000000000");
 });
 
-test("infinity constant prints as inf", () => {
+test("the Infinity constant prints as Infinity", () => {
   // Diverges from JS ("Infinity"); documents current formatting.
-  expect(runCode("Infinity;")).toBe("inf");
+  expect(runCode("Infinity;")).toBe("Infinity");
 });
 
 test("NaN constant is a number", () => {

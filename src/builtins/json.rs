@@ -29,7 +29,7 @@ fn json_stringify(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<V
     // throw a catchable TypeError — matching `JSON.stringify` in V8 —
     // instead of recursing until the native stack overflows.
     let mut visited: std::collections::HashSet<*const ()> = std::collections::HashSet::new();
-    json_serialize(&v, &mut out, &mut visited, 0)?;
+    json_serialize(interp, &v, &mut out, &mut visited, 0)?;
 
     // The third argument indents the output: a number of spaces, or a literal
     // string. Re-indenting the compact form keeps one serializer.
@@ -127,6 +127,7 @@ fn append_json_char(out: &mut String, value: char) -> Result<(), VmErr> {
 }
 
 fn json_serialize(
+    interp: &mut Interpreter,
     v: &Value,
     out: &mut String,
     visited: &mut std::collections::HashSet<*const ()>,
@@ -168,7 +169,7 @@ fn json_serialize(
                 if i > 0 {
                     append_json_char(out, ',')?;
                 }
-                json_serialize(it, out, visited, depth + 1)?;
+                json_serialize(interp, it, out, visited, depth + 1)?;
             }
             append_json_char(out, ']')?;
             visited.remove(&ptr);
@@ -182,7 +183,10 @@ fn json_serialize(
         }
         // A proxy serializes as its target. Routing this through the `get`
         // trap would need the interpreter, which the serializer does not have.
-        Value::Proxy(proxy) => return json_serialize(&proxy.target, out, visited, depth),
+        Value::Proxy(proxy) => {
+            let target = proxy.target.clone();
+            return json_serialize(interp, &target, out, visited, depth);
+        }
         Value::Object { props, .. } => {
             let ptr = std::rc::Rc::as_ptr(props) as *const ();
             if !visited.insert(ptr) {
@@ -192,16 +196,23 @@ fn json_serialize(
             }
             append_json_char(out, '{')?;
             let meta = props.meta.borrow();
-            let props = props.borrow();
+            // `JSON.stringify` walks own *enumerable* string keys only,
+            // skipping `undefined` values and the VM's internal slots. The
+            // key list is snapshotted first because resolving a getter runs
+            // guest code, which must not happen while the slots are borrowed.
+            let keys: Vec<String> = props
+                .borrow()
+                .iter()
+                .map(|(k, _)| k.clone())
+                .filter(|k| !crate::interpreter::is_internal_key(k) && meta.attrs_of(k).enumerable)
+                .collect();
+            drop(meta);
             let mut first = true;
-            for (k, v) in props.iter() {
-                let v = &v.deref_binding();
-                // `JSON.stringify` walks own *enumerable* string keys only,
-                // skipping `undefined` values and the VM's internal slots.
-                if matches!(v, Value::Undefined)
-                    || crate::interpreter::is_internal_key(k)
-                    || !meta.attrs_of(k).enumerable
-                {
+            for key in keys {
+                // Through `member`, so a getter contributes its value rather
+                // than serializing as the function itself.
+                let value = interp.member(v, &key)?;
+                if matches!(value, Value::Undefined) {
                     continue;
                 }
                 if !first {
@@ -209,9 +220,9 @@ fn json_serialize(
                 }
                 first = false;
                 append_json_char(out, '"')?;
-                escape_json(k, out)?;
+                escape_json(&key, out)?;
                 append_json_str(out, "\":")?;
-                json_serialize(v, out, visited, depth + 1)?;
+                json_serialize(interp, &value, out, visited, depth + 1)?;
             }
             append_json_char(out, '}')?;
             visited.remove(&ptr);

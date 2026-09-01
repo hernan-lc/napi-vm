@@ -452,6 +452,26 @@ impl Parser {
                         return None;
                     }
                 }
+                // A destructured arrow parameter: `({ a }) => a`.
+                Token::LBracket | Token::LBrace => {
+                    let Some(pattern) = self.pattern() else {
+                        self.pos = save;
+                        return None;
+                    };
+                    let slot = format!("*pattern{}*", params.len());
+                    if self.eat(&Token::Equal)
+                        && let Some(default) = self.assign()
+                    {
+                        defaults.push(Parser::default_guard(&slot, default));
+                    }
+                    defaults.push(Statement::VarDecl {
+                        kind: crate::parser::VarKind::Let,
+                        name: String::new(),
+                        init: Some(Box::new(Expr::Identifier(slot.clone()))),
+                        destructuring: Some(Box::new(pattern)),
+                    });
+                    params.push(slot);
+                }
                 Token::Identifier(n) => {
                     let name = n.clone();
                     self.adv();

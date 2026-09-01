@@ -45,7 +45,21 @@ impl Interpreter {
     pub(super) fn destructure(&mut self, pat: &Pattern, val: &Value) -> Result<Value, VmErr> {
         match pat {
             Pattern::Ident(name) => {
-                self.set_binding(name, val.clone())?;
+                // A *declaration* pre-declares its names in this scope, still
+                // in their temporal dead zone; giving one its value is an
+                // initialization, which `assign` would refuse. Anything else
+                // is a destructuring *assignment*, which must reach the
+                // binding it names wherever that is.
+                if self.global.borrow_mut().initialize(name, val.clone()) {
+                    return Ok(val.clone());
+                }
+                self.assign_or_set_binding(name, val.clone())?;
+                Ok(val.clone())
+            }
+            Pattern::Member { object, property } => {
+                let receiver = self.eval_expr(object)?;
+                let key = self.eval_expr(property)?;
+                self.assign_member(&receiver, &key, val.clone())?;
                 Ok(val.clone())
             }
             Pattern::Array(elements) => {

@@ -129,7 +129,7 @@ test("NaN from invalid coercion", () => {
 });
 
 test("Infinity", () => {
-  expect(runCode("Infinity;")).toBe("inf");
+  expect(runCode("Infinity;")).toBe("Infinity");
 });
 
 test("array in string context", () => {

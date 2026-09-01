@@ -237,6 +237,8 @@ fn pattern_names(p: &Pattern) -> Vec<String> {
 fn collect_pattern(p: &Pattern, out: &mut Vec<String>) {
     match p {
         Pattern::Ident(n) => out.push(n.clone()),
+        // A property target binds no name.
+        Pattern::Member { .. } => {}
         Pattern::Array(elems) => {
             for e in elems {
                 collect_pattern(e, out);

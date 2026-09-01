@@ -294,6 +294,13 @@ fn render_plain_value(
 }
 
 pub fn number_string(n: f64) -> String {
+    // Rust renders these as `inf`/`-inf`/`NaN`; JavaScript spells them out.
+    if n.is_infinite() {
+        return if n > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    if n.is_nan() {
+        return "NaN".to_string();
+    }
     if n.fract() == 0.0 && n.abs() < 1e15 {
         format!("{:.0}", n)
     } else {
