@@ -62,6 +62,56 @@ jobs:
   # committed. Without this check they drift: the tree has shipped an
   # `index.js` pinned to one version, an `index.mjs` pinned to another, and a
   # zero-byte `index.d.ts` while `package.json` advertised it as the typings.
+  # ── Browser build ─────────────────────────────────────────────────────
+  #
+  # The playground imports `/pkg/napi_vm.js`, which `wasm-pack` generates — so
+  # its types only exist once that package is built. Type-checking it in the
+  # quality job (which does not build it) could never pass; this job builds the
+  # package first, then type-checks and runs the browser suite against it.
+  #
+  # The two targets compile different code — generators especially — so a
+  # change that passes everything else can still break the playground.
+  playground:
+    name: Browser build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
+        with:
+          toolchain: 1.96.0
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-playground-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # Pinned and from crates.io, matching how the rest of this workflow
+      # pins its actions. The cargo cache above keeps the rebuild off the
+      # critical path after the first run.
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked --version 0.15.0
+
+      # Builds the package, type-checks the playground against it, then runs
+      # the browser suite under Node.
+      - name: Build, type-check and test the browser package
+        run: npm run test:wasm
+
   generated:
     name: Generated bindings are current
     runs-on: ubuntu-latest
@@ -134,6 +184,13 @@ jobs:
 
       - name: Build native module
         run: npx napi build --platform --release
+
+      # Run first, single-threaded: generators run on their own stacks via
+      # stack-switching, and a fault there aborts the whole test process. On
+      # one thread the harness names the test that died instead of leaving an
+      # interleaved log.
+      - name: Run generator stress suite (deterministic)
+        run: cargo test --release --test generator_stress -- --test-threads=1 --nocapture
 
       - name: Run Rust tests (full)
         run: cargo test --release
@@ -362,6 +419,13 @@ jobs:
 
       - name: Build native module
         run: npx napi build --platform --release
+
+      # Run first, single-threaded: generators run on their own stacks via
+      # stack-switching, and a fault there aborts the whole test process. On
+      # one thread the harness names the test that died instead of leaving an
+      # interleaved log.
+      - name: Run generator stress suite (deterministic)
+        run: cargo test --release --test generator_stress -- --test-threads=1 --nocapture
 
       - name: Run Rust tests (full)
         run: cargo test --release

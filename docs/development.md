@@ -10,6 +10,7 @@
 | `npm run test:rust` | Run the Rust unit and integration tests |
 | `npm run test:node` | Run the Node.js compatibility suite (`engines.node` range) |
 | `npm run lint` | Rust formatting + Clippy, then TypeScript type-checking |
+| `npm run lint:playground` | Type-check the playground (needs `playground:build` first) |
 | `npm run lint:rust` | `cargo fmt --check` and `cargo clippy -D warnings` |
 | `npm run lint:ts` | `tsc --noEmit` for the package and the playground |
 | `npm run check:generated` | Rebuild the committed bindings and fail on drift |
@@ -44,9 +45,16 @@ lexer, parser, bignum, symbol index and language-analysis tests live in Rust
 and cover things the JavaScript suite cannot reach. A parser change that only
 those tests notice has slipped through before.
 
-`test:wasm` builds the browser package and loads it under Node. The two
-targets compile different code — generators especially — so a change that
-passes everything else can still break the playground. It has.
+`test:wasm` builds the browser package, type-checks the playground against it,
+and loads it under Node. The two targets compile different code — generators
+especially — so a change that passes everything else can still break the
+playground. It has.
+
+The playground's type-check lives here rather than in `lint:ts` because it
+imports `/pkg/napi_vm.js`, which `wasm-pack` generates: its types do not exist
+until the package is built. Running it in the fast lint job could never pass
+on a clean checkout, and it silently did not — CI had no job that built the
+package at all, so the failure only appeared once the lint job was added.
 
 CI enforces each of these on every pull request, plus two checks that are easy
 to miss locally:

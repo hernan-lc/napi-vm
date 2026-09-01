@@ -199,12 +199,16 @@ Reported as errors rather than silently mis-executed:
 
 ## Priority order
 
-1. The capability-host modules: `napi:fetch`, `napi:crypto`, `napi:timers`
-2. `toString` in `+` concatenation, which needs `vs` to be able to call guest
-   code — and so needs the read-modify-write path not to hold a borrow across
-   it
-2. A resumable evaluator, for true generator suspension on `wasm32`
-3. LSP formatting and code actions
+1. A resumable evaluator, for true generator suspension on `wasm32` — the one
+   remaining Partial that is a missing capability rather than a stated
+   boundary. See the entry above for the three ways in and what each costs.
+2. Re-entrant host calls, so a VM function exported to the host can be called
+   from inside a VM execution instead of being refused as busy. Generators at
+   the boundary need the same thing.
+3. A pretty-printer that can rewrap lines, which needs the parser to retain
+   comments. Today's formatter only re-indents.
+4. `Intl` and the other recent library additions, if a consumer asks for them.
+   None are load-bearing for the sandbox.
 
 ## Known boundaries
 
