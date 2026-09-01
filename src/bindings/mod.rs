@@ -5,6 +5,8 @@
 //!   ABI (`to_napi` / `from_napi`)
 //! - [`bridge`]  — host function bridge: persisted `napi_ref`s, synchronous
 //!   calls, and TSFN-based async dispatch for `exposeAsyncFunction`
+//! - [`export_fn`] — the reverse of `bridge`: a VM function handed to the
+//!   host as a callable that re-enters the interpreter
 //! - [`vm`]      — the `#[napi]`-exported `VM` class and free functions
 //!
 //! Value string rendering (`to_string`, the pretty printer) lives in the
@@ -12,9 +14,10 @@
 //! `crate::bindings::{VM, create_vm, to_string, ..}` resolve exactly as
 //! they did before the split.
 mod bridge;
+mod export_fn;
 mod language_service;
 mod marshal;
-mod vm;
+pub(crate) mod vm;
 
 pub use crate::format::{
     PrintOptions, Printer, colors_enabled, to_string, to_string_pretty, to_string_pretty_colored,

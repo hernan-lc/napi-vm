@@ -124,7 +124,9 @@ Every claim below was checked against the current build.
   (`docs/safety.md`)
 - **N-API value bridge**: structured data, `Date`, `BigInt`, symbols,
   `ArrayBuffer` and typed arrays, `Map`/`Set`, settled promises, and cyclic or
-  shared references, in both directions (`tests/bridge-values.test.js`)
+  shared references, in both directions. A VM **function** crosses as a host
+  callable that re-enters the interpreter, keeping its closure
+  (`tests/bridge-values.test.js`)
 - Plugin capability host: manifests, filesystem permissions, `napi:fs`,
   `napi:path`, byte limits
 - **LSP**: synchronization, completion, hover, document symbols, definition,
@@ -143,10 +145,11 @@ Every claim below was checked against the current build.
   early does not stop a body that has already run, and an unbounded generator
   hits a cap and raises a catchable `RangeError`. Real suspension needs a
   resumable evaluator (a CPS transform of generator bodies).
-- **N-API boundary** — functions and generators still cross as `undefined`.
-  Handing a VM function to the host needs a host callable that re-enters the
-  interpreter, which the marshaller has no handle on; `Vm.exposeFunction`
-  remains the way to cross in that direction.
+- **N-API boundary** — an exported VM function cannot be called *while the VM
+  is already running*: the interpreter is single-threaded, so a host callback
+  that fires from inside a VM execution is refused with "VM is busy" rather
+  than running two executions at once. Generators cross as `undefined`, since
+  a host iterator would need the same re-entrancy.
 - **String coercion** — a guest `toString` is honoured by `String(x)`,
   template literals and `console.*`, but not by `+` concatenation. `vs`, the
   universal stringifier, runs from `&self` positions including inside the
@@ -173,13 +176,12 @@ Reported as errors rather than silently mis-executed:
 
 ## Priority order
 
-1. Functions and generators across the N-API boundary
-2. The capability-host modules: `napi:fetch`, `napi:crypto`, `napi:timers`
-3. `toString` in `+` concatenation, which needs `vs` to be able to call guest
+1. The capability-host modules: `napi:fetch`, `napi:crypto`, `napi:timers`
+2. `toString` in `+` concatenation, which needs `vs` to be able to call guest
    code — and so needs the read-modify-write path not to hold a borrow across
    it
-4. A resumable evaluator, for true generator suspension on `wasm32`
-5. LSP formatting and code actions
+3. A resumable evaluator, for true generator suspension on `wasm32`
+4. LSP formatting and code actions
 
 ## Known boundaries
 

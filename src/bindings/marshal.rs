@@ -11,10 +11,12 @@
 //! Each marshalling helper is a *safe* function that confines all FFI to a
 //! single `unsafe` block around its body; the `env` handle always
 //! originates from a live N-API callback, so the operations are sound.
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ptr;
+use std::sync::Arc;
 
 use napi::sys;
 
@@ -87,6 +89,33 @@ const MAX_MARSHAL_DEPTH: usize = 512;
 
 pub(super) fn to_napi(env: sys::napi_env, v: &Value) -> Result<sys::napi_value, VmErr> {
     to_napi_d(env, v, 0, &mut HashMap::new())
+}
+
+thread_local! {
+    /// The VM a value is currently crossing *out of*.
+    ///
+    /// A VM function has no wire form; what crosses is a host callable that
+    /// re-enters the interpreter, and building one needs a handle to the VM.
+    /// The marshaller is a free function reached from several entry points, so
+    /// the handle is installed around the crossing rather than threaded
+    /// through every signature.
+    static EXPORTING_VM: RefCell<Option<Arc<super::vm::VMState>>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with `state` as the VM values are crossing out of, so functions can
+/// be exported as host callables.
+///
+/// Restores the previous handle on the way out, including on the error path,
+/// so a nested crossing cannot leave the wrong VM installed.
+pub(super) fn exporting_from<R>(state: &Arc<super::vm::VMState>, f: impl FnOnce() -> R) -> R {
+    let previous = EXPORTING_VM.with(|slot| slot.borrow_mut().replace(state.clone()));
+    let result = f();
+    EXPORTING_VM.with(|slot| *slot.borrow_mut() = previous);
+    result
+}
+
+fn exporting_vm() -> Option<Arc<super::vm::VMState>> {
+    EXPORTING_VM.with(|slot| slot.borrow().clone())
 }
 
 /// Marshal a VM `Value` into a raw N-API value.
@@ -217,6 +246,20 @@ fn to_napi_d(
             }
             Value::Promise(promise) => {
                 out = make_promise(env, promise, depth, active)?;
+            }
+            // A function crosses as a host callable that re-enters the VM —
+            // but only when there is a VM to re-enter. Reached from a context
+            // with no VM handle (the string-only entry points), it stays
+            // `undefined`, as it always did.
+            value if super::export_fn::is_callable(value) => {
+                out = match exporting_vm() {
+                    Some(state) => super::export_fn::export(env, &state, value)?,
+                    None => {
+                        let mut undefined = ptr::null_mut();
+                        chk(sys::napi_get_undefined(env, &mut undefined))?;
+                        undefined
+                    }
+                };
             }
             _ => chk(sys::napi_get_undefined(env, &mut out))?,
         }

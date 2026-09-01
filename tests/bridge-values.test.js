@@ -169,3 +169,78 @@ test("a host symbol arrives as a symbol", () => {
   const vm = vmWith("function __kind(x) { return typeof x; }");
   expect(vm.callFunction("__kind", [Symbol("s")])).toBe("symbol");
 });
+
+// --- Exporting a VM function to the host ------------------------------------
+
+test("a VM function crosses as a callable", () => {
+  const vm = vmWith("function make() { return () => 42; }");
+  const f = vm.callFunction("make", []);
+  expect(typeof f).toBe("function");
+  expect(f()).toBe(42);
+});
+
+test("an exported function keeps its closure", () => {
+  const vm = vmWith("function make() { let n = 0; return () => ++n; }");
+  const bump = vm.callFunction("make", []);
+  expect(bump()).toBe(1);
+  expect(bump()).toBe(2);
+});
+
+test("an exported function takes arguments", () => {
+  const vm = vmWith("function make() { return (a, b) => a + b; }");
+  expect(vm.callFunction("make", [])(2, 3)).toBe(5);
+});
+
+test("a function on an exported object is callable", () => {
+  const vm = vmWith("function make() { return { go() { return 7; } }; }");
+  const o = vm.callFunction("make", []);
+  expect(typeof o.go).toBe("function");
+  expect(o.go()).toBe(7);
+});
+
+test("an exported function can return another", () => {
+  const vm = vmWith("function outer() { return () => () => 3; }");
+  expect(vm.callFunction("outer", [])()()).toBe(3);
+});
+
+test("a throw inside an exported function reaches the host", () => {
+  const vm = vmWith("function make() { return () => { throw new Error('inner'); }; }");
+  expect(() => vm.callFunction("make", [])()).toThrow("inner");
+});
+
+test("an internal error reaches the host too", () => {
+  const vm = vmWith("function make() { return () => null.x; }");
+  expect(() => vm.callFunction("make", [])()).toThrow("Cannot read properties of null");
+});
+
+test("calling an exported function re-entrantly is refused, not corrupting", () => {
+  // The VM is single-threaded; a callback that fires while it is already
+  // running reports that rather than running two executions at once.
+  const vm = new Vm();
+  vm.run("function make() { return () => 1; }");
+  const exported = vm.callFunction("make", []);
+  let seen;
+  vm.exposeFunction("callBack", () => {
+    try {
+      return exported();
+    } catch (e) {
+      seen = e.message;
+      return "refused";
+    }
+  });
+  vm.run("function useIt() { return callBack(); }");
+  expect(vm.callFunction("useIt", [])).toBe("refused");
+  expect(seen).toContain("busy");
+});
+
+test("an exported function outlives the VM binding that produced it", () => {
+  // The export holds the VM's state alive, so a call after the `Vm` object is
+  // unreachable finds a live interpreter rather than freed memory.
+  let escaped;
+  {
+    const vm = new Vm();
+    vm.run("function make() { return () => 42; }");
+    escaped = vm.callFunction("make", []);
+  }
+  expect(escaped()).toBe(42);
+});

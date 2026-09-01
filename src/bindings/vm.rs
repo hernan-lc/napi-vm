@@ -67,9 +67,12 @@ pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
 
 /// All interpreter and bridge state lives here. It is never cloned or exposed
 /// independently of the runtime gate.
-struct VmRuntime {
-    interp: Interpreter,
+pub(super) struct VmRuntime {
+    pub(super) interp: Interpreter,
     modules: HashMap<String, String>,
+    /// VM functions handed to the host, indexed by the id their host-side
+    /// wrapper carries. A slot is `None` once its wrapper is collected.
+    exports: Vec<Option<Value>>,
     /// Bridge globals generated per `registerHostModule` name, so they can be
     /// revoked when the module is replaced or removed.
     host_module_globals: HashMap<String, Vec<String>>,
@@ -113,7 +116,14 @@ impl RuntimeCell {
     }
 }
 
-struct VMState {
+impl VmRuntime {
+    /// The value an exported function id refers to, if it is still live.
+    pub(super) fn export(&self, index: usize) -> Option<Value> {
+        self.exports.get(index).cloned().flatten()
+    }
+}
+
+pub(super) struct VMState {
     runtime: RuntimeCell,
     busy: Arc<AtomicBool>,
     /// Kept outside `RuntimeCell` so `VM::drop` can release N-API resources
@@ -122,7 +132,31 @@ struct VMState {
 }
 
 impl VMState {
-    fn try_start(&self) -> napi::Result<BusyGuard> {
+    /// Record a VM value the host is taking a reference to, returning its id.
+    ///
+    /// Called while the runtime gate is *not* held — the marshalling that
+    /// needs it runs inside `with_mut` — so it takes the gate itself.
+    pub(super) fn register_export(&self, value: Value) -> usize {
+        self.runtime.with_mut(|runtime| {
+            runtime.exports.push(Some(value));
+            runtime.exports.len() - 1
+        })
+    }
+
+    /// Drop the value behind an exported id, once its host wrapper is gone.
+    pub(super) fn release_export(&self, index: usize) {
+        self.runtime.with_mut(|runtime| {
+            if let Some(slot) = runtime.exports.get_mut(index) {
+                *slot = None;
+            }
+        });
+    }
+
+    pub(super) fn with_runtime<R>(&self, f: impl FnOnce(&mut VmRuntime) -> R) -> R {
+        self.runtime.with_mut(f)
+    }
+
+    pub(super) fn try_start(&self) -> napi::Result<BusyGuard> {
         self.busy
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| BusyGuard {
@@ -132,7 +166,7 @@ impl VMState {
     }
 }
 
-struct BusyGuard {
+pub(super) struct BusyGuard {
     busy: Arc<AtomicBool>,
 }
 
@@ -159,6 +193,7 @@ impl VM {
             runtime: RuntimeCell::new(VmRuntime {
                 interp: Interpreter::with_builtins(),
                 modules: HashMap::new(),
+                exports: Vec::new(),
                 host_module_globals: HashMap::new(),
                 bridge: None,
             }),
@@ -889,7 +924,8 @@ impl VM {
                     .map_err(|error| napi::Error::from_reason(error.to_string()))?,
             );
         }
-        self.state.runtime.with_mut(|runtime| {
+        let state = self.state.clone();
+        let result = self.state.runtime.with_mut(|runtime| {
             let callee = runtime.interp.global_value(&name).ok_or_else(|| {
                 napi::Error::from_reason(format!("callFunction: '{}' is not defined", name))
             })?;
@@ -904,10 +940,15 @@ impl VM {
                 .interp
                 .drain_jobs()
                 .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-            let out = to_napi(raw_env, &result)
-                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
-            Ok(unsafe { Unknown::from_raw_unchecked(raw_env, out) })
-        })
+            Ok::<Value, napi::Error>(result)
+        })?;
+        // Marshalled *outside* the runtime gate: exporting a function needs
+        // the gate itself, to record the value in the runtime's export table.
+        // The `BusyGuard` above still excludes every other execution, so
+        // nothing can touch the interpreter while the value is read.
+        let out = super::marshal::exporting_from(&state, || to_napi(raw_env, &result))
+            .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        Ok(unsafe { Unknown::from_raw_unchecked(raw_env, out) })
     }
 }
 
