@@ -6,8 +6,8 @@ use std::rc::Rc;
 use super::{BindKind, Env, Environment, Interpreter, Lookup, ModifyOutcome};
 use crate::error::{VmErr, vm_err, vm_ret, vm_throw};
 use crate::parser::{
-    AssignOp, ClassMember, Expr, ExprOrBlock, ForInit, ObjectProp, Statement, UnOp, VarKind,
-    arrow_body_references, stmts_reference,
+    AssignOp, ClassMember, Expr, ExprOrBlock, ForInit, LogicalAssignOp, ObjectProp, Statement,
+    UnOp, VarKind, arrow_body_references, stmts_reference,
 };
 use crate::value::{ClassData, FunctionData, PromiseState, Value};
 
@@ -433,6 +433,7 @@ impl Interpreter {
             }
             Statement::ForOf {
                 name,
+                pattern,
                 iter,
                 body,
                 is_await,
@@ -479,7 +480,23 @@ impl Interpreter {
                     if *is_await {
                         value = self.perform_await(value)?;
                     }
-                    self.set_binding(name, value)?;
+                    match pattern {
+                        Some(pattern) => {
+                            for bound in crate::parser::pattern_names(pattern) {
+                                self.declare_binding(
+                                    &bound,
+                                    Value::Undefined,
+                                    BindKind::Let,
+                                    false,
+                                )?;
+                            }
+                            if let Err(error) = self.destructure(pattern, &value) {
+                                close_iterator(&iterator);
+                                return Err(error);
+                            }
+                        }
+                        None => self.set_binding(name, value)?,
+                    }
                     match self.run_block(body) {
                         Err(VmErr::Break(None)) => break,
                         Err(VmErr::Break(l)) if label_matches(&label, &l) => break,
@@ -917,6 +934,10 @@ impl Interpreter {
             }
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Null => Ok(Value::Null),
+            // Each evaluation compiles a fresh object, so two literals with
+            // the same source have separate `lastIndex` state — as in a real
+            // engine, where a literal creates a new `RegExp` each time.
+            Expr::Regex(pattern, flags) => crate::builtins::compile_regex(pattern, flags),
             Expr::Undefined => Ok(Value::Undefined),
             Expr::Identifier(n) => {
                 if n == "undefined" {
@@ -1298,6 +1319,51 @@ impl Interpreter {
                 }
                 let p = self.eval_expr(property)?;
                 self.get_prop_value(&o, &p)
+            }
+            // `a &&= b` / `a ||= b` / `a ??= b`. The right side runs, and the
+            // write happens, only when the current value calls for it — so
+            // `obj.x ||= expensive()` leaves a truthy `x` untouched and never
+            // evaluates `expensive`.
+            Expr::LogicalAssignment { target, op, value } => {
+                let (receiver, key, current) = match target.as_ref() {
+                    Expr::Identifier(name) => {
+                        let current = self.eval_expr(target)?;
+                        let _ = name;
+                        (None, None, current)
+                    }
+                    Expr::Member {
+                        object, property, ..
+                    } => {
+                        let receiver = self.eval_expr(object)?;
+                        let key = self.eval_expr(property)?;
+                        let current = self.get_prop_value(&receiver, &key)?;
+                        (Some(receiver), Some(key), current)
+                    }
+                    _ => return vm_err("Invalid assignment target"),
+                };
+                let should_assign = match op {
+                    LogicalAssignOp::And => self.truthy(&current),
+                    LogicalAssignOp::Or => !self.truthy(&current),
+                    LogicalAssignOp::Nullish => {
+                        matches!(current, Value::Null | Value::Undefined)
+                    }
+                };
+                if !should_assign {
+                    return Ok(current);
+                }
+                let assigned = self.eval_expr(value)?;
+                match (receiver, key) {
+                    (Some(receiver), Some(key)) => {
+                        self.assign_member(&receiver, &key, assigned.clone())?;
+                    }
+                    _ => {
+                        let Expr::Identifier(name) = target.as_ref() else {
+                            unreachable!("checked above");
+                        };
+                        self.assign_or_set_binding(name, assigned.clone())?;
+                    }
+                }
+                Ok(assigned)
             }
             Expr::Assignment { target, op, value } => {
                 let v = self.eval_expr(value)?;

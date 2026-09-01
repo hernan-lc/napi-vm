@@ -1,7 +1,7 @@
 //! The expression precedence ladder, from comma (lowest) down to postfix.
 //! Primary expressions live in `primary.rs`.
 
-use super::{AssignOp, BinOp, Expr, Parser, UnOp};
+use super::{AssignOp, BinOp, Expr, LogicalAssignOp, Parser, UnOp};
 use crate::lexer::Token;
 
 impl Parser {
@@ -175,6 +175,20 @@ impl Parser {
                 Some(Expr::Assignment {
                     target: Box::new(l),
                     op: AssignOp::UShr,
+                    value: Box::new(v),
+                })
+            }
+            Token::AndEqual | Token::OrEqual | Token::NullishEqual => {
+                let op = match self.cur() {
+                    Token::AndEqual => LogicalAssignOp::And,
+                    Token::OrEqual => LogicalAssignOp::Or,
+                    _ => LogicalAssignOp::Nullish,
+                };
+                self.adv();
+                let v = self.assign()?;
+                Some(Expr::LogicalAssignment {
+                    target: Box::new(l),
+                    op,
                     value: Box::new(v),
                 })
             }

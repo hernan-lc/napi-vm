@@ -22,6 +22,8 @@ pub enum Token {
     Minus,
     Star,
     Slash,
+    /// A regular-expression literal: its source and its flags.
+    Regex(String, String),
     Percent,
     PlusPlus,
     MinusMinus,
@@ -110,6 +112,12 @@ pub enum Token {
     UShr,
     StarStar,
     QuestionQuestion,
+    /// `&&=`, `||=` and `??=`: the logical assignments, which short-circuit —
+    /// the right side is not evaluated, and no write happens, unless the
+    /// existing value calls for it.
+    AndEqual,
+    OrEqual,
+    NullishEqual,
     QuestionDot,
     PercentEqual,
     AmpEqual,
@@ -138,6 +146,12 @@ pub struct Lexer {
     pending: Vec<Token>,
     /// Spans corresponding to tokens in `pending`.
     pending_spans: Vec<crate::span::Span>,
+    /// The last token emitted, which decides whether a `/` starts a regular
+    /// expression or is a division operator. The two are indistinguishable
+    /// from the character alone, so the grammar resolves it by context: after
+    /// something that *ends a value* it is division, and otherwise it begins a
+    /// literal.
+    previous: Option<Token>,
 }
 
 impl Lexer {
@@ -149,6 +163,7 @@ impl Lexer {
             col: 1,
             pending: Vec::new(),
             pending_spans: Vec::new(),
+            previous: None,
         }
     }
 
@@ -175,6 +190,7 @@ impl Lexer {
                 break;
             }
             if let Some((t, span)) = self.next_with_span() {
+                self.previous = Some(t.clone());
                 toks.push((t, span));
             }
         }
@@ -395,9 +411,15 @@ impl Lexer {
             }
             '?' => match self.src.get(self.pos + 1) {
                 Some('?') => {
-                    self.pos += 2;
-                    self.col += 2;
-                    Token::QuestionQuestion
+                    if self.src.get(self.pos + 2) == Some(&'=') {
+                        self.pos += 3;
+                        self.col += 3;
+                        Token::NullishEqual
+                    } else {
+                        self.pos += 2;
+                        self.col += 2;
+                        Token::QuestionQuestion
+                    }
                 }
                 Some('.') => {
                     self.pos += 2;
@@ -502,6 +524,7 @@ impl Lexer {
                     Token::Star
                 }
             },
+            '/' if self.regex_allowed() => self.read_regex(),
             '/' => match self.src.get(self.pos + 1) {
                 Some('=') => {
                     self.pos += 2;
@@ -626,9 +649,15 @@ impl Lexer {
             }
             '&' => match self.src.get(self.pos + 1) {
                 Some('&') => {
-                    self.pos += 2;
-                    self.col += 2;
-                    Token::And
+                    if self.src.get(self.pos + 2) == Some(&'=') {
+                        self.pos += 3;
+                        self.col += 3;
+                        Token::AndEqual
+                    } else {
+                        self.pos += 2;
+                        self.col += 2;
+                        Token::And
+                    }
                 }
                 Some('=') => {
                     self.pos += 2;
@@ -643,9 +672,15 @@ impl Lexer {
             },
             '|' => match self.src.get(self.pos + 1) {
                 Some('|') => {
-                    self.pos += 2;
-                    self.col += 2;
-                    Token::Or
+                    if self.src.get(self.pos + 2) == Some(&'=') {
+                        self.pos += 3;
+                        self.col += 3;
+                        Token::OrEqual
+                    } else {
+                        self.pos += 2;
+                        self.col += 2;
+                        Token::Or
+                    }
                 }
                 Some('=') => {
                     self.pos += 2;
@@ -690,6 +725,92 @@ impl Lexer {
                 Token::Unknown(c)
             }
         })
+    }
+
+    /// Would a `/` here begin a regular-expression literal?
+    ///
+    /// It is division only when the previous token ends a value. Everything
+    /// else — the start of the program, an operator, a keyword, an opening
+    /// bracket — is a position where an expression may begin.
+    fn regex_allowed(&self) -> bool {
+        match &self.previous {
+            None => true,
+            Some(token) => !matches!(
+                token,
+                Token::Identifier(_)
+                    | Token::Number(_)
+                    | Token::String(_)
+                    | Token::Regex(_, _)
+                    | Token::RParen
+                    | Token::RBracket
+                    | Token::RBrace
+                    | Token::PlusPlus
+                    | Token::MinusMinus
+                    | Token::KwThis
+                    | Token::KwSuper
+                    | Token::KwNull
+                    | Token::KwTrue
+                    | Token::KwFalse
+            ),
+        }
+    }
+
+    /// Scan `/pattern/flags`, positioned at the opening slash.
+    ///
+    /// A `/` inside a character class does not end the literal, which is why
+    /// the scan tracks class depth rather than looking for the next slash.
+    fn read_regex(&mut self) -> Token {
+        let start = self.pos;
+        self.pos += 1;
+        self.col += 1;
+        let mut pattern = String::new();
+        let mut in_class = false;
+        loop {
+            let Some(&c) = self.src.get(self.pos) else {
+                // Unterminated: fall back to a division operator so the parser
+                // reports a syntax error at a sensible place.
+                self.pos = start + 1;
+                self.col += 1;
+                return Token::Slash;
+            };
+            self.pos += 1;
+            self.col += 1;
+            match c {
+                '\\' => {
+                    pattern.push(c);
+                    if let Some(&escaped) = self.src.get(self.pos) {
+                        pattern.push(escaped);
+                        self.pos += 1;
+                        self.col += 1;
+                    }
+                }
+                '[' => {
+                    in_class = true;
+                    pattern.push(c);
+                }
+                ']' => {
+                    in_class = false;
+                    pattern.push(c);
+                }
+                '/' if !in_class => break,
+                '\n' => {
+                    self.pos = start + 1;
+                    self.col += 1;
+                    return Token::Slash;
+                }
+                _ => pattern.push(c),
+            }
+        }
+        let mut flags = String::new();
+        while let Some(&c) = self.src.get(self.pos) {
+            if !c.is_ascii_alphabetic() {
+                break;
+            }
+            flags.push(c);
+            self.pos += 1;
+            self.col += 1;
+        }
+        Token::Regex(pattern, flags)
     }
 
     fn read_str(&mut self, q: char) -> Token {

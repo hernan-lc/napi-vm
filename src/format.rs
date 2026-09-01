@@ -202,6 +202,7 @@ fn render_plain_value(
     match v {
         // A live module binding renders as the value it names.
         Value::Binding(cell) => render_plain_value(&cell.borrow(), visited, depth, output),
+        Value::RegExp(re) => output.push_str(&format!("/{}/{}", re.regex.source, re.regex.flags)),
         #[cfg(not(target_arch = "wasm32"))]
         Value::AsyncTask(_) => output.push_str("[object AsyncTask]"),
         Value::Undefined => output.push_str("undefined"),
@@ -396,6 +397,11 @@ fn render_inspect_value(
     }
     match v {
         Value::Binding(cell) => render_inspect_value(&cell.borrow(), depth, pretty, context),
+        Value::RegExp(re) => painter.write_wrapped(
+            context.output,
+            "31",
+            &format!("/{}/{}", re.regex.source, re.regex.flags),
+        ),
         #[cfg(not(target_arch = "wasm32"))]
         Value::AsyncTask(_) => painter.write_wrapped(context.output, "2;37", "[object AsyncTask]"),
         Value::Undefined => painter.write_wrapped(context.output, "2;37", "undefined"),

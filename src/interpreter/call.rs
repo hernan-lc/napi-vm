@@ -261,6 +261,16 @@ impl Interpreter {
                 }
                 Ok(())
             }
+            // `re.lastIndex = 0` resets a global pattern's scan position.
+            (Value::RegExp(data), Value::String(k)) if k == "lastIndex" => {
+                let index = self.tn(&val);
+                data.last_index.set(if index.is_finite() && index > 0.0 {
+                    index as usize
+                } else {
+                    0
+                });
+                Ok(())
+            }
             // `window.x = v` / `globalThis.x = v` define a real global.
             (Value::GlobalObject, Value::String(k)) => self.set_global_checked(k, val),
             // A non-index key on an array is a named property, not an

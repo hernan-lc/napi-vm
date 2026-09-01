@@ -922,6 +922,9 @@ impl Builder<'_> {
             // `import(…)` resolves to a namespace object.
             Expr::DynamicImport(_) => Type::Unknown,
             Expr::ClassExpr { .. } => Type::Unknown,
+            Expr::Regex(_, _) => Type::Unknown,
+            // A logical assignment evaluates to either operand.
+            Expr::LogicalAssignment { .. } => Type::Unknown,
             Expr::Bool(_) => Type::Boolean,
             Expr::Null => Type::Null,
             Expr::Undefined => Type::Undefined,

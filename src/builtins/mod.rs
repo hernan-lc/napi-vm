@@ -1,4 +1,5 @@
 mod array;
+mod collections;
 mod date;
 mod error;
 mod json;
@@ -7,13 +8,17 @@ mod number;
 pub(crate) mod object;
 mod promise;
 mod reflect;
+pub(crate) mod regexp;
 mod string;
 mod symbol;
 
 pub(crate) use promise::promise_method;
 
 pub use array::array_method;
+pub use collections::describe_collection;
 pub use number::number_method;
+pub(crate) use regexp::compile as compile_regex;
+pub use regexp::regexp_member;
 pub use string::string_method;
 pub use symbol::symbol_method;
 pub(crate) use symbol::{is_iterator_symbol, symbol_for, symbol_key_for, well_known};
@@ -414,6 +419,8 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     error::install(e);
     promise::install(e);
     reflect::install(e);
+    collections::install(e);
+    regexp::install(e);
     symbol::install(e);
     // Global functions.
     e.set("parseInt", nf("parseInt", number::parse_int));

@@ -265,6 +265,14 @@ pub struct ClassData {
     pub statics: Rc<RefCell<Vec<(String, Value)>>>,
 }
 
+/// Payload of `Value::RegExp`.
+#[derive(Debug)]
+pub struct RegExpData {
+    pub regex: crate::regex::Regex,
+    /// Where the next `g`/`y` search starts. Guest-writable.
+    pub last_index: std::cell::Cell<usize>,
+}
+
 /// Payload of `Value::Error`, boxed so the enum itself stays small.
 #[derive(Debug, Clone)]
 pub struct ErrorData {
@@ -319,6 +327,10 @@ pub enum Value {
         id: usize,
     },
     Symbol(Rc<SymbolData>),
+    /// A compiled regular expression. `lastIndex` is mutable and shared with
+    /// every reference, which is what makes a `/g/` pattern advance across
+    /// successive `exec` calls.
+    RegExp(Rc<RegExpData>),
     /// A suspended async call, carried through the reaction functions that
     /// resume it. Internal: it never reaches guest code.
     #[cfg(not(target_arch = "wasm32"))]
@@ -636,6 +648,13 @@ impl Value {
     }
 
     /// The shared element storage, if this is an array.
+    pub fn as_regexp(&self) -> Option<Rc<RegExpData>> {
+        match self {
+            Value::RegExp(data) => Some(data.clone()),
+            _ => None,
+        }
+    }
+
     pub fn as_array(&self) -> Option<Rc<ArrayCell>> {
         match self {
             Value::Array(cell) => Some(cell.clone()),

@@ -342,6 +342,9 @@ impl Parser {
         // `for await (… of …)`.
         let is_await = self.eat(&Token::KwAwait);
         self.eat(&Token::LParen);
+        // `for (const [k, v] of pairs)` / `for (const { id } of rows)`: the
+        // head binds a pattern, which the loop destructures per iteration.
+        let mut head_pattern: Option<Box<Pattern>> = None;
         let init = if matches!(self.cur(), Token::KwVar | Token::KwLet | Token::KwConst) {
             let kind = match self.cur() {
                 Token::KwVar => VarKind::Var,
@@ -349,20 +352,27 @@ impl Parser {
                 _ => VarKind::Const,
             };
             self.adv();
-            let mut decls = Vec::new();
-            loop {
-                let n = self.ident()?;
-                let i = if self.eat(&Token::Equal) {
-                    Some(self.assign()?)
-                } else {
-                    None
-                };
-                decls.push((n, i));
-                if !self.eat(&Token::Comma) {
-                    break;
+            if matches!(self.cur(), Token::LBracket | Token::LBrace) {
+                let pattern = self.pattern()?;
+                head_pattern = Some(Box::new(pattern));
+                let decls = vec![("*pattern*".to_string(), None)];
+                Some(Box::new(ForInit::Var { kind, decls }))
+            } else {
+                let mut decls = Vec::new();
+                loop {
+                    let n = self.ident()?;
+                    let i = if self.eat(&Token::Equal) {
+                        Some(self.assign()?)
+                    } else {
+                        None
+                    };
+                    decls.push((n, i));
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
                 }
+                Some(Box::new(ForInit::Var { kind, decls }))
             }
-            Some(Box::new(ForInit::Var { kind, decls }))
         } else if matches!(self.cur(), Token::Semicolon) {
             None
         } else {
@@ -395,6 +405,7 @@ impl Parser {
                 };
                 return Some(Statement::ForOf {
                     name: n,
+                    pattern: head_pattern,
                     iter: i,
                     body: b,
                     is_await,

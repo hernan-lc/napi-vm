@@ -267,7 +267,7 @@ impl Interpreter {
                     Value::Promise { .. } | Value::HostPending { .. } => "object",
                     Value::Generator { .. } => "object",
                     Value::Symbol(_) => "symbol",
-                    Value::Error(_) => "object",
+                    Value::Error(_) | Value::RegExp(_) => "object",
                     // Internal values, resolved before they reach guest code.
                     #[cfg(not(target_arch = "wasm32"))]
                     Value::AsyncTask(_) => "object",
@@ -375,6 +375,9 @@ impl Interpreter {
     ) -> Result<(), VmErr> {
         match v {
             Value::Binding(cell) => self.vs_rec(&cell.borrow(), visited, depth, output),
+            Value::RegExp(re) => {
+                output.push_str(&format!("/{}/{}", re.regex.source, re.regex.flags))
+            }
             #[cfg(not(target_arch = "wasm32"))]
             Value::AsyncTask(_) => output.push_str("[object AsyncTask]"),
             Value::Undefined => output.push_str("undefined"),
@@ -388,7 +391,10 @@ impl Interpreter {
                 }
             }
             Value::String(s) => output.push_str(s),
-            Value::Object { .. } => output.push_str("[object Object]"),
+            Value::Object { .. } => match crate::builtins::describe_collection(v) {
+                Some(rendered) => output.push_str(&rendered),
+                None => output.push_str("[object Object]"),
+            },
             Value::GlobalObject => output.push_str("[object global]"),
             Value::Array(i) => {
                 if depth >= Self::MAX_PRINT_DEPTH {

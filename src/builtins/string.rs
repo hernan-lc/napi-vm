@@ -84,6 +84,9 @@ pub fn string_method(name: &str) -> Option<Value> {
         "slice" => string_slice,
         "substring" => string_substring,
         "split" => string_split,
+        "match" => super::regexp::string_match,
+        "matchAll" => super::regexp::string_match_all,
+        "search" => super::regexp::string_search,
         "includes" => string_includes,
         "indexOf" => string_index_of,
         "charAt" => string_char_at,
@@ -130,6 +133,16 @@ fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
 }
 fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this)?;
+    // A regular-expression separator splices its capture groups into the
+    // result, so it goes through the pattern path rather than `str::split`.
+    if let Some(pattern) = a.first().and_then(|v| v.as_regexp()) {
+        let limit = match a.get(1) {
+            Some(Value::Undefined) | None => crate::value::MAX_ARRAY_LEN,
+            Some(l) => (l.to_number().max(0.0) as usize).min(crate::value::MAX_ARRAY_LEN),
+        };
+        let input: Vec<char> = s.chars().collect();
+        return super::regexp::split_with_pattern(&input, &pattern, limit);
+    }
     match a.first() {
         Some(Value::String(sep)) => {
             let limit = match a.get(1) {
@@ -137,6 +150,18 @@ fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
                 None => crate::value::MAX_ARRAY_LEN,
             };
             let mut parts: Vec<Value> = Vec::new();
+            // An empty separator splits into characters. Rust's `split("")`
+            // instead yields a leading and trailing empty string, which is not
+            // what JavaScript does.
+            if sep.is_empty() {
+                for c in s.chars() {
+                    if parts.len() >= limit {
+                        break;
+                    }
+                    parts.push(Value::String(c.to_string()));
+                }
+                return Value::checked_array(parts);
+            }
             for p in s.split(sep.as_str()) {
                 if parts.len() >= limit {
                     break;
@@ -211,8 +236,46 @@ fn string_repeat(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result
     }
     Value::checked_string(s.repeat(n))
 }
+/// Handle `replace`/`replaceAll` when the pattern is a regular expression, or
+/// when the replacement is a function (which the plain-string path cannot
+/// call). Returns `None` when neither applies, so the caller keeps its fast
+/// literal path.
+fn replace_via_pattern(
+    interp: &mut Interpreter,
+    subject: &str,
+    a: &[Value],
+    all: bool,
+) -> Result<Option<Value>, VmErr> {
+    let replacement = a.get(1).cloned().unwrap_or(Value::Undefined);
+    let callable = matches!(
+        replacement,
+        Value::Function(_) | Value::NativeFunction { .. } | Value::HostFunction { .. }
+    );
+    let pattern = match a.first() {
+        Some(value) if value.as_regexp().is_some() => {
+            value.as_regexp().expect("checked immediately above")
+        }
+        Some(value) if callable => {
+            // A literal needle with a function replacement: compile the
+            // literal so both go through one implementation.
+            let needle = interp.vs(value)?;
+            let flags = if all { "g" } else { "" };
+            let compiled = super::regexp::compile(&super::regexp::escape_pattern(&needle), flags)?;
+            compiled.as_regexp().expect("compile returns a RegExp")
+        }
+        _ => return Ok(None),
+    };
+    let input: Vec<char> = subject.chars().collect();
+    let replaced =
+        super::regexp::replace_with_pattern(interp, &input, &pattern, &replacement, all)?;
+    Ok(Some(replaced))
+}
+
 fn string_replace(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this)?;
+    if let Some(replaced) = replace_via_pattern(interp, &s, &a, false)? {
+        return Ok(replaced);
+    }
     let from = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v)?,
@@ -246,6 +309,9 @@ fn string_replace_all(
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
     let s = str_this(interp, &this)?;
+    if let Some(replaced) = replace_via_pattern(interp, &s, &a, true)? {
+        return Ok(replaced);
+    }
     let from = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v)?,

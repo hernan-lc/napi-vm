@@ -102,15 +102,16 @@ test("web APIs exist", () => {
   expect(vm.run("typeof fetch;")).toBe("object");
   expect(vm.run("typeof WebSocket;")).toBe("object");
   expect(vm.run("typeof URL;")).toBe("object");
-  expect(vm.run("typeof Map;")).toBe("object");
-  expect(vm.run("typeof Set;")).toBe("object");
+  // `Map` and `Set` are real constructors, so they report as functions.
+  expect(vm.run("typeof Map;")).toBe("function");
+  expect(vm.run("typeof Set;")).toBe("function");
   // `Promise` is a real constructor, so it reports as a function.
   expect(vm.run("typeof Promise;")).toBe("function");
   expect(vm.run("typeof console;")).toBe("object");
   expect(vm.run("typeof Math;")).toBe("object");
   expect(vm.run("typeof JSON;")).toBe("object");
   expect(vm.run("typeof Date;")).toBe("object");
-  expect(vm.run("typeof RegExp;")).toBe("object");
+  expect(vm.run("typeof RegExp;")).toBe("function");
   expect(vm.run("typeof Error;")).toBe("function");
   expect(vm.run("typeof TypeError;")).toBe("function");
   expect(vm.run("typeof ArrayBuffer;")).toBe("object");

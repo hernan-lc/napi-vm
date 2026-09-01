@@ -269,6 +269,11 @@ impl Parser {
                 let is_generator = self.eat(&Token::Star);
                 self.fn_expr_tail(is_generator, false)
             }
+            Token::Regex(pattern, flags) => {
+                let literal = Expr::Regex(pattern.clone(), flags.clone());
+                self.adv();
+                Some(literal)
+            }
             Token::KwAsync => self.async_expr(),
             // `class` in expression position.
             Token::KwClass => {

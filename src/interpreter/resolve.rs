@@ -137,10 +137,16 @@ impl Interpreter {
     /// Resolve a property value, invoking it if it is a getter.
     pub(crate) fn get_prop_value(&mut self, o: &Value, p: &Value) -> Result<Value, VmErr> {
         let v = self.prop(o, p)?;
-        if let Value::Function(f) = &v
-            && !f.is_arrow
-            && f.name.as_ref().is_some_and(|n| n.starts_with("get "))
-        {
+        let is_getter = match &v {
+            Value::Function(f) => {
+                !f.is_arrow && f.name.as_ref().is_some_and(|n| n.starts_with("get "))
+            }
+            // A native accessor — `Map.prototype.size` — is recognized the
+            // same way, by the `get ` prefix on its name.
+            Value::NativeFunction { name, .. } => name.starts_with("get "),
+            _ => false,
+        };
+        if is_getter {
             return self.call_this(&v, o.clone(), vec![]);
         }
         Ok(v)
@@ -290,6 +296,9 @@ impl Interpreter {
                 }
             }
 
+            (Value::RegExp(data), Value::String(k)) => {
+                Ok(crate::builtins::regexp_member(data, k).unwrap_or(Value::Undefined))
+            }
             (Value::Symbol(symbol), Value::String(k)) => match k.as_str() {
                 "description" => Ok(symbol
                     .description
@@ -447,6 +456,15 @@ fn array_iter(
             super::Value::NativeFunction {
                 name: "next".into(),
                 callable: array_iter_next,
+            },
+        ),
+        // An iterator is itself iterable, which is what makes
+        // `[...map.keys()]` and `for (const k of map.keys())` work.
+        (
+            crate::interpreter::SYMBOL_ITERATOR_SLOT.to_string(),
+            super::Value::NativeFunction {
+                name: "[Symbol.iterator]".into(),
+                callable: string_iter_self,
             },
         ),
     ]);

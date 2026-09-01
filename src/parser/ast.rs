@@ -63,6 +63,17 @@ pub enum AssignOp {
     UShr,
 }
 
+/// Which condition makes a logical assignment write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalAssignOp {
+    /// `&&=`: assign when the current value is truthy.
+    And,
+    /// `||=`: assign when the current value is falsy.
+    Or,
+    /// `??=`: assign when the current value is `null` or `undefined`.
+    Nullish,
+}
+
 impl AssignOp {
     /// The binary operation behind a compound assignment (`+=` → `Add`).
     /// `None` for plain `=`.
@@ -89,6 +100,8 @@ impl AssignOp {
 pub enum Expr {
     Number(f64),
     String(String),
+    /// `/pattern/flags`.
+    Regex(String, String),
     Bool(bool),
     Null,
     Undefined,
@@ -125,6 +138,16 @@ pub enum Expr {
     Assignment {
         target: Box<Expr>,
         op: AssignOp,
+        value: Box<Expr>,
+    },
+    /// `a &&= b`, `a ||= b`, `a ??= b`.
+    ///
+    /// Separate from [`Expr::Assignment`] because these short-circuit: `b` is
+    /// evaluated, and the write performed, only when the current value calls
+    /// for it. A compound assignment always does both.
+    LogicalAssignment {
+        target: Box<Expr>,
+        op: LogicalAssignOp,
         value: Box<Expr>,
     },
     Conditional {
@@ -255,6 +278,9 @@ pub enum Statement {
     },
     ForOf {
         name: String,
+        /// `for (const [k, v] of pairs)`: the head binds a pattern rather than
+        /// one name. `name` is then unused.
+        pattern: Option<Box<Pattern>>,
         iter: Box<Expr>,
         body: Vec<Statement>,
         /// `for await (… of …)`: each step's result is awaited, and an async
@@ -637,6 +663,7 @@ fn stmt_references(s: &Statement, name: &str) -> bool {
 
 fn expr_references(e: &Expr, name: &str) -> bool {
     match e {
+        Expr::Regex(_, _) => false,
         Expr::Identifier(n) => n == name,
         Expr::Array(items) => items.iter().any(|x| expr_references(x, name)),
         Expr::Object(props) => props.iter().any(|p| match p {
@@ -669,6 +696,9 @@ fn expr_references(e: &Expr, name: &str) -> bool {
                     ClassMember::Setter { body, .. } => stmts_reference(body, name),
                     ClassMember::StaticBlock { body } => stmts_reference(body, name),
                 })
+        }
+        Expr::LogicalAssignment { target, value, .. } => {
+            expr_references(target, name) || expr_references(value, name)
         }
         Expr::TaggedTemplate { tag, exprs, .. } => {
             expr_references(tag, name) || exprs.iter().any(|x| expr_references(x, name))
