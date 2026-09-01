@@ -247,7 +247,8 @@ impl Interpreter {
                 Value::Bool(result)
             }
             // `in` is a prototype-chain query, not an own-property one, and
-            // its left operand is coerced to a property key.
+            // its left operand is coerced to a property key. A proxy's `has`
+            // trap answers it instead when one is defined.
             BinOp::In => {
                 let key = match l {
                     Value::String(k) => k.clone(),
@@ -425,6 +426,11 @@ impl Interpreter {
                     Value::Error(_) | Value::RegExp(_) => "object",
                     Value::BigInt(_) => "bigint",
                     Value::ArrayBuffer(_) | Value::TypedArray(_) | Value::DataView(_) => "object",
+                    // A proxy reports the type of what it wraps, so wrapping a
+                    // function still reports as one.
+                    Value::Proxy(proxy) => {
+                        return self.un_op(op, &proxy.target);
+                    }
                     // Internal values, resolved before they reach guest code.
                     #[cfg(not(target_arch = "wasm32"))]
                     Value::AsyncTask(_) => "object",
@@ -450,6 +456,10 @@ impl Interpreter {
                     .map(|(k, _)| k.clone())
                     .collect()
             }
+            // Without an `ownKeys` trap a proxy enumerates its target. The
+            // trap needs to call guest code, so it is applied in `Object.keys`
+            // and `for…in`, which have `&mut self`.
+            Value::Proxy(proxy) => self.keys(&proxy.target),
             Value::Array(i) => (0..i.borrow().len()).map(|x| x.to_string()).collect(),
             Value::GlobalObject => self.global_keys(),
             _ => vec![],
@@ -548,6 +558,7 @@ impl Interpreter {
                 }
                 Ok(())
             }
+            Value::Proxy(proxy) => self.vs_rec(&proxy.target, visited, depth, output),
             Value::ArrayBuffer(_) => output.push_str("[object ArrayBuffer]"),
             Value::DataView(_) => output.push_str("[object DataView]"),
             #[cfg(not(target_arch = "wasm32"))]

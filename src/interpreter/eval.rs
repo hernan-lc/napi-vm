@@ -1111,6 +1111,22 @@ impl Interpreter {
             Expr::Binary { op, left, right } => {
                 let l = self.eval_expr(left)?;
                 let r = self.eval_expr(right)?;
+                // A proxy's `has` trap answers `in`. It runs guest code, so it
+                // cannot live in `bin_op`, which does not borrow mutably.
+                if matches!(op, crate::parser::BinOp::In)
+                    && let Some(proxy) = r.as_proxy()
+                {
+                    let target = proxy.target.clone();
+                    return match self.proxy_trap(&proxy, "has") {
+                        Some(trap) => {
+                            let key = Value::String(self.property_key(&l)?);
+                            let handler = proxy.handler.clone();
+                            let result = self.call_this(&trap, handler, vec![target, key])?;
+                            Ok(Value::Bool(result.is_truthy()))
+                        }
+                        None => self.bin_op(*op, &l, &target),
+                    };
+                }
                 self.bin_op(*op, &l, &r)
             }
             Expr::Unary {

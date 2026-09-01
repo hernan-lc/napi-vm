@@ -332,6 +332,13 @@ pub struct TypedArrayData {
     pub length: usize,
 }
 
+/// Payload of `Value::Proxy`.
+#[derive(Debug)]
+pub struct ProxyData {
+    pub target: Value,
+    pub handler: Value,
+}
+
 /// Payload of `Value::Error`, boxed so the enum itself stays small.
 #[derive(Debug, Clone)]
 pub struct ErrorData {
@@ -386,6 +393,9 @@ pub enum Value {
         id: usize,
     },
     Symbol(Rc<SymbolData>),
+    /// A `Proxy`: a target and the handler whose traps intercept operations
+    /// on it. An operation the handler does not trap falls through.
+    Proxy(Rc<ProxyData>),
     /// Raw bytes. Shared, so every view onto it sees the same storage.
     ArrayBuffer(Buffer),
     /// A typed view onto a buffer: an element type plus a window.
@@ -718,6 +728,13 @@ impl Value {
     }
 
     /// The shared element storage, if this is an array.
+    pub fn as_proxy(&self) -> Option<Rc<ProxyData>> {
+        match self {
+            Value::Proxy(data) => Some(data.clone()),
+            _ => None,
+        }
+    }
+
     pub fn as_bigint(&self) -> Option<Rc<crate::bigint::BigInt>> {
         match self {
             Value::BigInt(value) => Some(value.clone()),
@@ -819,6 +836,9 @@ impl Value {
 
     pub fn has_prop(&self, key: &str) -> bool {
         match self {
+            // A proxy without a `has` trap answers for its target. The trap
+            // itself is applied by `bin_op`, which can call guest code.
+            Value::Proxy(proxy) => proxy.target.has_prop(key),
             Value::Object { .. } => {
                 let mut current = self.clone();
                 for _ in 0..=MAX_PROTOTYPE_DEPTH {

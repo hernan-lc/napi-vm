@@ -136,6 +136,17 @@ impl Interpreter {
 
     /// Resolve a property value, invoking it if it is a getter.
     pub(crate) fn get_prop_value(&mut self, o: &Value, p: &Value) -> Result<Value, VmErr> {
+        // A proxy's `get` trap replaces the read entirely; without one the
+        // read falls through to the target.
+        if let Some(proxy) = o.as_proxy() {
+            let target = proxy.target.clone();
+            if let Some(trap) = self.proxy_trap(&proxy, "get") {
+                let key = Value::String(self.property_key(p)?);
+                let handler = proxy.handler.clone();
+                return self.call_this(&trap, handler, vec![target, key, o.clone()]);
+            }
+            return self.get_prop_value(&target, p);
+        }
         let v = self.prop(o, p)?;
         let is_getter = match &v {
             Value::Function(f) => {

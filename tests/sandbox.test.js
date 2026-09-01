@@ -132,14 +132,29 @@ test("runCode is stateless between calls", () => {
   expect(() => runCode("x;")).toThrow();
 });
 
-test("cannot escape sandbox via constructor", () => {
+test("cannot escape sandbox via the Function constructor", () => {
   const vm = new Vm();
-  expect(vm.run("typeof Function;")).toBe("object");
+  // `Function` compiles source, but into *this* interpreter: the classic
+  // escape works by reaching a host realm, and there is none to reach.
+  expect(vm.run("typeof Function;")).toBe("function");
+  expect(vm.run("typeof new Function('return this')();")).toBe("undefined");
+  expect(vm.run("new Function('return typeof Deno')();")).toBe("undefined");
+  expect(vm.run("new Function('return typeof globalThis.process.mainModule')();")).toBe(
+    "undefined",
+  );
+  // The `f.constructor.constructor` chain that the escape usually travels
+  // does not exist here at all.
+  expect(vm.run("String((function () {}).constructor);")).toBe("undefined");
+  expect(vm.run("String([].constructor);")).toBe("undefined");
 });
 
-test("Proxy is sandboxed", () => {
+test("Proxy intercepts guest objects only", () => {
   const vm = new Vm();
-  expect(vm.run("typeof Proxy;")).toBe("object");
+  expect(vm.run("typeof Proxy;")).toBe("function");
+  // A proxy can only wrap a value the guest already holds, so it grants no
+  // reach the guest did not have.
+  expect(() => vm.run("new Proxy(1, {});")).toThrow();
+  expect(vm.run("new Proxy({ a: 1 }, {}).a;")).toBe("1");
 });
 
 test("structuredClone is sandboxed", () => {

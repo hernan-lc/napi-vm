@@ -3,11 +3,13 @@ mod bigint;
 mod collections;
 mod date;
 mod error;
+mod function;
 mod json;
 mod math;
 mod number;
 pub(crate) mod object;
 mod promise;
+mod proxy;
 mod reflect;
 pub(crate) mod regexp;
 mod string;
@@ -429,6 +431,8 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     regexp::install(e);
     bigint::install(e);
     typedarray::install(e);
+    proxy::install(e);
+    function::install(e);
     symbol::install(e);
     // Global functions.
     e.set("parseInt", nf("parseInt", number::parse_int));

@@ -146,6 +146,16 @@ impl Interpreter {
     /// Non-configurable properties survive and yield `false`; a missing
     /// property is already absent, so deleting it succeeds.
     pub(crate) fn delete_member(&mut self, obj: &Value, key: &Value) -> Result<Value, VmErr> {
+        if let Some(proxy) = obj.as_proxy() {
+            let target = proxy.target.clone();
+            if let Some(trap) = self.proxy_trap(&proxy, "deleteProperty") {
+                let name = Value::String(self.property_key(key)?);
+                let handler = proxy.handler.clone();
+                let result = self.call_this(&trap, handler, vec![target, name])?;
+                return Ok(Value::Bool(result.is_truthy()));
+            }
+            return self.delete_member(&target, key);
+        }
         match obj {
             Value::Object { props } => {
                 let slot = self.property_key(key)?;
@@ -196,6 +206,18 @@ impl Interpreter {
         prop: &Value,
         val: Value,
     ) -> Result<(), VmErr> {
+        // A proxy's `set` trap replaces the write; without one it falls
+        // through to the target.
+        if let Some(proxy) = obj.as_proxy() {
+            let target = proxy.target.clone();
+            if let Some(trap) = self.proxy_trap(&proxy, "set") {
+                let key = Value::String(self.property_key(prop)?);
+                let handler = proxy.handler.clone();
+                self.call_this(&trap, handler, vec![target, key, val, obj.clone()])?;
+                return Ok(());
+            }
+            return self.assign_member(&target, prop, val);
+        }
         match (obj, prop) {
             (Value::Object { props }, Value::String(k)) => {
                 // If a setter is defined for this key, invoke it. An accessor
@@ -514,6 +536,18 @@ impl Interpreter {
                     bridge.call_host(*id, args)
                 }
             }
+            // A proxy over a function: `apply` intercepts the call.
+            Value::Proxy(proxy) => {
+                let target = proxy.target.clone();
+                match self.proxy_trap(&proxy.clone(), "apply") {
+                    Some(trap) => {
+                        let handler = proxy.handler.clone();
+                        let arg_list = Value::checked_array(args)?;
+                        self.call_this(&trap, handler, vec![target, this_val, arg_list])
+                    }
+                    None => self.call_this(&target, this_val, args),
+                }
+            }
             // A built-in namespace such as `String` or `Map` is an object
             // carrying its statics *and* an internal call slot, so it can be
             // both `String.fromCharCode(…)` and `String(x)`.
@@ -594,6 +628,17 @@ impl Interpreter {
             // can tell which built-in it was reached through — `Int8Array` and
             // `Float64Array` differ only by what their namespace carries.
             return self.call_this(&target, f.clone(), args);
+        }
+        if let Some(proxy) = f.as_proxy() {
+            let target = proxy.target.clone();
+            return match self.proxy_trap(&proxy, "construct") {
+                Some(trap) => {
+                    let handler = proxy.handler.clone();
+                    let arg_list = Value::checked_array(args)?;
+                    self.call_this(&trap, handler, vec![target.clone(), arg_list, target])
+                }
+                None => self.ctor(&target, args),
+            };
         }
         match f {
             Value::Class(c) => {

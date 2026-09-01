@@ -96,6 +96,9 @@ fn json_serialize(
             append_json_char(out, ']')?;
             visited.remove(&ptr);
         }
+        // A proxy serializes as its target. Routing this through the `get`
+        // trap would need the interpreter, which the serializer does not have.
+        Value::Proxy(proxy) => return json_serialize(&proxy.target, out, visited, depth),
         Value::Object { props, .. } => {
             let ptr = std::rc::Rc::as_ptr(props) as *const ();
             if !visited.insert(ptr) {

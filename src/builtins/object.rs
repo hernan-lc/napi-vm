@@ -105,9 +105,33 @@ fn desc_bool(desc: &Value, key: &str, default: bool) -> bool {
 
 // --- Enumeration ------------------------------------------------------------
 
-fn object_keys(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+fn object_keys(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let v = a.first().cloned().unwrap_or(Value::Undefined);
+    if let Some(names) = proxy_own_keys(interp, &v)? {
+        return Ok(names);
+    }
     Value::checked_array(own_names(&v, true).into_iter().map(Value::String).collect())
+}
+
+/// A proxy's `ownKeys` trap, if it has one. Without a trap the caller falls
+/// through to the target's own names.
+fn proxy_own_keys(interp: &mut Interpreter, value: &Value) -> Result<Option<Value>, VmErr> {
+    let Some(proxy) = value.as_proxy() else {
+        return Ok(None);
+    };
+    let target = proxy.target.clone();
+    match interp.proxy_trap(&proxy, "ownKeys") {
+        Some(trap) => {
+            let handler = proxy.handler.clone();
+            Ok(Some(interp.call_this(&trap, handler, vec![target])?))
+        }
+        None => Ok(Some(Value::checked_array(
+            own_names(&target, true)
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        )?)),
+    }
 }
 
 fn object_values(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
@@ -148,6 +172,9 @@ fn object_get_own_property_names(
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
     let v = a.first().cloned().unwrap_or(Value::Undefined);
+    if let Some(names) = proxy_own_keys(interp, &v)? {
+        return Ok(names);
+    }
     let names = match v {
         Value::GlobalObject => interp.global_keys(),
         ref other => own_names(other, false),
