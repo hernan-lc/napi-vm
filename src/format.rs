@@ -206,6 +206,7 @@ fn render_plain_value(
         // A BigInt renders with an `n` suffix when inspected, matching the
         // literal syntax; plain string coercion drops it.
         Value::BigInt(value) => output.push_str(&value.to_decimal()),
+        Value::Date(ms) => output.push_str(&crate::builtins::iso_string(ms.get())),
         // A proxy renders as its target: it is meant to stand in for it.
         Value::Proxy(proxy) => render_plain_value(&proxy.target, visited, depth, output),
         Value::ArrayBuffer(bytes) => {
@@ -418,6 +419,9 @@ fn render_inspect_value(
             painter.write_wrapped(context.output, "33", &format!("{}n", value.to_decimal()))
         }
         Value::Proxy(proxy) => render_inspect_value(&proxy.target, depth, pretty, context),
+        Value::Date(ms) => {
+            painter.write_wrapped(context.output, "35", &crate::builtins::iso_string(ms.get()))
+        }
         Value::ArrayBuffer(bytes) => painter.write_wrapped(
             context.output,
             "2;37",

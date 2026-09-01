@@ -110,7 +110,7 @@ test("web APIs exist", () => {
   expect(vm.run("typeof console;")).toBe("object");
   expect(vm.run("typeof Math;")).toBe("object");
   expect(vm.run("typeof JSON;")).toBe("object");
-  expect(vm.run("typeof Date;")).toBe("object");
+  expect(vm.run("typeof Date;")).toBe("function");
   expect(vm.run("typeof RegExp;")).toBe("function");
   expect(vm.run("typeof Error;")).toBe("function");
   expect(vm.run("typeof TypeError;")).toBe("function");

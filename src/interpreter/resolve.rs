@@ -341,6 +341,9 @@ impl Interpreter {
                 crate::builtins::note_method(k);
                 Ok(crate::builtins::data_view_member(view, k).unwrap_or(Value::Undefined))
             }
+            (Value::Date(_), Value::String(k)) => {
+                Ok(crate::builtins::date_member(k).unwrap_or(Value::Undefined))
+            }
             (Value::BigInt(_), Value::String(k)) => {
                 Ok(crate::builtins::bigint_method(k).unwrap_or(Value::Undefined))
             }

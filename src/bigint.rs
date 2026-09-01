@@ -99,6 +99,27 @@ impl BigInt {
         Ok(value)
     }
 
+    /// The sign and 64-bit words N-API's `bigint` accessors use.
+    pub fn to_words(&self) -> (bool, Vec<u64>) {
+        let mut words = Vec::with_capacity(self.limbs.len().div_ceil(2));
+        for pair in self.limbs.chunks(2) {
+            let low = pair[0] as u64;
+            let high = pair.get(1).copied().unwrap_or(0) as u64;
+            words.push((high << 32) | low);
+        }
+        (self.negative, words)
+    }
+
+    /// Rebuild from the sign and 64-bit words N-API hands back.
+    pub fn from_words(negative: bool, words: &[u64]) -> Self {
+        let mut limbs = Vec::with_capacity(words.len() * 2);
+        for word in words {
+            limbs.push(*word as u32);
+            limbs.push((word >> 32) as u32);
+        }
+        Self::normalized(negative, limbs)
+    }
+
     pub fn to_f64(&self) -> f64 {
         let mut value = 0.0f64;
         for limb in self.limbs.iter().rev() {

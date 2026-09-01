@@ -45,7 +45,7 @@ pub(super) fn install(e: &mut Environment) {
 }
 
 /// Mint a brand-new symbol. Every call produces a distinct identity.
-pub(crate) fn new_symbol(description: Option<String>) -> Value {
+pub fn new_symbol(description: Option<String>) -> Value {
     let id = NEXT_ID.with(|n| {
         let id = n.get();
         n.set(id + 1);

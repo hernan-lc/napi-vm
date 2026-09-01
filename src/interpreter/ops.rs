@@ -47,6 +47,7 @@ pub fn strict_equals(a: &Value, b: &Value) -> bool {
         (Value::HostPending { id: x }, Value::HostPending { id: y }) => x == y,
         (Value::Symbol(x), Value::Symbol(y)) => x.id == y.id,
         (Value::BigInt(x), Value::BigInt(y)) => x.compare(y).is_eq(),
+        (Value::Date(x), Value::Date(y)) => Rc::ptr_eq(x, y),
         (Value::Error(x), Value::Error(y)) => x.name == y.name && x.message == y.message,
         _ => false,
     }
@@ -425,7 +426,10 @@ impl Interpreter {
                     Value::Symbol(_) => "symbol",
                     Value::Error(_) | Value::RegExp(_) => "object",
                     Value::BigInt(_) => "bigint",
-                    Value::ArrayBuffer(_) | Value::TypedArray(_) | Value::DataView(_) => "object",
+                    Value::ArrayBuffer(_)
+                    | Value::TypedArray(_)
+                    | Value::DataView(_)
+                    | Value::Date(_) => "object",
                     // A proxy reports the type of what it wraps, so wrapping a
                     // function still reports as one.
                     Value::Proxy(proxy) => {
@@ -559,6 +563,7 @@ impl Interpreter {
                 Ok(())
             }
             Value::Proxy(proxy) => self.vs_rec(&proxy.target, visited, depth, output),
+            Value::Date(ms) => output.push_str(&crate::builtins::iso_string(ms.get())),
             Value::ArrayBuffer(_) => output.push_str("[object ArrayBuffer]"),
             Value::DataView(_) => output.push_str("[object DataView]"),
             #[cfg(not(target_arch = "wasm32"))]

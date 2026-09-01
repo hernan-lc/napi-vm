@@ -20,7 +20,167 @@ pub(super) fn install(e: &mut Environment) {
             .expect("built-in Date property");
         d.set_prop("UTC".to_string(), super::nf("UTC", date_utc))
             .expect("built-in Date property");
+        super::make_callable(&d, date_call, Some(date_construct));
     }
+}
+
+/// `Date(…)` called without `new` is the current time as a string, which is
+/// what the specification says regardless of its arguments.
+fn date_call(_: &mut Interpreter, _: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::String(to_iso(now_ms())))
+}
+
+/// `new Date(…)`: no arguments is now, one number is epoch milliseconds, one
+/// string is parsed, and several are UTC civil-time components.
+fn date_construct(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let ms = match a.len() {
+        0 => now_ms(),
+        1 => match &a[0] {
+            Value::String(s) => parse_iso(s).unwrap_or(f64::NAN),
+            Value::Date(existing) => existing.get(),
+            other => other.to_number(),
+        },
+        _ => {
+            let utc = date_utc(interp, Value::Undefined, a)?;
+            utc.to_number()
+        }
+    };
+    Ok(Value::Date(std::rc::Rc::new(std::cell::Cell::new(ms))))
+}
+
+/// Members readable on a `Date` instance.
+///
+/// The sandbox has no local timezone, so the `getX` accessors and their
+/// `getUTCX` counterparts are the same function: everything is UTC.
+pub fn date_member(key: &str) -> Option<Value> {
+    let callable: super::NativeFn = match key {
+        "getTime" | "valueOf" => date_get_time,
+        "getFullYear" | "getUTCFullYear" => date_get_full_year,
+        "getMonth" | "getUTCMonth" => date_get_month,
+        "getDate" | "getUTCDate" => date_get_date,
+        "getDay" | "getUTCDay" => date_get_day,
+        "getHours" | "getUTCHours" => date_get_hours,
+        "getMinutes" | "getUTCMinutes" => date_get_minutes,
+        "getSeconds" | "getUTCSeconds" => date_get_seconds,
+        "getMilliseconds" | "getUTCMilliseconds" => date_get_millis,
+        // No local timezone means no offset from UTC.
+        "getTimezoneOffset" => date_zero,
+        "setTime" => date_set_time,
+        "toISOString" | "toJSON" => date_to_iso,
+        "toString" | "toUTCString" => date_to_iso,
+        _ => return None,
+    };
+    Some(super::nf(key, callable))
+}
+
+fn epoch(this: &Value) -> f64 {
+    match this {
+        Value::Date(ms) => ms.get(),
+        other => other.to_number(),
+    }
+}
+
+/// UTC civil components of an instant, in the order the accessors index them.
+///
+/// A tuple struct rather than a plain tuple so the `component!` accessors can
+/// keep indexing it positionally without the type becoming unreadable.
+struct Civil(i64, i64, i64, i64, i64, i64, i64, i64);
+
+/// Split epoch milliseconds into UTC civil components.
+fn civil(ms: f64) -> Option<Civil> {
+    if !ms.is_finite() {
+        return None;
+    }
+    let total = ms as i64;
+    let days = total.div_euclid(86_400_000);
+    let rest = total.rem_euclid(86_400_000);
+    let (year, month, day) = civil_from_days(days);
+    // 1970-01-01 was a Thursday, so day 0 is weekday 4.
+    let weekday = (days + 4).rem_euclid(7);
+    Some(Civil(
+        year,
+        month,
+        day,
+        rest / 3_600_000,
+        (rest / 60_000) % 60,
+        (rest / 1_000) % 60,
+        rest % 1_000,
+        weekday,
+    ))
+}
+
+/// Inverse of `days_from_civil` (Hinnant's algorithm).
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (y + i64::from(m <= 2), m, d)
+}
+
+fn to_iso(ms: f64) -> String {
+    match civil(ms) {
+        Some(Civil(year, month, day, hour, minute, second, millis, _)) => format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            year, month, day, hour, minute, second, millis
+        ),
+        None => "Invalid Date".to_string(),
+    }
+}
+
+/// Build one component accessor from a projection over the civil parts.
+macro_rules! component {
+    ($name:ident, $index:tt, $adjust:expr) => {
+        fn $name(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+            Ok(Value::Number(match civil(epoch(&this)) {
+                Some(parts) => {
+                    let adjust: fn(i64) -> i64 = $adjust;
+                    adjust(parts.$index) as f64
+                }
+                None => f64::NAN,
+            }))
+        }
+    };
+}
+
+component!(date_get_full_year, 0, |v| v);
+// JavaScript's month index is zero-based; the civil calendar's is not.
+component!(date_get_month, 1, |v| v - 1);
+component!(date_get_date, 2, |v| v);
+component!(date_get_hours, 3, |v| v);
+component!(date_get_minutes, 4, |v| v);
+component!(date_get_seconds, 5, |v| v);
+component!(date_get_millis, 6, |v| v);
+component!(date_get_day, 7, |v| v);
+
+fn date_get_time(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::Number(epoch(&this)))
+}
+
+fn date_zero(_: &mut Interpreter, _: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::Number(0.0))
+}
+
+fn date_set_time(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let ms = a.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
+    if let Value::Date(slot) = &this {
+        slot.set(ms);
+    }
+    Ok(Value::Number(ms))
+}
+
+fn date_to_iso(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    Ok(Value::String(to_iso(epoch(&this))))
+}
+
+/// The ISO rendering of a date, for the formatter and the N-API boundary.
+pub fn iso_string(ms: f64) -> String {
+    to_iso(ms)
 }
 
 fn date_now(_: &mut Interpreter, _: Value, _: Vec<Value>) -> Result<Value, VmErr> {

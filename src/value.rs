@@ -393,6 +393,9 @@ pub enum Value {
         id: usize,
     },
     Symbol(Rc<SymbolData>),
+    /// A `Date`: epoch milliseconds in a shared, mutable cell, so `setTime`
+    /// is observed through every reference.
+    Date(Rc<std::cell::Cell<f64>>),
     /// A `Proxy`: a target and the handler whose traps intercept operations
     /// on it. An operation the handler does not trap falls through.
     Proxy(Rc<ProxyData>),
@@ -898,6 +901,7 @@ impl Value {
                 }
             }
             Value::BigInt(value) => value.to_f64(),
+            Value::Date(ms) => ms.get(),
             Value::StringIterator { .. } => 0.0,
             Value::Null => 0.0,
             Value::Undefined => f64::NAN,

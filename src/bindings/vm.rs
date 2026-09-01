@@ -898,6 +898,12 @@ impl VM {
                 .interp
                 .call_this(&callee, Value::Undefined, vm_args)
                 .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+            // Run the event loop before the value crosses out, so a promise
+            // the call produced is settled by the time the host sees it.
+            runtime
+                .interp
+                .drain_jobs()
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
             let out = to_napi(raw_env, &result)
                 .map_err(|error| napi::Error::from_reason(error.to_string()))?;
             Ok(unsafe { Unknown::from_raw_unchecked(raw_env, out) })

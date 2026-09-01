@@ -96,6 +96,13 @@ fn json_serialize(
             append_json_char(out, ']')?;
             visited.remove(&ptr);
         }
+        // A `Date` serializes as its ISO string, which is what its `toJSON`
+        // returns.
+        Value::Date(ms) => {
+            append_json_char(out, '"')?;
+            escape_json(&crate::builtins::iso_string(ms.get()), out)?;
+            append_json_char(out, '"')?;
+        }
         // A proxy serializes as its target. Routing this through the `get`
         // trap would need the interpreter, which the serializer does not have.
         Value::Proxy(proxy) => return json_serialize(&proxy.target, out, visited, depth),

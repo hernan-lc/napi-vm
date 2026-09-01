@@ -20,11 +20,13 @@ pub(crate) use promise::promise_method;
 
 pub use array::array_method;
 pub use bigint::bigint_method;
-pub use collections::describe_collection;
+pub use collections::{collection_entries_of, describe_collection};
+pub use date::{date_member, iso_string};
 pub use number::number_method;
 pub(crate) use regexp::compile as compile_regex;
 pub use regexp::regexp_member;
 pub use string::string_method;
+pub use symbol::new_symbol;
 pub use symbol::symbol_method;
 pub(crate) use symbol::{is_iterator_symbol, symbol_for, symbol_key_for, well_known};
 pub use typedarray::{

@@ -362,6 +362,24 @@ fn collection_iterator(
     }
 }
 
+/// A collection's kind name and its entries, for callers that need to rebuild
+/// it elsewhere — the N-API boundary builds a host `Map`/`Set` from this.
+pub fn collection_entries_of(value: &Value) -> Option<(&'static str, Vec<(Value, Value)>)> {
+    let kind = kind_of(value)?;
+    let entries = entries_of(value)?;
+    let pairs = entries
+        .borrow()
+        .iter()
+        .map(|entry| {
+            (
+                entry.get_prop("0").unwrap_or(Value::Undefined),
+                entry.get_prop("1").unwrap_or(Value::Undefined),
+            )
+        })
+        .collect();
+    Some((kind.tag(), pairs))
+}
+
 /// How a collection renders: `Map(2)`, `Set(3)`. `None` for anything that is
 /// not one, so the formatter can fall through to its object handling.
 pub fn describe_collection(value: &Value) -> Option<String> {
