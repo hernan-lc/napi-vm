@@ -329,7 +329,6 @@ impl Interpreter {
         Ok(())
     }
 
-    #[cfg(any(feature = "napi", all(feature = "wasm", target_arch = "wasm32")))]
     pub(crate) fn global_value(&self, name: &str) -> Option<Value> {
         self.persistent_global.borrow().get(name)
     }

@@ -150,7 +150,21 @@ impl Parser {
                     init = Some(Box::new(self.assign()?));
                 }
             } else {
+                let span = self.cur_span();
                 name = self.ident()?;
+                self.record(
+                    &name,
+                    span,
+                    crate::parser::Occurrence::Declaration(crate::parser::DeclKind::Variable),
+                    Some(
+                        match k {
+                            VarKind::Var => "var",
+                            VarKind::Let => "let",
+                            VarKind::Const => "const",
+                        }
+                        .to_string(),
+                    ),
+                );
                 if self.eat(&Token::Equal) {
                     init = Some(Box::new(self.assign()?));
                 }
@@ -245,17 +259,28 @@ impl Parser {
         self.adv(); // consume `function`
         // Generator declaration: `function*`.
         let is_generator = self.eat(&Token::Star);
+        let name_span = self.cur_span();
         let n = match (self.cur(), fallback) {
             (Token::Identifier(_), _) => self.ident()?,
             (_, Some(name)) => name.to_string(),
             _ => return None,
         };
+        // The function's own name belongs to the enclosing scope; its
+        // parameters and body belong to a new one.
+        let outer = self.push_scope(true);
         self.eat(&Token::LParen);
         let (p, defaults) = self.params();
         self.expect(&Token::RParen);
         self.eat(&Token::LBrace);
         let b = self.block_body();
         self.expect(&Token::RBrace);
+        self.pop_scope(outer);
+        self.record(
+            &n,
+            name_span,
+            crate::parser::Occurrence::Declaration(crate::parser::DeclKind::Function),
+            Some(format!("({})", p.join(", "))),
+        );
         let mut body = defaults;
         body.extend(b);
         Some(Statement::FnDecl {
@@ -516,6 +541,8 @@ impl Parser {
     /// Parse a parameter list. Returns the parameter names (rest params keep
     /// their `...` prefix) plus guard statements that implement default values
     /// (`if (name === undefined) name = <default>;`), to be prepended to a body.
+    /// Parse a parameter list, recording each name as a declaration in the
+    /// scope the caller has already opened for the body.
     pub(crate) fn params(&mut self) -> (Vec<String>, Vec<Statement>) {
         let mut names = Vec::new();
         let mut defaults = Vec::new();
@@ -524,12 +551,15 @@ impl Parser {
                 Token::DotDotDot => {
                     self.adv();
                     if let Token::Identifier(n) = self.cur() {
-                        names.push(format!("...{}", n));
+                        let name = n.clone();
+                        self.record_decl_here(&name, crate::parser::DeclKind::Parameter);
+                        names.push(format!("...{}", name));
                         self.adv();
                     }
                 }
                 Token::Identifier(n) => {
                     let name = n.clone();
+                    self.record_decl_here(&name, crate::parser::DeclKind::Parameter);
                     self.adv();
                     if self.eat(&Token::Equal)
                         && let Some(d) = self.assign()

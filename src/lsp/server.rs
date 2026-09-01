@@ -13,7 +13,9 @@ use crate::lang::{
 };
 
 use super::runtime_client::{RuntimeClient, RuntimeEvent};
-use super::text::{diagnostic_position, position_to_offset, uri_path};
+use super::text::{
+    diagnostic_position, line_text, position_to_offset, uri_path, utf16_column_to_char_column,
+};
 
 const SERVER_NAME: &str = "napi-vm-lsp";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -257,7 +259,20 @@ impl Server {
                                 "textDocumentSync": 1,
                                 "hoverProvider": true,
                                 "completionProvider": { "triggerCharacters": [".", "_"] },
-                                "documentSymbolProvider": false
+                                "documentSymbolProvider": true,
+                                "definitionProvider": true,
+                                "referencesProvider": true,
+                                "documentHighlightProvider": true,
+                                "renameProvider": { "prepareProvider": true },
+                                "signatureHelpProvider": { "triggerCharacters": ["(", ","] },
+                                "inlayHintProvider": true,
+                                "semanticTokensProvider": {
+                                    "legend": {
+                                        "tokenTypes": crate::lang::semantic::LEGEND,
+                                        "tokenModifiers": []
+                                    },
+                                    "full": true
+                                }
                             },
                             "serverInfo": {
                                 "name": SERVER_NAME,
@@ -359,8 +374,155 @@ impl Server {
                 }
             }
             "textDocument/documentSymbol" => {
+                let text = self.document_text(&params);
+                let index = crate::lang::navigation::index(&text);
+                let symbols: Vec<Value> = crate::lang::navigation::document_symbols(&index)
+                    .into_iter()
+                    .map(|symbol| {
+                        let range = lsp_range(&text, &symbol.location);
+                        json!({
+                            "name": symbol.name,
+                            "kind": symbol.kind.lsp_kind(),
+                            "detail": symbol.detail,
+                            "range": range,
+                            "selectionRange": range,
+                        })
+                    })
+                    .collect();
                 if let Some(id) = id {
-                    response(id, json!([]));
+                    response(id, Value::Array(symbols));
+                }
+            }
+            "textDocument/definition" => {
+                let uri = document_uri(&params);
+                let text = self.document_text(&params);
+                let index = crate::lang::navigation::index(&text);
+                let result = navigation_position(&text, &params)
+                    .and_then(|at| crate::lang::navigation::definition(&index, at))
+                    .map(|location| json!({ "uri": uri, "range": lsp_range(&text, &location) }));
+                if let Some(id) = id {
+                    response(id, result.unwrap_or(Value::Null));
+                }
+            }
+            "textDocument/references" | "textDocument/documentHighlight" => {
+                let uri = document_uri(&params);
+                let text = self.document_text(&params);
+                let index = crate::lang::navigation::index(&text);
+                let highlight = method == "textDocument/documentHighlight";
+                let locations: Vec<Value> = navigation_position(&text, &params)
+                    .map(|at| crate::lang::navigation::references(&index, at))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|location| {
+                        let range = lsp_range(&text, &location);
+                        // A highlight is a range within the open document; a
+                        // reference carries the document it is in.
+                        if highlight {
+                            json!({ "range": range })
+                        } else {
+                            json!({ "uri": uri, "range": range })
+                        }
+                    })
+                    .collect();
+                if let Some(id) = id {
+                    response(id, Value::Array(locations));
+                }
+            }
+            "textDocument/prepareRename" => {
+                let text = self.document_text(&params);
+                let index = crate::lang::navigation::index(&text);
+                // Renaming is offered only where the cursor is on a name the
+                // index can resolve.
+                let result = navigation_position(&text, &params)
+                    .and_then(|at| {
+                        crate::lang::navigation::references(&index, at)
+                            .into_iter()
+                            .find(|location| {
+                                location.line == at.line
+                                    && at.column >= location.start_column
+                                    && at.column < location.end_column
+                            })
+                    })
+                    .map(|location| lsp_range(&text, &location));
+                if let Some(id) = id {
+                    response(id, result.unwrap_or(Value::Null));
+                }
+            }
+            "textDocument/rename" => {
+                let uri = document_uri(&params);
+                let text = self.document_text(&params);
+                let index = crate::lang::navigation::index(&text);
+                let new_name = params.get("newName").and_then(Value::as_str).unwrap_or("");
+                let edits = navigation_position(&text, &params)
+                    .and_then(|at| crate::lang::navigation::rename(&index, at, new_name));
+                let result = match edits {
+                    Some(edits) => {
+                        let changes: Vec<Value> = edits
+                            .into_iter()
+                            .map(|location| {
+                                json!({
+                                    "range": lsp_range(&text, &location),
+                                    "newText": new_name,
+                                })
+                            })
+                            .collect();
+                        json!({ "changes": { uri: changes } })
+                    }
+                    None => Value::Null,
+                };
+                if let Some(id) = id {
+                    response(id, result);
+                }
+            }
+            "textDocument/signatureHelp" => {
+                let text = self.document_text(&params);
+                let index = crate::lang::navigation::index(&text);
+                let result = navigation_position(&text, &params)
+                    .and_then(|at| crate::lang::navigation::signature_help(&text, at, &index))
+                    .map(|help| {
+                        json!({
+                            "signatures": [{
+                                "label": help.label,
+                                "parameters": help
+                                    .parameters
+                                    .iter()
+                                    .map(|p| json!({ "label": p }))
+                                    .collect::<Vec<_>>(),
+                            }],
+                            "activeSignature": 0,
+                            "activeParameter": help.active_parameter,
+                        })
+                    });
+                if let Some(id) = id {
+                    response(id, result.unwrap_or(Value::Null));
+                }
+            }
+            "textDocument/inlayHint" => {
+                let text = self.document_text(&params);
+                let index = crate::lang::navigation::index(&text);
+                let hints: Vec<Value> = crate::lang::navigation::inlay_hints(&text, &index)
+                    .into_iter()
+                    .map(|hint| {
+                        let (line, character) = diagnostic_position(&text, hint.line, hint.column);
+                        json!({
+                            "position": { "line": line, "character": character },
+                            "label": hint.label,
+                            // 2 is `InlayHintKind.Parameter`.
+                            "kind": 2,
+                            "paddingRight": true,
+                        })
+                    })
+                    .collect();
+                if let Some(id) = id {
+                    response(id, Value::Array(hints));
+                }
+            }
+            "textDocument/semanticTokens/full" => {
+                let text = self.document_text(&params);
+                let tokens = crate::lang::semantic::semantic_tokens(&text);
+                let data = crate::lang::semantic::encode(&tokens);
+                if let Some(id) = id {
+                    response(id, json!({ "data": data }));
                 }
             }
             _ => {
@@ -439,6 +601,49 @@ fn lsp_completion_kind(kind: CompletionKind) -> u32 {
 
 /// Map an LSP `Position` (0-based line, UTF-16 code-unit character) onto the
 /// UTF-8 byte offset that [`LanguageService`] expects.
+impl Server {
+    /// The text of the document a request names, or the empty string when it
+    /// is not open.
+    fn document_text(&self, params: &Value) -> String {
+        self.documents
+            .get(document_uri(params))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+/// The document URI named by a request.
+fn document_uri(params: &Value) -> &str {
+    params
+        .pointer("/textDocument/uri")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+/// Convert an LSP position (zero-based line, UTF-16 column) into the
+/// one-based line/character position the navigation index uses.
+fn navigation_position(text: &str, params: &Value) -> Option<crate::lang::navigation::Position> {
+    let position = params.get("position")?;
+    let line = position.get("line").and_then(Value::as_u64)? as usize;
+    let character = position.get("character").and_then(Value::as_u64)? as usize;
+    let source_line = line_text(text, line).unwrap_or("");
+    let column = utf16_column_to_char_column(source_line, character);
+    Some(crate::lang::navigation::Position {
+        line: line + 1,
+        column: column + 1,
+    })
+}
+
+/// Convert a navigation location into an LSP range.
+fn lsp_range(text: &str, location: &crate::lang::navigation::Location) -> Value {
+    let (line, start) = diagnostic_position(text, location.line, location.start_column);
+    let (_, end) = diagnostic_position(text, location.line, location.end_column);
+    json!({
+        "start": { "line": line, "character": start },
+        "end": { "line": line, "character": end },
+    })
+}
+
 fn text_offset(text: &str, position: Option<&Value>) -> usize {
     let Some(position) = position else {
         return 0;

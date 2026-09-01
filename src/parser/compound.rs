@@ -52,17 +52,27 @@ impl Parser {
     /// class { … }`), in which case `fallback` supplies the binding name.
     pub(crate) fn class_decl_named(&mut self, fallback: Option<&str>) -> Option<Statement> {
         self.adv();
+        let name_span = self.cur_span();
         let n = match (self.cur(), fallback) {
             (Token::Identifier(_), _) => self.ident()?,
             (_, Some(name)) => name.to_string(),
             _ => return None,
         };
+        self.record(
+            &n,
+            name_span,
+            crate::parser::Occurrence::Declaration(crate::parser::DeclKind::Class),
+            None,
+        );
         let sc = if self.eat(&Token::KwExtends) {
             Some(Box::new(self.expr()?))
         } else {
             None
         };
         self.eat(&Token::LBrace);
+        // The class body is its own scope: a method's name does not collide
+        // with a binding outside the class.
+        let class_scope = self.push_scope(true);
         let mut b = Vec::new();
         while self.until(&Token::RBrace) {
             if self.eof() {
@@ -83,6 +93,7 @@ impl Parser {
             let is_generator = self.eat(&Token::Star);
             let is_getter = self.eat_modifier(&Token::KwGet);
             let is_setter = self.eat_modifier(&Token::KwSet);
+            let member_span = self.cur_span();
             let mn = match self.cur() {
                 Token::Identifier(x) => {
                     let v = x.clone();
@@ -126,12 +137,24 @@ impl Parser {
                 }
                 _ => return None,
             };
+            self.record(
+                &mn,
+                member_span,
+                crate::parser::Occurrence::Declaration(if matches!(self.cur(), Token::LParen) {
+                    crate::parser::DeclKind::Method
+                } else {
+                    crate::parser::DeclKind::Property
+                }),
+                None,
+            );
             if self.eat(&Token::LParen) {
+                let method_scope = self.push_scope(true);
                 let (p, defaults) = self.params();
                 self.expect(&Token::RParen);
                 self.eat(&Token::LBrace);
                 let bd = self.block_body();
                 self.expect(&Token::RBrace);
+                self.pop_scope(method_scope);
                 let mut body = defaults;
                 body.extend(bd);
                 if is_getter {
@@ -173,6 +196,7 @@ impl Parser {
             }
         }
         self.expect(&Token::RBrace);
+        self.pop_scope(class_scope);
         Some(Statement::ClassDecl {
             name: n,
             superclass: sc,
@@ -443,7 +467,18 @@ impl Parser {
         }
     }
 
+    /// Parse statements up to a closing brace, in a *new* lexical scope.
+    ///
+    /// The scope is what keeps two same-named `let`s in sibling blocks apart,
+    /// which is what makes rename safe.
     pub(crate) fn block_body(&mut self) -> Vec<Statement> {
+        let outer = self.push_scope(false);
+        let body = self.block_body_inner();
+        self.pop_scope(outer);
+        body
+    }
+
+    fn block_body_inner(&mut self) -> Vec<Statement> {
         let mut s = Vec::new();
         while self.until(&Token::RBrace) {
             if self.eof() {

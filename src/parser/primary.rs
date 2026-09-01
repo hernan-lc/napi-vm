@@ -342,7 +342,11 @@ impl Parser {
             }
             Token::Identifier(n) => {
                 let nm = n.clone();
+                let span = self.cur_span();
                 self.adv();
+                // Every identifier read in expression position is a reference
+                // the language server can resolve back to its declaration.
+                self.record(&nm, span, crate::parser::Occurrence::Reference, None);
                 Some(Expr::Identifier(nm))
             }
             Token::DotDotDot => {
@@ -506,6 +510,20 @@ impl Parser {
     }
 
     pub(super) fn arrow_body_async(
+        &mut self,
+        params: Vec<String>,
+        defaults: Vec<Statement>,
+        is_async: bool,
+    ) -> Expr {
+        // The parameters were consumed before the scope existed, so they are
+        // recorded here, in the body's scope, where they belong.
+        let arrow_scope = self.push_scope(true);
+        let expr = self.arrow_body_in_scope(params, defaults, is_async);
+        self.pop_scope(arrow_scope);
+        expr
+    }
+
+    fn arrow_body_in_scope(
         &mut self,
         params: Vec<String>,
         defaults: Vec<Statement>,

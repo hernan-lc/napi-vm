@@ -92,7 +92,7 @@ fn line_start(text: &str, line: usize) -> Option<usize> {
 }
 
 /// The text of `line` (0-based), without its trailing `\r\n` / `\n`.
-fn line_text(text: &str, line: usize) -> Option<&str> {
+pub fn line_text(text: &str, line: usize) -> Option<&str> {
     let start = line_start(text, line)?;
     let rest = &text[start..];
     let end = rest.find('\n').unwrap_or(rest.len());
@@ -132,6 +132,20 @@ pub fn position_to_offset(text: &str, line: usize, utf16_column: usize) -> usize
     };
     let line = line_text(text, line).unwrap_or("");
     start + utf16_column_to_byte_offset(line, utf16_column)
+}
+
+/// Convert a UTF-16 column into a character column — the inverse of
+/// [`char_column_to_utf16`], for mapping an editor position onto a source
+/// offset the analysis understands.
+pub fn utf16_column_to_char_column(line: &str, utf16_column: usize) -> usize {
+    let mut units = 0usize;
+    for (chars, ch) in line.chars().enumerate() {
+        if units >= utf16_column {
+            return chars;
+        }
+        units += ch.len_utf16();
+    }
+    line.chars().count()
 }
 
 /// Convert a `crate::lang` diagnostic location (1-based line, 1-based

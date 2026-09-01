@@ -17,7 +17,9 @@ mod complete;
 mod diagnostics;
 mod document;
 mod metadata;
+pub mod navigation;
 mod scope;
+pub mod semantic;
 mod service;
 mod symbols;
 

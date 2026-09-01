@@ -1,10 +1,12 @@
 mod ast;
 mod compound;
 mod expr;
+mod index;
 mod primary;
 mod stmt;
 
 pub use ast::*;
+pub use index::{DeclKind, Entry, Occurrence, ScopeNode, SymbolIndex};
 
 use crate::lexer::Token;
 use crate::span::Span;
@@ -49,6 +51,11 @@ pub struct Parser {
     /// refuse to run a program whose parse failed. Only the first error is
     /// kept: everything after it is likely a cascade from the same mistake.
     error: Option<ParseError>,
+    /// Name occurrences and their scopes, recorded as parsing proceeds. The
+    /// AST has no spans, so this is what the language server points at.
+    pub index: index::SymbolIndex,
+    /// The scope occurrences are currently recorded into.
+    current_scope: usize,
 }
 
 /// A syntax error, with the source position of the token that caused it.
@@ -81,6 +88,8 @@ impl Parser {
             depth: 0,
             depth_exceeded: false,
             error: None,
+            index: index::SymbolIndex::default(),
+            current_scope: 0,
         }
     }
 
@@ -92,6 +101,8 @@ impl Parser {
             depth: 0,
             depth_exceeded: false,
             error: None,
+            index: index::SymbolIndex::default(),
+            current_scope: 0,
         }
     }
 
@@ -184,6 +195,51 @@ impl Parser {
             describe(self.cur())
         ));
         false
+    }
+
+    /// Open a lexical scope and make it current. `is_function` marks a
+    /// function or class body, which is where `var` hoisting stops.
+    pub(crate) fn push_scope(&mut self, is_function: bool) -> usize {
+        let parent = self.current_scope;
+        self.index.scopes.push(index::ScopeNode {
+            parent: Some(parent),
+            is_function,
+        });
+        self.current_scope = self.index.scopes.len() - 1;
+        parent
+    }
+
+    /// Restore the scope `push_scope` displaced.
+    pub(crate) fn pop_scope(&mut self, parent: usize) {
+        self.current_scope = parent;
+    }
+
+    /// Record a name occurrence at `span`.
+    pub(crate) fn record(
+        &mut self,
+        name: &str,
+        span: Span,
+        occurrence: index::Occurrence,
+        detail: Option<String>,
+    ) {
+        // A synthesized name (a desugaring's placeholder) has no source
+        // position and nothing to point at.
+        if span.line == 0 || name.is_empty() {
+            return;
+        }
+        self.index.entries.push(index::Entry {
+            name: name.to_string(),
+            span,
+            occurrence,
+            scope: self.current_scope,
+            detail,
+        });
+    }
+
+    /// Record a declaration at the *current* token, before it is consumed.
+    pub(crate) fn record_decl_here(&mut self, name: &str, kind: index::DeclKind) {
+        let span = self.cur_span();
+        self.record(name, span, index::Occurrence::Declaration(kind), None);
     }
 
     /// Span of the token under the cursor.
