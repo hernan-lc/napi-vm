@@ -141,6 +141,40 @@ test("import() of a missing module rejects", () => {
   expect(vm.run("let out; import('zzz').catch(() => { out = 'caught'; }); await 0; out;")).toBe("caught");
 });
 
+// --- Module scope -----------------------------------------------------------
+
+test("a module's private bindings do not leak to the global scope", () => {
+  const vm = new Vm();
+  vm.registerModule("m", "const secret = 42; export const v = 1;");
+  expect(() => vm.run("secret;")).toThrow();
+  expect(vm.run("import { v } from 'm'; v;")).toBe("1");
+});
+
+test("two modules can declare the same top-level name", () => {
+  const vm = new Vm();
+  vm.registerModule("a", "const helper = 1; export const x = helper;");
+  vm.registerModule("b", "const helper = 2; export const y = helper;");
+  expect(vm.run("import { x } from 'a'; import { y } from 'b'; x + ':' + y;")).toBe("1:2");
+});
+
+test("a module still sees the globals the host exposed", () => {
+  const vm = new Vm();
+  vm.run("globalThis.shared = 7;");
+  vm.registerModule("m", "export const v = shared + 1;");
+  expect(vm.run("import { v } from 'm'; v;")).toBe("8");
+});
+
+test("visibility runs one way: modules see the script scope, not each other", () => {
+  const vm = new Vm();
+  // This VM's `run` is a persistent global — that is its whole model — and a
+  // module scope chains to it, so a module can read what a script declared.
+  // The reverse does not hold, which is what module scope is for.
+  vm.registerModule("m", "const inner = 1; export function read() { return typeof outer; }");
+  vm.run("var outer = 1;");
+  expect(vm.run("import { read } from 'm'; read();")).toBe("number");
+  expect(() => vm.run("inner;")).toThrow();
+});
+
 // --- Deferred definition and cycles ----------------------------------------
 
 test("defineModule defers evaluation until the first import", () => {
@@ -168,6 +202,16 @@ test("a cyclic module graph links", () => {
   expect(vm.run("import { isEven } from 'even'; isEven(4) + ':' + isEven(3);")).toBe(
     "true:false",
   );
+});
+
+test("a cycle links a forward reference", () => {
+  // `odd` imports `isEven` before `even` has exported it. The importer binds
+  // the cell `even` will fill, which is what the specification's separate
+  // link and evaluate phases achieve.
+  const vm = new Vm();
+  vm.defineModule("even", "import { isOdd } from 'odd'; export function isEven(n) { return isOdd(n); }");
+  vm.defineModule("odd", "import { isEven } from 'even'; export function isOdd() { return typeof isEven; }");
+  expect(vm.run("import { isEven } from 'even'; isEven(1);")).toBe("function");
 });
 
 test("a cycle links from either entry point", () => {

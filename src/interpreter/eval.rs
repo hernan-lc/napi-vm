@@ -688,12 +688,31 @@ impl Interpreter {
                     // bindings as live cells, so a later write is observed by
                     // every importer.
                     None => {
+                        // A name an importer already bound during a cycle has
+                        // a cell waiting; adopt it so the value lands where
+                        // that importer is looking, instead of in a new one.
+                        let promised: Vec<(String, Option<Value>)> = {
+                            let record = self.current_module();
+                            specifiers
+                                .iter()
+                                .map(|(_, exported)| {
+                                    (exported.clone(), record.exports.get(exported).cloned())
+                                })
+                                .collect()
+                        };
                         let mut cells = Vec::with_capacity(specifiers.len());
                         {
                             let mut scope = self.global.borrow_mut();
-                            for (local, exported) in specifiers {
+                            for ((local, exported), (_, existing)) in
+                                specifiers.iter().zip(promised)
+                            {
+                                if let Some(Value::Binding(cell)) = &existing {
+                                    scope.adopt_cell(local, cell.clone());
+                                    cells.push((exported.clone(), Value::Binding(cell.clone())));
+                                    continue;
+                                }
                                 if let Some(cell) = scope.export_cell(local) {
-                                    cells.push((exported.clone(), Value::Binding(cell)));
+                                    cells.push((exported.clone(), Value::Binding(cell.clone())));
                                 }
                             }
                         }
@@ -758,10 +777,17 @@ impl Interpreter {
                         let v = if imported == "default" {
                             md.default.clone().unwrap_or(Value::Undefined)
                         } else {
-                            md.exports
-                                .get(imported)
-                                .cloned()
-                                .unwrap_or(Value::Undefined)
+                            match md.exports.get(imported).cloned() {
+                                Some(entry) => entry,
+                                // Not exported *yet*: in a cycle the exporting
+                                // module is still running, so bind the cell it
+                                // will fill in when its `export` runs.
+                                None => {
+                                    let target = resolved_module.clone().unwrap_or_default();
+                                    self.pending_export(&target, imported)
+                                        .unwrap_or(Value::Undefined)
+                                }
+                            }
                         };
                         self.bind_import(local, v)?;
                     }

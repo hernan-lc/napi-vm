@@ -264,6 +264,7 @@ impl Interpreter {
                 Module {
                     exports: std::collections::HashMap::new(),
                     default: None,
+                    scope: None,
                 },
             );
         }
@@ -541,15 +542,72 @@ impl Interpreter {
     /// still answers. The displaced record is returned so a body that fails
     /// part-way through can be rolled back with `restore_module`.
     pub fn begin_module(&mut self, name: &str) -> Option<Module> {
+        let scope = self.new_module_scope();
         let prior = self.modules.borrow_mut().insert(
             name.to_string(),
             Module {
                 exports: HashMap::new(),
                 default: None,
+                scope: Some(scope),
             },
         );
         self.cur_mod = Some(name.to_string());
         prior
+    }
+
+    /// The live cell an importer should bind for `name` from `module`.
+    ///
+    /// When the module has already exported the name, that is its cell. When
+    /// the module is still evaluating — a cycle — a *pending* cell is created
+    /// and registered as the export, so the importer binds the storage the
+    /// exporting module will fill in when its `export` finally runs. This is
+    /// what makes two mutually recursive modules link.
+    pub(crate) fn pending_export(&mut self, module: &str, name: &str) -> Option<Value> {
+        if !self.evaluating.borrow().contains(module) {
+            return None;
+        }
+        let cell = Rc::new(RefCell::new(Value::Undefined));
+        let entry = Value::Binding(cell);
+        self.modules
+            .borrow_mut()
+            .get_mut(module)?
+            .exports
+            .insert(name.to_string(), entry.clone());
+        Some(entry)
+    }
+
+    /// A fresh module scope: a child of the *user global* frame.
+    ///
+    /// Chaining to the user global rather than to the builtins is what keeps
+    /// host-exposed globals and anything written through `globalThis` visible
+    /// inside a module, while the module's own declarations stay local to it.
+    fn new_module_scope(&self) -> Env {
+        Rc::new(RefCell::new(Environment::child(
+            self.persistent_global.clone(),
+        )))
+    }
+
+    /// Install `scope` as the current one, returning the scope it displaced.
+    pub fn take_scope(&mut self, scope: Env) -> Env {
+        std::mem::replace(&mut self.global, scope)
+    }
+
+    /// The scope a module body evaluates in, creating it if the module has
+    /// not been entered yet.
+    pub(crate) fn module_scope(&mut self, name: &str) -> Env {
+        if let Some(scope) = self
+            .modules
+            .borrow()
+            .get(name)
+            .and_then(|module| module.scope.clone())
+        {
+            return scope;
+        }
+        let scope = self.new_module_scope();
+        if let Some(module) = self.modules.borrow_mut().get_mut(name) {
+            module.scope = Some(scope.clone());
+        }
+        scope
     }
 
     /// Leave module-evaluation context, keeping everything the body exported.
@@ -606,7 +664,10 @@ impl Interpreter {
         let outer = self.cur_mod.take();
         let displaced = self.begin_module(name);
         self.evaluating.borrow_mut().insert(name.to_string());
+        let scope = self.module_scope(name);
+        let outer_scope = std::mem::replace(&mut self.global, scope);
         let result = self.eval_module_source(&source);
+        self.global = outer_scope;
         self.evaluating.borrow_mut().remove(name);
         match result {
             Ok(()) => {

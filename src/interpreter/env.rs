@@ -342,6 +342,28 @@ impl Environment {
         self.vars.get(n).map(|b| b.value.clone())
     }
 
+    /// Move the binding named `n` into an existing cell, so a name already
+    /// promised to an importer becomes the one this scope reads and writes.
+    ///
+    /// This is how a cyclic import resolves: the importer bound a cell before
+    /// the exporting module had run, and when the export finally executes the
+    /// value must land in *that* cell rather than a fresh one.
+    pub fn adopt_cell(&mut self, n: &str, cell: Rc<RefCell<Value>>) {
+        let current = self
+            .vars
+            .get(n)
+            .map(|binding| binding.value.deref_binding())
+            .unwrap_or(Value::Undefined);
+        *cell.borrow_mut() = current;
+        match self.vars.get_mut(n) {
+            Some(binding) => {
+                binding.value = Value::Binding(cell);
+                binding.initialized = true;
+            }
+            None => self.declare(n, Value::Binding(cell), BindKind::Var, true),
+        }
+    }
+
     /// Bind `n` to an existing live cell — how `import` links a name to the
     /// exporting module's binding instead of copying its current value.
     pub fn bind_cell(&mut self, n: &str, cell: Rc<RefCell<Value>>, kind: BindKind) {
@@ -546,4 +568,11 @@ impl Environment {
 pub struct Module {
     pub exports: HashMap<String, Value>,
     pub default: Option<Value>,
+    /// The module's own top-level scope.
+    ///
+    /// A module body is not a script: its declarations belong to the module,
+    /// not to the global object, so two modules can each declare `helper`
+    /// without colliding. Kept here so a re-entered module (a cycle, or a
+    /// second `import`) continues in the scope it started in.
+    pub scope: Option<Env>,
 }

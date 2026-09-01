@@ -105,7 +105,11 @@ Every claim below was checked against the current build.
 - Re-exports (`export … from`), `export *`, `export * as ns`
 - `import(specifier)`, resolving to a namespace object
 - Cyclic graphs, through `defineModule` (which records a module without
-  evaluating it, so the bodies run on first import)
+  evaluating it, so the bodies run on first import). A forward reference binds
+  the cell the exporting module will fill, which is what the specification's
+  separate link and evaluate phases achieve.
+- **Per-module scope**: a module's declarations belong to the module, so two
+  modules can each declare `helper` and neither leaks to the global object
 - Namespace objects expose the default export as `"default"`
   (`tests/modules-linking.test.js`)
 
@@ -135,11 +139,6 @@ Every claim below was checked against the current build.
   early does not stop a body that has already run, and an unbounded generator
   hits a cap and raises a catchable `RangeError`. Real suspension needs a
   resumable evaluator (a CPS transform of generator bodies).
-- **Module scope** — module bodies share one global scope, so a top-level
-  binding in one module is visible to another. Imports are still linked
-  properly, and re-importing a name already bound to the same cell is a no-op
-  rather than a redeclaration, but two modules that declare the same top-level
-  name will collide.
 - **N-API boundary** — functions and generators still cross as `undefined`.
   Handing a VM function to the host needs a host callable that re-enters the
   interpreter, which the marshaller has no handle on; `Vm.exposeFunction`
@@ -168,12 +167,11 @@ Reported as errors rather than silently mis-executed:
 
 ## Priority order
 
-1. Per-module scope, so two modules can declare the same top-level name
-2. Functions and generators across the N-API boundary
-3. `Error.stack`, and user-defined `Error` subclassing
-4. The capability-host modules: `napi:fetch`, `napi:crypto`, `napi:timers`
-5. A resumable evaluator, for true generator suspension on `wasm32`
-6. LSP formatting and code actions
+1. Functions and generators across the N-API boundary
+2. `Error.stack`, and user-defined `Error` subclassing
+3. The capability-host modules: `napi:fetch`, `napi:crypto`, `napi:timers`
+4. A resumable evaluator, for true generator suspension on `wasm32`
+5. LSP formatting and code actions
 
 ## Known boundaries
 
@@ -184,6 +182,10 @@ Reported as errors rather than silently mis-executed:
   CPU and memory limits.
 - Host functions are explicitly typed by metadata; JavaScript runtime functions
   do not carry TypeScript annotations.
+- A module scope chains to the VM's persistent global, so a module can read
+  what a script declared through `run`. That is this VM's model — `run` is a
+  REPL-like persistent global — and it runs one way: script scope does not see
+  a module's declarations.
 - String and array indices count Unicode scalar values, not UTF-16 code units,
   so text outside the Basic Multilingual Plane is indexed differently from a
   real engine.

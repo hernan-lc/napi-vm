@@ -285,7 +285,7 @@ impl VM {
         let _busy = self.state.try_start()?;
         self.state.runtime.with_mut(|runtime| {
             let displaced = runtime.interp.begin_module(&name);
-            match execute_source(&mut runtime.interp, &source) {
+            match execute_module_source(&mut runtime.interp, &name, &source) {
                 Ok(_) => {
                     runtime.interp.commit_module();
                     // Keep the source too, so a module registered eagerly can
@@ -909,6 +909,24 @@ impl VM {
             Ok(unsafe { Unknown::from_raw_unchecked(raw_env, out) })
         })
     }
+}
+
+/// Run a module body in the module's own top-level scope.
+///
+/// A module's declarations belong to the module, not to the global object, so
+/// the interpreter's current scope is swapped for the module's while the body
+/// runs and restored afterwards — on the error path too, or a failed
+/// registration would leave the VM evaluating in a module scope.
+fn execute_module_source(
+    interp: &mut Interpreter,
+    name: &str,
+    source: &str,
+) -> Result<Value, VmErr> {
+    let scope = interp.module_scope(name);
+    let outer = interp.take_scope(scope);
+    let result = execute_source(interp, source);
+    interp.take_scope(outer);
+    result
 }
 
 fn execute_source(interp: &mut Interpreter, source: &str) -> Result<Value, VmErr> {
