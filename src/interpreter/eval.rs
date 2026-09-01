@@ -938,6 +938,10 @@ impl Interpreter {
             // the same source have separate `lastIndex` state — as in a real
             // engine, where a literal creates a new `RegExp` each time.
             Expr::Regex(pattern, flags) => crate::builtins::compile_regex(pattern, flags),
+            Expr::BigIntLiteral(digits) => match crate::bigint::BigInt::parse(digits) {
+                Ok(value) => Ok(Value::BigInt(Rc::new(value))),
+                Err(error) => vm_err(error),
+            },
             Expr::Undefined => Ok(Value::Undefined),
             Expr::Identifier(n) => {
                 if n == "undefined" {

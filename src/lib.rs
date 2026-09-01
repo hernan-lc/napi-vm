@@ -31,4 +31,5 @@ pub use interpreter::{Environment, Interpreter, Module};
 pub use lexer::{Lexer, Token};
 pub use parser::{Expr, Parser, Statement};
 pub use value::Value;
+pub mod bigint;
 pub mod regex;

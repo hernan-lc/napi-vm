@@ -11,6 +11,18 @@ use crate::value::Value;
 /// identity*, which is what makes `o === o` true and `{} === {}` false. Each
 /// reference type is identified by the address of the allocation its clones
 /// share, so two `Value`s naming the same object agree.
+/// The numeric value a `BigInt` may be compared against, or `None` for a
+/// value that has no numeric comparison at all.
+fn numeric_comparand(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => Some(*n),
+        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        Value::String(s) => s.trim().parse().ok(),
+        Value::Null => Some(0.0),
+        _ => None,
+    }
+}
+
 pub fn strict_equals(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(a), Value::Number(b)) => a == b,
@@ -34,6 +46,7 @@ pub fn strict_equals(a: &Value, b: &Value) -> bool {
         (Value::HostFunction { id: x, .. }, Value::HostFunction { id: y, .. }) => x == y,
         (Value::HostPending { id: x }, Value::HostPending { id: y }) => x == y,
         (Value::Symbol(x), Value::Symbol(y)) => x.id == y.id,
+        (Value::BigInt(x), Value::BigInt(y)) => x.compare(y).is_eq(),
         (Value::Error(x), Value::Error(y)) => x.name == y.name && x.message == y.message,
         _ => false,
     }
@@ -99,6 +112,16 @@ impl Interpreter {
             if let Some(v) = fast {
                 return Ok(v);
             }
+        }
+        // `BigInt` is a distinct numeric type. Arithmetic between the two
+        // kinds is a `TypeError` rather than a silent coercion, because
+        // narrowing to `f64` would lose the precision `BigInt` exists for.
+        // Comparison and `+` with a string are the exceptions the language
+        // makes, and are handled inside `bigint_op`.
+        if (matches!(l, Value::BigInt(_)) || matches!(r, Value::BigInt(_)))
+            && let Some(result) = self.bigint_op(op, l, r)?
+        {
+            return Ok(result);
         }
         Ok(match op {
             BinOp::Add => {
@@ -237,7 +260,139 @@ impl Interpreter {
         })
     }
 
+    /// Apply `op` when either operand is a `BigInt`.
+    ///
+    /// Returns `None` only for operators that have no BigInt-specific
+    /// behaviour and can fall through to the general path.
+    fn bigint_op(&self, op: BinOp, l: &Value, r: &Value) -> Result<Option<Value>, VmErr> {
+        use crate::bigint::BigInt as Big;
+        let big = |value: Big| Ok(Some(Value::BigInt(Rc::new(value))));
+        let type_error = || {
+            Err(VmErr::Msg(
+                "TypeError: Cannot mix BigInt and other types, use explicit conversions"
+                    .to_string(),
+            ))
+        };
+
+        // `bigint + string` concatenates, as with any other value.
+        if matches!(op, BinOp::Add)
+            && (matches!(l, Value::String(_)) || matches!(r, Value::String(_)))
+        {
+            let joined = format!("{}{}", self.vs(l)?, self.vs(r)?);
+            return Ok(Some(Value::checked_string(joined)?));
+        }
+
+        // Equality and relational operators compare across the two numeric
+        // types; `===` does not, since the types differ.
+        match (l.as_bigint(), r.as_bigint()) {
+            (Some(a), Some(b)) => {
+                let ordering = a.compare(&b);
+                Ok(Some(match op {
+                    BinOp::Add => return big(a.add(&b).map_err(VmErr::Msg)?),
+                    BinOp::Sub => return big(a.sub(&b).map_err(VmErr::Msg)?),
+                    BinOp::Mul => return big(a.mul(&b).map_err(VmErr::Msg)?),
+                    BinOp::Div => return big(a.div(&b).map_err(VmErr::Msg)?),
+                    BinOp::Mod => return big(a.rem(&b).map_err(VmErr::Msg)?),
+                    BinOp::Pow => return big(a.pow(&b).map_err(VmErr::Msg)?),
+                    BinOp::BitAnd => return big(a.bitand(&b).map_err(VmErr::Msg)?),
+                    BinOp::BitOr => return big(a.bitor(&b).map_err(VmErr::Msg)?),
+                    BinOp::BitXor => return big(a.bitxor(&b).map_err(VmErr::Msg)?),
+                    BinOp::Shl => return big(a.shl(&b).map_err(VmErr::Msg)?),
+                    BinOp::Shr | BinOp::UShr => return big(a.shr(&b).map_err(VmErr::Msg)?),
+                    BinOp::Lt => Value::Bool(ordering.is_lt()),
+                    BinOp::Gt => Value::Bool(ordering.is_gt()),
+                    BinOp::Le => Value::Bool(ordering.is_le()),
+                    BinOp::Ge => Value::Bool(ordering.is_ge()),
+                    BinOp::Eq | BinOp::Seq => Value::Bool(ordering.is_eq()),
+                    BinOp::Neq | BinOp::Sneq => Value::Bool(!ordering.is_eq()),
+                    _ => return Ok(None),
+                }))
+            }
+            (Some(a), None) => {
+                let comparison = numeric_comparand(r).and_then(|n| a.compare_f64(n));
+                Ok(Some(match op {
+                    BinOp::Lt => Value::Bool(comparison.is_some_and(|o| o.is_lt())),
+                    BinOp::Gt => Value::Bool(comparison.is_some_and(|o| o.is_gt())),
+                    BinOp::Le => Value::Bool(comparison.is_some_and(|o| o.is_le())),
+                    BinOp::Ge => Value::Bool(comparison.is_some_and(|o| o.is_ge())),
+                    BinOp::Eq => Value::Bool(comparison.is_some_and(|o| o.is_eq())),
+                    BinOp::Neq => Value::Bool(!comparison.is_some_and(|o| o.is_eq())),
+                    // Different types, so strict equality is false without
+                    // comparing the values.
+                    BinOp::Seq => Value::Bool(false),
+                    BinOp::Sneq => Value::Bool(true),
+                    BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Mod
+                    | BinOp::Pow
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::Shl
+                    | BinOp::Shr
+                    | BinOp::UShr => return type_error(),
+                    _ => return Ok(None),
+                }))
+            }
+            (None, Some(b)) => {
+                let comparison = numeric_comparand(l).and_then(|n| b.compare_f64(n));
+                // `n < bigint` is the mirror of `bigint > n`.
+                Ok(Some(match op {
+                    BinOp::Lt => Value::Bool(comparison.is_some_and(|o| o.is_gt())),
+                    BinOp::Gt => Value::Bool(comparison.is_some_and(|o| o.is_lt())),
+                    BinOp::Le => Value::Bool(comparison.is_some_and(|o| o.is_ge())),
+                    BinOp::Ge => Value::Bool(comparison.is_some_and(|o| o.is_le())),
+                    BinOp::Eq => Value::Bool(comparison.is_some_and(|o| o.is_eq())),
+                    BinOp::Neq => Value::Bool(!comparison.is_some_and(|o| o.is_eq())),
+                    BinOp::Seq => Value::Bool(false),
+                    BinOp::Sneq => Value::Bool(true),
+                    BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Mod
+                    | BinOp::Pow
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::Shl
+                    | BinOp::Shr
+                    | BinOp::UShr => return type_error(),
+                    _ => return Ok(None),
+                }))
+            }
+            (None, None) => Ok(None),
+        }
+    }
+
     pub fn un_op(&self, op: UnOp, v: &Value) -> Result<Value, VmErr> {
+        // `-`, `~`, `++` and `--` stay in the BigInt domain; `+` on a BigInt
+        // is a TypeError, since it would have to narrow to a Number.
+        if let Some(value) = v.as_bigint() {
+            let wrap = |result: Result<crate::bigint::BigInt, String>| {
+                result
+                    .map(|v| Value::BigInt(Rc::new(v)))
+                    .map_err(VmErr::Msg)
+            };
+            match op {
+                UnOp::Neg => return Ok(Value::BigInt(Rc::new(value.negate()))),
+                UnOp::BitNot => return wrap(value.bitnot()),
+                UnOp::Inc => {
+                    return wrap(value.add(&crate::bigint::BigInt::from_i64(1)));
+                }
+                UnOp::Dec => {
+                    return wrap(value.sub(&crate::bigint::BigInt::from_i64(1)));
+                }
+                UnOp::Pos => {
+                    return Err(VmErr::Msg(
+                        "TypeError: Cannot convert a BigInt to a number".to_string(),
+                    ));
+                }
+                _ => {}
+            }
+        }
         Ok(match op {
             UnOp::Not => Value::Bool(!self.truthy(v)),
             UnOp::Neg => Value::Number(-self.tn(v)),
@@ -268,6 +423,7 @@ impl Interpreter {
                     Value::Generator { .. } => "object",
                     Value::Symbol(_) => "symbol",
                     Value::Error(_) | Value::RegExp(_) => "object",
+                    Value::BigInt(_) => "bigint",
                     // Internal values, resolved before they reach guest code.
                     #[cfg(not(target_arch = "wasm32"))]
                     Value::AsyncTask(_) => "object",
@@ -378,6 +534,7 @@ impl Interpreter {
             Value::RegExp(re) => {
                 output.push_str(&format!("/{}/{}", re.regex.source, re.regex.flags))
             }
+            Value::BigInt(value) => output.push_str(&value.to_decimal()),
             #[cfg(not(target_arch = "wasm32"))]
             Value::AsyncTask(_) => output.push_str("[object AsyncTask]"),
             Value::Undefined => output.push_str("undefined"),

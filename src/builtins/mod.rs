@@ -1,4 +1,5 @@
 mod array;
+mod bigint;
 mod collections;
 mod date;
 mod error;
@@ -15,6 +16,7 @@ mod symbol;
 pub(crate) use promise::promise_method;
 
 pub use array::array_method;
+pub use bigint::bigint_method;
 pub use collections::describe_collection;
 pub use number::number_method;
 pub(crate) use regexp::compile as compile_regex;
@@ -421,6 +423,7 @@ fn install_functions(e: &mut crate::interpreter::Environment) {
     reflect::install(e);
     collections::install(e);
     regexp::install(e);
+    bigint::install(e);
     symbol::install(e);
     // Global functions.
     e.set("parseInt", nf("parseInt", number::parse_int));

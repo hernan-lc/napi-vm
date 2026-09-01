@@ -10,6 +10,8 @@ pub struct TemplateChunk {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Number(f64),
+    /// A `BigInt` literal, carrying its digits (`123n` → `"123"`).
+    BigInt(String),
     /// A character that begins no valid token, e.g. `@` or `#`.
     ///
     /// Carried through as a token rather than skipped so the parser can report
@@ -853,6 +855,39 @@ impl Lexer {
 
     fn read_num(&mut self) -> Token {
         let s = self.pos;
+        // Radix-prefixed literals: `0x1F`, `0b1010`, `0o17`, and their BigInt
+        // forms. These have no fractional or exponent part, so they are read
+        // separately from the decimal path below.
+        if self.src[self.pos] == '0'
+            && let Some(&prefix) = self.src.get(self.pos + 1)
+            && matches!(prefix, 'x' | 'X' | 'b' | 'B' | 'o' | 'O')
+        {
+            let radix = match prefix {
+                'x' | 'X' => 16,
+                'b' | 'B' => 2,
+                _ => 8,
+            };
+            self.pos += 2;
+            self.col += 2;
+            let digits_start = self.pos;
+            while self.pos < self.src.len()
+                && (self.src[self.pos].is_digit(radix) || self.src[self.pos] == '_')
+            {
+                self.pos += 1;
+                self.col += 1;
+            }
+            let digits: String = self.src[digits_start..self.pos]
+                .iter()
+                .filter(|c| **c != '_')
+                .collect();
+            if self.pos < self.src.len() && self.src[self.pos] == 'n' {
+                self.pos += 1;
+                self.col += 1;
+                let literal: String = self.src[s..self.pos - 1].iter().collect();
+                return Token::BigInt(literal);
+            }
+            return Token::Number(u128::from_str_radix(&digits, radix).unwrap_or(0) as f64);
+        }
         while self.pos < self.src.len()
             && (self.src[self.pos].is_ascii_digit() || self.src[self.pos] == '_')
         {
@@ -882,6 +917,16 @@ impl Lexer {
                     self.col += 1;
                 }
             }
+        }
+        // A trailing `n` makes the literal a BigInt.
+        if self.pos < self.src.len() && self.src[self.pos] == 'n' {
+            let digits: String = self.src[s..self.pos]
+                .iter()
+                .filter(|c| **c != '_')
+                .collect();
+            self.pos += 1;
+            self.col += 1;
+            return Token::BigInt(digits);
         }
         let n: String = self.src[s..self.pos]
             .iter()

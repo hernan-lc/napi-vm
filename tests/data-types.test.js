@@ -124,7 +124,7 @@ test("type coercion in arithmetic", () => {
 });
 
 test("NaN from invalid coercion", () => {
-  expect(runCode("'abc' * 1;")).toBe("0");
+  expect(runCode("'abc' * 1;")).toBe("NaN");
   expect(runCode("undefined - 1;")).toBe("NaN");
 });
 

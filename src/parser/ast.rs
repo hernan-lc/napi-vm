@@ -99,6 +99,8 @@ impl AssignOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Number(f64),
+    /// A `BigInt` literal, carrying its digits.
+    BigIntLiteral(String),
     String(String),
     /// `/pattern/flags`.
     Regex(String, String),
@@ -663,7 +665,7 @@ fn stmt_references(s: &Statement, name: &str) -> bool {
 
 fn expr_references(e: &Expr, name: &str) -> bool {
     match e {
-        Expr::Regex(_, _) => false,
+        Expr::Regex(_, _) | Expr::BigIntLiteral(_) => false,
         Expr::Identifier(n) => n == name,
         Expr::Array(items) => items.iter().any(|x| expr_references(x, name)),
         Expr::Object(props) => props.iter().any(|p| match p {

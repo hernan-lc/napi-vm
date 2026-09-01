@@ -296,6 +296,9 @@ impl Interpreter {
                 }
             }
 
+            (Value::BigInt(_), Value::String(k)) => {
+                Ok(crate::builtins::bigint_method(k).unwrap_or(Value::Undefined))
+            }
             (Value::RegExp(data), Value::String(k)) => {
                 Ok(crate::builtins::regexp_member(data, k).unwrap_or(Value::Undefined))
             }

@@ -327,6 +327,10 @@ pub enum Value {
         id: usize,
     },
     Symbol(Rc<SymbolData>),
+    /// An arbitrary-precision integer. A separate numeric type, not a wider
+    /// `Number`: mixing the two in arithmetic is a `TypeError`, which is what
+    /// keeps `BigInt` from silently losing precision.
+    BigInt(Rc<crate::bigint::BigInt>),
     /// A compiled regular expression. `lastIndex` is mutable and shared with
     /// every reference, which is what makes a `/g/` pattern advance across
     /// successive `exec` calls.
@@ -648,6 +652,13 @@ impl Value {
     }
 
     /// The shared element storage, if this is an array.
+    pub fn as_bigint(&self) -> Option<Rc<crate::bigint::BigInt>> {
+        match self {
+            Value::BigInt(value) => Some(value.clone()),
+            _ => None,
+        }
+    }
+
     pub fn as_regexp(&self) -> Option<Rc<RegExpData>> {
         match self {
             Value::RegExp(data) => Some(data.clone()),
@@ -774,6 +785,7 @@ impl Value {
         match self {
             Value::Bool(b) => *b,
             Value::Number(n) => *n != 0.0 && !n.is_nan(),
+            Value::BigInt(value) => !value.is_zero(),
             Value::String(s) => !s.is_empty(),
             Value::StringIterator { .. } => true,
             Value::Null | Value::Undefined => false,
@@ -791,7 +803,15 @@ impl Value {
                     0.0
                 }
             }
-            Value::String(s) => s.parse().unwrap_or(0.0),
+            Value::String(s) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    0.0
+                } else {
+                    trimmed.parse().unwrap_or(f64::NAN)
+                }
+            }
+            Value::BigInt(value) => value.to_f64(),
             Value::StringIterator { .. } => 0.0,
             Value::Null => 0.0,
             Value::Undefined => f64::NAN,

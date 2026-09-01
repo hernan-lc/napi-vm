@@ -269,6 +269,11 @@ impl Parser {
                 let is_generator = self.eat(&Token::Star);
                 self.fn_expr_tail(is_generator, false)
             }
+            Token::BigInt(digits) => {
+                let literal = Expr::BigIntLiteral(digits.clone());
+                self.adv();
+                Some(literal)
+            }
             Token::Regex(pattern, flags) => {
                 let literal = Expr::Regex(pattern.clone(), flags.clone());
                 self.adv();
