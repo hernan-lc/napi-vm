@@ -132,6 +132,8 @@ pub struct Interpreter {
     source_lines: Vec<String>,
     /// How many generator bodies are executing beneath this interpreter.
     /// Zero for the driver; one more than its parent inside a generator body.
+    /// Unused on `wasm32`, which has no coroutines to nest.
+    #[cfg_attr(target_arch = "wasm32", expect(dead_code))]
     pub(crate) gen_depth: u32,
     /// Configured per-execution loop-iteration cap.
     loop_budget: u64,

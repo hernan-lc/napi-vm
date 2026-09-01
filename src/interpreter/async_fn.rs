@@ -11,12 +11,18 @@
 //! 1, 3, 2; suspending prints 1, 2, 3, because the continuation after `await`
 //! is a microtask like any other.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::cell::RefCell;
+#[cfg(not(target_arch = "wasm32"))]
 use std::rc::Rc;
 
-use super::{Environment, Interpreter, Realm};
+use super::Interpreter;
+#[cfg(not(target_arch = "wasm32"))]
+use super::{Environment, Realm};
 use crate::error::VmErr;
-use crate::value::{GenOutcome, GenResume, PromiseInner, PromiseState, Value};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::value::{GenOutcome, GenResume, PromiseInner};
+use crate::value::{PromiseState, Value};
 
 /// The suspended body of one in-flight async call.
 #[cfg(not(target_arch = "wasm32"))]
@@ -231,6 +237,7 @@ fn step(
 }
 
 /// Hidden slot carrying the suspended task through the reaction functions.
+#[cfg(not(target_arch = "wasm32"))]
 const TASK_SLOT: &str = "__symbol_async_task__";
 
 /// Build the `(onFulfilled, onRejected)` pair that resumes `task`.

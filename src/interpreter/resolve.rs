@@ -107,17 +107,14 @@ impl Interpreter {
                     add(&name, CompletionKind::Global);
                 }
             }
-            Value::HostFunction { .. }
-            | Value::Function(_)
-            | Value::NativeFunction { .. }
-            | Value::Undefined
-            | Value::Null
-            | Value::Bool(_)
-            | Value::Error(_)
-            | Value::Generator { .. }
-            | Value::StringIterator { .. }
-            | Value::HostPending { .. }
-            | Value::Symbol(_) => {}
+            // A proxy completes as what it stands in for.
+            Value::Proxy(proxy) => {
+                let target = proxy.target.clone();
+                self.collect_completion_members(&target, members, depth + 1);
+            }
+            // Everything else has a fixed member set the catalog already
+            // describes, or none at all.
+            _ => {}
         }
     }
 

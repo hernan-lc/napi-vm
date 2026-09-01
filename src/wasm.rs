@@ -531,8 +531,8 @@ impl WasmVm {
 
         let exports = self
             .interp
-            .modules
-            .get(name)
+            .module(name)
+            .as_ref()
             .map(|m| m.exports.keys().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
         if let Some(mi) = self.module_infos.iter_mut().find(|m| m.name == name) {
