@@ -252,38 +252,66 @@ impl Interpreter {
         }
         match (obj, prop) {
             (Value::Object { props }, Value::String(k)) => {
-                // If a setter is defined for this key, invoke it. An accessor
-                // declared with *both* a getter and a setter keeps the getter
-                // in the named slot and the setter in a companion slot, since
-                // one slot cannot hold two functions.
-                let companion = format!("__setter:{}__", k);
-                let setter = props
-                    .borrow()
-                    .iter()
-                    .find(|(xk, xv)| {
-                        (xk == &companion || xk == k)
-                            && matches!(xv, Value::Function(f) if f.name.as_ref().is_some_and(|n| n.starts_with("set ")))
-                    })
-                    .map(|(_, xv)| xv.clone());
-                if let Some(setter_fn) = setter {
+                // If a setter is defined for this key, invoke it.
+                //
+                // Both lookups here are on the hot path — every property write
+                // reaches them — so neither allocates in the ordinary case.
+                // The companion slot below is the only one that needs a
+                // formatted name, and it exists only for an accessor declared
+                // with *both* a getter and a setter (one slot cannot hold two
+                // functions), so it is looked for only when the object has
+                // accessors at all.
+                let is_setter = |value: &Value| {
+                    matches!(value, Value::Function(f)
+                        if f.name.as_ref().is_some_and(|n| n.starts_with("set ")))
+                };
+                // One scan locates the slot and says whether it is an
+                // accessor. Every property write reaches this, so it does not
+                // scan twice and does not allocate.
+                let existing = {
+                    let slots = props.borrow();
+                    match slots.iter().position(|(xk, _)| xk == k) {
+                        Some(index) if is_setter(&slots[index].1) => {
+                            Some((index, Some(slots[index].1.clone())))
+                        }
+                        Some(index) => Some((index, None)),
+                        None => None,
+                    }
+                };
+                if let Some((_, Some(setter_fn))) = &existing {
+                    let setter_fn = setter_fn.clone();
                     self.call_this(&setter_fn, obj.clone(), vec![val])?;
                     return Ok(());
                 }
-                let writable = props.meta.borrow().attrs_of(k).writable;
-                let mut slots = props.borrow_mut();
-                for (xk, xv) in slots.iter_mut() {
-                    if xk == k {
-                        // Sloppy-mode semantics: a write to a non-writable
-                        // property is ignored rather than thrown.
-                        if writable {
-                            *xv = val;
-                        }
+                // The companion slot exists only for an accessor declared with
+                // *both* a getter and a setter — in which case the named slot
+                // holds the *getter*, so a slot being present is not a reason
+                // to skip this. Its formatted name is built only for an object
+                // that has an accessor at all.
+                if props.meta.borrow().has_accessors {
+                    let companion = format!("__setter:{}__", k);
+                    let setter = props
+                        .borrow()
+                        .iter()
+                        .find(|(xk, xv)| *xk == companion && is_setter(xv))
+                        .map(|(_, xv)| xv.clone());
+                    if let Some(setter_fn) = setter {
+                        self.call_this(&setter_fn, obj.clone(), vec![val])?;
                         return Ok(());
                     }
+                }
+                if let Some((index, _)) = existing {
+                    // Sloppy-mode semantics: a write to a non-writable
+                    // property is ignored rather than thrown.
+                    if props.meta.borrow().attrs_of(k).writable {
+                        props.borrow_mut()[index].1 = val;
+                    }
+                    return Ok(());
                 }
                 if props.meta.borrow().non_extensible {
                     return Ok(());
                 }
+                let mut slots = props.borrow_mut();
                 if slots.len() >= crate::value::MAX_OBJECT_PROPS {
                     return Err(crate::value::limit_err(
                         "Maximum object property count exceeded",

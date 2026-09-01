@@ -77,10 +77,21 @@ pub struct ObjectMeta {
     /// Cleared by `Object.preventExtensions`/`seal`/`freeze`: no new own
     /// properties may be added.
     pub non_extensible: bool,
+    /// Whether `defineProperty` ever installed a getter/setter pair on this
+    /// object. Ordinary objects never do, and property assignment checks this
+    /// before looking for the companion slot an accessor pair needs — which
+    /// is the difference between allocating a slot name on every write and
+    /// never allocating one.
+    pub has_accessors: bool,
 }
 
 impl ObjectMeta {
     pub fn attrs_of(&self, key: &str) -> PropAttrs {
+        // Most objects never have a non-default attribute, and this runs on
+        // every property read and write.
+        if self.attrs.is_empty() {
+            return PropAttrs::default();
+        }
         self.attrs
             .iter()
             .find(|(k, _)| k == key)

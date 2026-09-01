@@ -200,18 +200,32 @@ fn json_serialize(
             // skipping `undefined` values and the VM's internal slots. The
             // key list is snapshotted first because resolving a getter runs
             // guest code, which must not happen while the slots are borrowed.
-            let keys: Vec<String> = props
+            // Snapshotted first: resolving a getter runs guest code, which
+            // must not happen while the slots are borrowed. The value is
+            // carried along so an ordinary property needs no second lookup —
+            // only an accessor goes back through `member`.
+            let entries: Vec<(String, Value)> = props
                 .borrow()
                 .iter()
-                .map(|(k, _)| k.clone())
-                .filter(|k| !crate::interpreter::is_internal_key(k) && meta.attrs_of(k).enumerable)
+                .filter(|(k, _)| {
+                    !crate::interpreter::is_internal_key(k) && meta.attrs_of(k).enumerable
+                })
+                .map(|(k, value)| (k.clone(), value.clone()))
                 .collect();
             drop(meta);
             let mut first = true;
-            for key in keys {
-                // Through `member`, so a getter contributes its value rather
-                // than serializing as the function itself.
-                let value = interp.member(v, &key)?;
+            for (key, slot) in entries {
+                // An accessor is stored as a function named `get <key>`; it
+                // contributes the value it returns, not itself.
+                let is_getter = matches!(&slot, Value::Function(f)
+                if f.name.as_ref().is_some_and(|name| {
+                    name.strip_prefix("get ").is_some_and(|rest| rest == key)
+                }));
+                let value = if is_getter {
+                    interp.member(v, &key)?
+                } else {
+                    slot.deref_binding()
+                };
                 if matches!(value, Value::Undefined) {
                     continue;
                 }

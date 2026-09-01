@@ -408,7 +408,11 @@ pub(crate) fn define_property(target: &Value, key: &str, descriptor: &Value) -> 
             }
         }
     }
-    c.meta.borrow_mut().set_attrs(key, attrs);
+    let mut meta = c.meta.borrow_mut();
+    meta.set_attrs(key, attrs);
+    if is_accessor {
+        meta.has_accessors = true;
+    }
     Ok(())
 }
 
