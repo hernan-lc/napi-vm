@@ -23,6 +23,7 @@ pub use array::array_method;
 pub use bigint::bigint_method;
 pub use collections::{collection_entries_of, describe_collection};
 pub use date::{date_member, iso_string};
+pub use error::error_to_string;
 pub use number::number_method;
 pub(crate) use regexp::compile as compile_regex;
 pub use regexp::regexp_member;
@@ -540,13 +541,13 @@ fn global_is_finite(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
 
 /// Format console arguments the way `console.log` does: each value stringified
 /// and joined with a single space.
-fn console_fmt(interp: &Interpreter, a: &[Value]) -> Result<String, VmErr> {
+fn console_fmt(interp: &mut Interpreter, a: &[Value]) -> Result<String, VmErr> {
     let mut output = crate::format::BoundedOutput::new(crate::value::MAX_STRING_LEN);
     for (index, value) in a.iter().enumerate() {
         if index > 0 {
             output.push_char(' ')?;
         }
-        let rendered = interp.vs(value)?;
+        let rendered = interp.display_string(value)?;
         output.push_str(&rendered)?;
     }
     Ok(output.finish())

@@ -32,6 +32,8 @@ fn make_error_class(name: &str) -> Value {
     let prototype = Value::object(vec![
         ("name".to_string(), Value::String(name.to_string())),
         ("message".to_string(), Value::String(String::new())),
+        ("stack".to_string(), Value::String(String::new())),
+        ("toString".to_string(), error_to_string()),
     ]);
     prototype
         .set_prop("constructor".to_string(), constructor.clone())
@@ -50,6 +52,32 @@ fn make_error_class(name: &str) -> Value {
 /// Shared constructor for every error type. The concrete type name is read from
 /// the instance's prototype (set per-class above), so one native function
 /// serves all five.
+/// `Error.prototype.toString`: `"Name: message"`, or just the name when the
+/// message is empty.
+pub fn error_to_string() -> Value {
+    super::nf("toString", error_to_string_impl)
+}
+
+fn error_to_string_impl(
+    interp: &mut Interpreter,
+    this: Value,
+    _: Vec<Value>,
+) -> Result<Value, VmErr> {
+    let name = match &interp.member(&this, "name")? {
+        Value::String(s) => s.clone(),
+        _ => "Error".to_string(),
+    };
+    let message = match &interp.member(&this, "message")? {
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    };
+    Ok(Value::String(if message.is_empty() {
+        name
+    } else {
+        format!("{}: {}", name, message)
+    }))
+}
+
 fn error_ctor(interp: &mut Interpreter, this: Value, args: Vec<Value>) -> Result<Value, VmErr> {
     let name_prop = this.get_prop("name");
     let name = match &name_prop {
@@ -60,7 +88,11 @@ fn error_ctor(interp: &mut Interpreter, this: Value, args: Vec<Value>) -> Result
         None | Some(Value::Undefined) => String::new(),
         Some(v) => interp.vs(v)?,
     };
+    // The stack is captured where the error is *constructed*, which is what
+    // makes it useful — by the time it is caught, the frames are gone.
+    let stack = crate::error::render_stack(&name, &msg, interp.get_stack());
     this.set_prop("message".to_string(), Value::String(msg))?;
     this.set_prop("name".to_string(), Value::String(name))?;
+    this.set_prop("stack".to_string(), Value::String(stack))?;
     Ok(Value::Undefined)
 }

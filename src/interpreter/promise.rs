@@ -38,10 +38,10 @@ impl Interpreter {
                 &self.jobs,
                 promise,
                 PromiseState::Rejected,
-                Value::Error(Box::new(crate::value::ErrorData {
-                    name: "TypeError".to_string(),
-                    message: "Chaining cycle detected for promise".to_string(),
-                })),
+                Value::Error(crate::value::ErrorData::new(
+                    "TypeError",
+                    "Chaining cycle detected for promise".to_string(),
+                )),
             );
             return Ok(());
         }
@@ -222,17 +222,11 @@ impl Interpreter {
             // A thrown host/runtime error becomes a rejection too, so one bad
             // handler cannot abort the whole drain.
             Err(VmErr::Msg(message)) => {
-                let reason = Value::Error(Box::new(crate::value::ErrorData {
-                    name: "Error".to_string(),
-                    message,
-                }));
+                let reason = crate::error::error_value_from_msg(&message);
                 self.reject_promise(&reaction.derived, reason);
             }
             Err(VmErr::RuntimeError(data)) => {
-                let reason = Value::Error(Box::new(crate::value::ErrorData {
-                    name: "Error".to_string(),
-                    message: data.message.clone(),
-                }));
+                let reason = crate::error::error_value_from_msg(&data.message);
                 self.reject_promise(&reaction.derived, reason);
             }
             Err(other) => return Err(other),

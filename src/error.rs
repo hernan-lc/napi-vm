@@ -169,6 +169,12 @@ fn throw_display(v: &Value) -> String {
 /// anything else becomes a plain `Error`. This is what lets guest code do
 /// `try { ... } catch (e) { e.message }` on internally raised errors.
 pub fn error_value_from_msg(message: &str) -> Value {
+    error_value_with_stack(message, &[])
+}
+
+/// As [`error_value_from_msg`], but recording the call stack the error was
+/// raised on, so `e.stack` can name the frames.
+pub fn error_value_with_stack(message: &str, frames: &[StackFrame]) -> Value {
     const NAMES: &[&str] = &[
         "TypeError",
         "RangeError",
@@ -176,20 +182,41 @@ pub fn error_value_from_msg(message: &str) -> Value {
         "ReferenceError",
         "Error",
     ];
-    for n in NAMES {
-        if let Some(rest) = message.strip_prefix(n)
-            && let Some(rest) = rest.strip_prefix(": ")
-        {
-            return Value::Error(Box::new(ErrorData {
-                name: (*n).to_string(),
-                message: rest.to_string(),
-            }));
+    let (name, text) = NAMES
+        .iter()
+        .find_map(|n| {
+            message
+                .strip_prefix(n)
+                .and_then(|rest| rest.strip_prefix(": "))
+                .map(|rest| (*n, rest))
+        })
+        .unwrap_or(("Error", message));
+    let mut error = ErrorData::new(name, text);
+    error.stack = render_stack(name, text, frames);
+    Value::Error(error)
+}
+
+/// Render a stack the way engines print one: the error's own line, then a
+/// frame per line, innermost first.
+pub fn render_stack(name: &str, message: &str, frames: &[StackFrame]) -> String {
+    let mut out = if message.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}: {}", name, message)
+    };
+    for frame in frames.iter().rev() {
+        // A frame's span is unknown for a native call; omit the position
+        // rather than print a misleading `0:0`.
+        if frame.span.line == 0 {
+            out.push_str(&format!("\n    at {}", frame.name));
+        } else {
+            out.push_str(&format!(
+                "\n    at {} ({}:{})",
+                frame.name, frame.span.line, frame.span.col
+            ));
         }
     }
-    Value::Error(Box::new(ErrorData {
-        name: "Error".to_string(),
-        message: message.to_string(),
-    }))
+    out
 }
 
 pub fn vm_ret(v: Value) -> Result<Value, VmErr> {

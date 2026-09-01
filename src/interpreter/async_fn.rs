@@ -133,10 +133,10 @@ pub(crate) fn spawn_async(
         // Stack allocation failed. Reject rather than abort the process.
         interp.reject_promise(
             &result,
-            Value::Error(Box::new(crate::value::ErrorData {
-                name: "RangeError".to_string(),
-                message: "Could not allocate an async call stack".to_string(),
-            })),
+            Value::Error(crate::value::ErrorData::new(
+                "RangeError",
+                "Could not allocate an async call stack".to_string(),
+            )),
         );
         return Ok(Value::Promise(result));
     };
@@ -226,10 +226,7 @@ fn step(
         corosensei::CoroutineResult::Return(GenOutcome::Failed(message)) => {
             interp.reject_promise(
                 &result,
-                Value::Error(Box::new(crate::value::ErrorData {
-                    name: "Error".to_string(),
-                    message,
-                })),
+                Value::Error(crate::value::ErrorData::new("Error", message)),
             );
             Ok(())
         }

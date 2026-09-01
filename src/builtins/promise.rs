@@ -397,10 +397,10 @@ fn promise_any(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
     if inputs.is_empty() {
         interp.reject_promise(
             &result,
-            Value::Error(Box::new(crate::value::ErrorData {
-                name: "AggregateError".to_string(),
-                message: "All promises were rejected".to_string(),
-            })),
+            Value::Error(crate::value::ErrorData::new(
+                "AggregateError",
+                "All promises were rejected".to_string(),
+            )),
         );
         return Ok(Value::Promise(result));
     }
@@ -415,10 +415,10 @@ fn promise_any(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
 fn any_reject(interp: &mut Interpreter, this: Value, args: Vec<Value>) -> Result<Value, VmErr> {
     let reason = args.into_iter().next().unwrap_or(Value::Undefined);
     record(interp, &this, reason, |interp, target, errors| {
-        let aggregate = Value::Error(Box::new(crate::value::ErrorData {
-            name: "AggregateError".to_string(),
-            message: "All promises were rejected".to_string(),
-        }));
+        let aggregate = Value::Error(crate::value::ErrorData::new(
+            "AggregateError",
+            "All promises were rejected".to_string(),
+        ));
         aggregate.set_prop("errors".to_string(), Value::array(errors))?;
         interp.reject_promise(target, aggregate);
         Ok(())

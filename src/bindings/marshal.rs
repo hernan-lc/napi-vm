@@ -827,7 +827,7 @@ impl WireValue {
                     .collect(),
             ),
             Self::Error { name, message } => {
-                Value::Error(Box::new(crate::value::ErrorData { name, message }))
+                Value::Error(crate::value::ErrorData::new(&name, message))
             }
         }
     }

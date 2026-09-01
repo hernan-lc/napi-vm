@@ -634,6 +634,12 @@ impl Interpreter {
                 self.call_this(f, this_val.clone(), args)?;
                 Ok(this_val)
             }
+            // The built-in error types have native constructors, so
+            // `class E extends Error {}` reaches `super(…)` here.
+            Value::NativeFunction { .. } | Value::HostFunction { .. } => {
+                self.call_this(f, this_val.clone(), args)?;
+                Ok(this_val)
+            }
             _ => {
                 let type_name = match f {
                     Value::String(_) => "string",

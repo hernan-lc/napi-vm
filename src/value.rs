@@ -344,6 +344,21 @@ pub struct ProxyData {
 pub struct ErrorData {
     pub message: String,
     pub name: String,
+    /// The call stack where the error was raised, rendered the way engines
+    /// print it. Empty when there was no frame to record.
+    pub stack: String,
+}
+
+impl ErrorData {
+    /// An error with no recorded stack — the shape a host- or
+    /// combinator-produced error takes, where there was no guest frame.
+    pub fn new(name: &str, message: impl Into<String>) -> Box<Self> {
+        Box::new(Self {
+            name: name.to_string(),
+            message: message.into(),
+            stack: String::new(),
+        })
+    }
 }
 
 /// Every variant's inline payload is at most 24 bytes (a `String`), so the
@@ -807,6 +822,7 @@ impl Value {
             Value::Error(e) => match key {
                 "message" => Some(Value::String(e.message.clone())),
                 "name" => Some(Value::String(e.name.clone())),
+                "stack" => Some(Value::String(e.stack.clone())),
                 _ => None,
             },
             Value::StringIterator { .. } => None,
@@ -871,7 +887,7 @@ impl Value {
                     || cell.named_prop(key).is_some()
             }
             Value::String(_) => key == "length",
-            Value::Error(_) => key == "message" || key == "name",
+            Value::Error(_) => matches!(key, "message" | "name" | "stack"),
             Value::StringIterator { .. } => false,
             _ => false,
         }

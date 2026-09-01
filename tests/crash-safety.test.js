@@ -176,8 +176,12 @@ test("Array.sort propagates comparator errors", () => {
 
 test("deep prototype lookup is bounded without native recursion", () => {
   const vm = new Vm();
+  // The chain is built with `setPrototypeOf` rather than by subclassing, so
+  // the lookup is what hits its limit. Constructing 5000 nested subclasses
+  // would exhaust the *call* budget first, in the implicit `super()` chain —
+  // also bounded and catchable, but a different guard than this one names.
   const r = vm.run(
-    "class A {} for (let i = 0; i < 5000; i++) { class B extends A {} A = B; } try { new A().missing; } catch (e) { e.message; }",
+    "let p = {}; for (let i = 0; i < 5000; i++) { const n = {}; Object.setPrototypeOf(n, p); p = n; } try { p.missing; 'no error'; } catch (e) { e.message; }",
   );
   expect(r).toContain("Maximum prototype chain depth exceeded");
 });

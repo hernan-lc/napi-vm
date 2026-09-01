@@ -792,7 +792,7 @@ impl Interpreter {
     }
 
     /// Get a snapshot of the current call stack.
-    pub(crate) fn get_stack(&self) -> &[StackFrame] {
+    pub fn get_stack(&self) -> &[StackFrame] {
         &self.call_stack
     }
 

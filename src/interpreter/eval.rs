@@ -164,6 +164,7 @@ impl Interpreter {
         // Gather the constructor, instance fields, and methods.
         let mut ctor_params: Vec<String> = Vec::new();
         let mut ctor_body: Vec<Statement> = Vec::new();
+        let mut has_own_constructor = false;
         let mut instance_fields: Vec<(String, Option<Expr>)> = Vec::new();
         let mut proto_props: Vec<(String, Value)> = Vec::new();
         let mut statics: Vec<(String, Value)> =
@@ -193,6 +194,7 @@ impl Interpreter {
                     if *st {
                         statics.push((mname.clone(), fn_val));
                     } else if mname == "constructor" {
+                        has_own_constructor = true;
                         ctor_params = mp.clone();
                         ctor_body = mb.clone();
                     } else {
@@ -263,6 +265,18 @@ impl Interpreter {
                     }
                 }
             }
+        }
+
+        // A derived class with no constructor of its own gets the implicit
+        // `constructor(...args) { super(...args); }`. Without it, extending a
+        // class whose constructor does the work — `class E extends Error {}` —
+        // produced an instance the superclass never initialized.
+        if super_cls.is_some() && !has_own_constructor {
+            ctor_params = vec!["...args".to_string()];
+            ctor_body = vec![Statement::Expr(Expr::Call {
+                callee: Box::new(Expr::Super),
+                args: vec![Expr::Spread(Box::new(Expr::Identifier("args".to_string())))],
+            })];
         }
 
         // Desugar instance fields into `this.<field> = <init>;` statements
@@ -639,10 +653,15 @@ impl Interpreter {
                     // Runtime errors (e.g. undeclared identifier, limit guards)
                     // are catchable as real error objects with `name`/`message`.
                     Err(VmErr::Msg(m)) => {
-                        self.run_catch(catch, crate::error::error_value_from_msg(&m))
+                        let frames = self.get_stack().to_vec();
+                        let value = crate::error::error_value_with_stack(&m, &frames);
+                        self.run_catch(catch, value)
                     }
+                    // A located runtime error already carries the stack from
+                    // where it was raised, which is deeper than here.
                     Err(VmErr::RuntimeError(re)) => {
-                        self.run_catch(catch, crate::error::error_value_from_msg(&re.message))
+                        let value = crate::error::error_value_with_stack(&re.message, &re.stack);
+                        self.run_catch(catch, value)
                     }
                     other => other,
                 };
@@ -1684,10 +1703,10 @@ impl Interpreter {
                     )),
                     None => Ok(Value::settled_promise(
                         PromiseState::Rejected,
-                        Value::Error(Box::new(crate::value::ErrorData {
-                            name: "TypeError".to_string(),
-                            message: format!("Module not found: {}", name),
-                        })),
+                        Value::Error(crate::value::ErrorData::new(
+                            "TypeError",
+                            format!("Module not found: {}", name),
+                        )),
                     )),
                 }
             }
@@ -1738,7 +1757,7 @@ impl Interpreter {
                     result.push_str(q);
                     if i < exprs.len() {
                         let val = self.eval_expr(&exprs[i])?;
-                        let rendered = self.vs(&val)?;
+                        let rendered = self.display_string(&val)?;
                         if result.len().saturating_add(rendered.len())
                             > crate::value::MAX_STRING_LEN
                         {

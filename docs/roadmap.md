@@ -92,6 +92,10 @@ Every claim below was checked against the current build.
 - **`Proxy`** with the `get`, `set`, `has`, `deleteProperty`, `ownKeys`,
   `apply` and `construct` traps, and the `Function` constructor
   (`tests/proxy.test.js`)
+- **Errors**: the built-in types, user-defined subclassing (`class E extends
+  Error {}`), `stack` with the frames it was raised on, and `toString`.
+  A derived class with no constructor gets the implicit
+  `constructor(...args) { super(...args); }` (`tests/errors.test.js`)
 - `TextEncoder`, `TextDecoder`, `URLSearchParams` and `structuredClone` —
   the web globals that are pure computation (`tests/web-globals.test.js`)
 - The built-in namespaces are callable: `String(x)`, `Number(x)`,
@@ -143,9 +147,11 @@ Every claim below was checked against the current build.
   Handing a VM function to the host needs a host callable that re-enters the
   interpreter, which the marshaller has no handle on; `Vm.exposeFunction`
   remains the way to cross in that direction.
-- **`Error` objects** — `name` and `message` work, and the built-in error
-  constructors produce the right names, but there is no `stack` property and
-  no user-defined `Error` subclassing.
+- **String coercion** — a guest `toString` is honoured by `String(x)`,
+  template literals and `console.*`, but not by `+` concatenation. `vs`, the
+  universal stringifier, runs from `&self` positions including inside the
+  fused read-modify-write that holds the scope mutably borrowed; calling a
+  method there would re-enter the interpreter mid-borrow.
 - **LSP** — document formatting and code actions are not implemented.
   Formatting would need a printer that reconstructs source from the AST, which
   does not retain comments; a formatter that deletes them is worse than none.
@@ -168,8 +174,10 @@ Reported as errors rather than silently mis-executed:
 ## Priority order
 
 1. Functions and generators across the N-API boundary
-2. `Error.stack`, and user-defined `Error` subclassing
-3. The capability-host modules: `napi:fetch`, `napi:crypto`, `napi:timers`
+2. The capability-host modules: `napi:fetch`, `napi:crypto`, `napi:timers`
+3. `toString` in `+` concatenation, which needs `vs` to be able to call guest
+   code — and so needs the read-modify-write path not to hold a borrow across
+   it
 4. A resumable evaluator, for true generator suspension on `wasm32`
 5. LSP formatting and code actions
 

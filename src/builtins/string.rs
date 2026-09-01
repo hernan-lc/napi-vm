@@ -29,7 +29,10 @@ fn string_ctor(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Valu
         // `String(sym)` is the one coercion the specification allows for a
         // symbol; template literals and `+` still reject it.
         Some(Value::Symbol(s)) => Ok(Value::String(s.to_display())),
-        Some(v) => Value::checked_string(interp.vs(v)?),
+        Some(v) => {
+            let rendered = interp.display_string(v)?;
+            Value::checked_string(rendered)
+        }
     }
 }
 

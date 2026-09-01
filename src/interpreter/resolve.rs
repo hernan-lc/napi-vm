@@ -118,6 +118,36 @@ impl Interpreter {
         }
     }
 
+    /// Stringify a value, honouring a `toString` method the guest defined.
+    ///
+    /// Not the same as [`Interpreter::vs`], which cannot call guest code: `vs`
+    /// runs from `&self` positions, including inside the fused
+    /// read-modify-write that holds the scope mutably borrowed, so invoking a
+    /// method there would re-enter the interpreter mid-borrow. This is for the
+    /// call sites that are safely `&mut` — `String(x)`, template literals and
+    /// `console.*` — where a custom `toString` is what a caller expects.
+    pub(crate) fn display_string(&mut self, value: &Value) -> Result<String, VmErr> {
+        let has_custom = matches!(value, Value::Object { .. } | Value::Error(_));
+        if has_custom {
+            let method = self.member(value, "toString")?;
+            if matches!(
+                method,
+                Value::Function(_) | Value::NativeFunction { .. } | Value::HostFunction { .. }
+            ) {
+                let rendered = self.call_this(&method, value.clone(), vec![])?;
+                // A primitive return is used, coerced if it is not already a
+                // string. Only an object return falls through, the way the
+                // specification moves on to the next hint.
+                match &rendered {
+                    Value::String(text) => return Ok(text.clone()),
+                    Value::Object { .. } | Value::Array(_) | Value::Error(_) => {}
+                    other => return self.vs(other),
+                }
+            }
+        }
+        self.vs(value)
+    }
+
     /// Read a string-keyed property, running a getter if one is installed.
     pub(crate) fn member(&mut self, o: &Value, key: &str) -> Result<Value, VmErr> {
         self.get_prop_value(o, &Value::String(key.to_string()))
@@ -428,6 +458,8 @@ impl Interpreter {
             (Value::Error(e), Value::String(k)) => match k.as_str() {
                 "message" => Ok(Value::String(e.message.clone())),
                 "name" => Ok(Value::String(e.name.clone())),
+                "stack" => Ok(Value::String(e.stack.clone())),
+                "toString" => Ok(crate::builtins::error_to_string()),
                 _ => Ok(Value::Undefined),
             },
             _ => Ok(Value::Undefined),
