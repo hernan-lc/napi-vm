@@ -71,6 +71,16 @@ impl Parser {
             // `static` / `get` / `set` are modifiers only when a member name
             // follows; `get() {}` and `set = 1` declare members named `get`.
             let st = self.eat_modifier(&Token::KwStatic);
+            // `static { … }`: a static initialization block, not a member.
+            if st && matches!(self.cur(), Token::LBrace) {
+                self.adv();
+                let body = self.block_body();
+                self.expect(&Token::RBrace);
+                b.push(ClassMember::StaticBlock { body });
+                continue;
+            }
+            let is_async = self.eat_modifier(&Token::KwAsync);
+            let is_generator = self.eat(&Token::Star);
             let is_getter = self.eat_modifier(&Token::KwGet);
             let is_setter = self.eat_modifier(&Token::KwSet);
             let mn = match self.cur() {
@@ -94,6 +104,25 @@ impl Parser {
                 Token::KwSet => {
                     self.adv();
                     "set".to_string()
+                }
+                Token::KwAsync => {
+                    self.adv();
+                    "async".to_string()
+                }
+                // `#x`: a private field or method. The `#` is part of the
+                // name, which is what keeps it out of reach of ordinary
+                // property access — there is no way to write the name from
+                // outside the class body.
+                Token::Hash => {
+                    self.adv();
+                    match self.cur() {
+                        Token::Identifier(x) => {
+                            let v = format!("#{}", x);
+                            self.adv();
+                            v
+                        }
+                        _ => return None,
+                    }
                 }
                 _ => return None,
             };
@@ -125,6 +154,8 @@ impl Parser {
                         is_static: st,
                         params: p,
                         body,
+                        is_async,
+                        is_generator,
                     });
                 }
             } else {

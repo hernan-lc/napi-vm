@@ -103,6 +103,8 @@ pub enum Token {
     BitOr,
     BitXor,
     Tilde,
+    /// `#`, which begins a private class member name.
+    Hash,
     Shl,
     Shr,
     UShr,
@@ -672,6 +674,12 @@ impl Lexer {
                 self.pos += 1;
                 self.col += 1;
                 Token::Tilde
+            }
+            // `#` introduces a private class member name.
+            '#' => {
+                self.pos += 1;
+                self.col += 1;
+                Token::Hash
             }
             '"' | '\'' => self.read_str(c),
             c if c.is_ascii_digit() => self.read_num(),

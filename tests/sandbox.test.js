@@ -31,14 +31,21 @@ test("fetch is sandboxed object", () => {
   expect(vm.run("typeof fetch;")).toBe("object");
 });
 
-test("setTimeout is sandboxed object", () => {
+test("setTimeout schedules without a clock", () => {
   const vm = new Vm();
-  expect(vm.run("typeof setTimeout;")).toBe("object");
+  expect(vm.run("typeof setTimeout;")).toBe("function");
+  // The callback runs on the VM's own queue, after every microtask. There is
+  // no wall clock in the sandbox, so the delay only orders timers against
+  // each other.
+  expect(vm.run("let out = 'no'; setTimeout(() => { out = 'ran'; }, 1000); out;")).toBe("no");
+  expect(
+    vm.run("let out = []; setTimeout(() => out.push('b'), 10); setTimeout(() => out.push('a'), 1); await 0; out.join();"),
+  ).toBe("");
 });
 
-test("setInterval is sandboxed object", () => {
+test("setInterval is the same scheduler as setTimeout", () => {
   const vm = new Vm();
-  expect(vm.run("typeof setInterval;")).toBe("object");
+  expect(vm.run("typeof setInterval;")).toBe("function");
 });
 
 test("eval is sandboxed object", () => {
@@ -140,9 +147,12 @@ test("structuredClone is sandboxed", () => {
   expect(vm.run("typeof structuredClone;")).toBe("object");
 });
 
-test("queueMicrotask is sandboxed", () => {
+test("queueMicrotask runs on the VM's own queue", () => {
   const vm = new Vm();
-  expect(vm.run("typeof queueMicrotask;")).toBe("object");
+  expect(vm.run("typeof queueMicrotask;")).toBe("function");
+  expect(
+    vm.run("let out = []; queueMicrotask(() => out.push('later')); out.push('now'); await 0; out.join();"),
+  ).toBe("now,later");
 });
 
 test("indexedDB is sandboxed", () => {

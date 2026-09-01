@@ -452,6 +452,7 @@ impl WasmVm {
         } else {
             self.interp
                 .run_program_body(&stmts)
+                .and_then(|value| self.interp.drain_jobs().map(|()| value))
                 .map_err(|e| self.interp.enrich_error(e, None))
         };
         self.interp.cur_mod = None;
@@ -521,7 +522,10 @@ impl WasmVm {
                 "RangeError: Maximum parse depth exceeded",
             ));
         }
-        let result = self.interp.run_program_body(&stmts);
+        let result = self
+            .interp
+            .run_program_body(&stmts)
+            .and_then(|value| self.interp.drain_jobs().map(|()| value));
         self.interp.cur_mod = None;
         result.map_err(|e| JsValue::from_str(&e.to_string()))?;
 

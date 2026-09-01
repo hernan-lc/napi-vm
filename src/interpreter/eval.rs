@@ -1,10 +1,9 @@
 //! Statement and expression evaluation: the two big `match` dispatchers.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::{BindKind, Env, Environment, Interpreter, Lookup, ModifyOutcome, Module};
+use super::{BindKind, Env, Environment, Interpreter, Lookup, ModifyOutcome};
 use crate::error::{VmErr, vm_err, vm_ret, vm_throw};
 use crate::parser::{
     AssignOp, ClassMember, Expr, ExprOrBlock, ForInit, ObjectProp, Statement, UnOp, VarKind,
@@ -54,6 +53,203 @@ fn label_matches(label: &Option<String>, signal: &Option<String>) -> bool {
 }
 
 impl Interpreter {
+    /// Build a class value from its parts: prototype methods and accessors,
+    /// static members, instance fields desugared into the constructor, and
+    /// static blocks run once the class exists.
+    ///
+    /// Shared by the declaration and the class *expression*, which differ
+    /// only in whether the result is bound to a name.
+    fn build_class(
+        &mut self,
+        name: &str,
+        superclass: Option<&Expr>,
+        body: &[ClassMember],
+    ) -> Result<Value, VmErr> {
+        let super_cls = if let Some(sc) = superclass {
+            Some(self.eval_expr(sc)?)
+        } else {
+            None
+        };
+        // Inheritance: the instance prototype chains to the superclass's
+        // prototype so inherited methods resolve.
+        let super_proto = match &super_cls {
+            Some(Value::Class(c)) => Some(c.prototype.clone()),
+            _ => None,
+        };
+
+        // Gather the constructor, instance fields, and methods.
+        let mut ctor_params: Vec<String> = Vec::new();
+        let mut ctor_body: Vec<Statement> = Vec::new();
+        let mut instance_fields: Vec<(String, Option<Expr>)> = Vec::new();
+        let mut proto_props: Vec<(String, Value)> = Vec::new();
+        let mut statics: Vec<(String, Value)> =
+            vec![("name".to_string(), Value::String(name.to_string()))];
+        let mut static_blocks: Vec<Vec<Statement>> = Vec::new();
+
+        for member in body {
+            match member {
+                ClassMember::Method {
+                    name: mname,
+                    is_static: st,
+                    params: mp,
+                    body: mb,
+                    is_async,
+                    is_generator,
+                } => {
+                    let fn_val = Value::Function(Box::new(FunctionData {
+                        name: Some(mname.as_str().into()),
+                        params: intern_params(mp),
+                        body: Rc::new(mb.clone()),
+                        closure: Some(self.global.clone()),
+                        is_arrow: false,
+                        is_async: *is_async,
+                        is_generator: *is_generator,
+                        uses_arguments: stmts_reference(mb, "arguments"),
+                    }));
+                    if *st {
+                        statics.push((mname.clone(), fn_val));
+                    } else if mname == "constructor" {
+                        ctor_params = mp.clone();
+                        ctor_body = mb.clone();
+                    } else {
+                        proto_props.push((mname.clone(), fn_val));
+                    }
+                }
+                // Static blocks are collected and run after the class
+                // exists, since they observe its statics and `this`.
+                ClassMember::StaticBlock { body } => {
+                    static_blocks.push(body.clone());
+                }
+                ClassMember::Field {
+                    name: fname,
+                    is_static: st,
+                    init,
+                } => {
+                    if *st {
+                        let init_val = match init {
+                            Some(e) => self.eval_expr(e)?,
+                            None => Value::Undefined,
+                        };
+                        statics.push((fname.clone(), init_val));
+                    } else {
+                        instance_fields.push((fname.clone(), init.clone()));
+                    }
+                }
+                ClassMember::Getter {
+                    name: gname,
+                    is_static: st,
+                    body: gb,
+                } => {
+                    let getter_fn = Value::Function(Box::new(FunctionData {
+                        name: Some(format!("get {}", gname).into()),
+                        params: Rc::new(vec![]),
+                        body: Rc::new(gb.clone()),
+                        closure: Some(self.global.clone()),
+                        is_arrow: false,
+                        is_async: false,
+                        is_generator: false,
+                        uses_arguments: stmts_reference(gb, "arguments"),
+                    }));
+                    if *st {
+                        statics.push((gname.clone(), getter_fn));
+                    } else {
+                        proto_props.push((gname.clone(), getter_fn));
+                    }
+                }
+                ClassMember::Setter {
+                    name: sname,
+                    param,
+                    is_static: st,
+                    body: sb,
+                } => {
+                    let setter_fn = Value::Function(Box::new(FunctionData {
+                        name: Some(format!("set {}", sname).into()),
+                        params: Rc::new(vec![Rc::from(param.as_str())]),
+                        body: Rc::new(sb.clone()),
+                        closure: Some(self.global.clone()),
+                        is_arrow: false,
+                        is_async: false,
+                        is_generator: false,
+                        uses_arguments: stmts_reference(sb, "arguments"),
+                    }));
+                    if *st {
+                        statics.push((sname.clone(), setter_fn));
+                    } else {
+                        proto_props.push((sname.clone(), setter_fn));
+                    }
+                }
+            }
+        }
+
+        // Desugar instance fields into `this.<field> = <init>;` statements
+        // prepended to the constructor body.
+        let mut full_ctor_body = Vec::new();
+        for (fname, init) in instance_fields {
+            let value = init.unwrap_or(Expr::Undefined);
+            full_ctor_body.push(Statement::Expr(Expr::Assignment {
+                target: Box::new(Expr::Member {
+                    object: Box::new(Expr::This),
+                    property: Box::new(Expr::String(fname.clone())),
+                    computed: false,
+                }),
+                op: AssignOp::Assign,
+                value: Box::new(value),
+            }));
+        }
+        full_ctor_body.extend(ctor_body);
+
+        // For a derived class, expose the superclass constructor to the
+        // constructor body as `__super_ctor` so `super(...)` can call it.
+        let ctor_closure = match &super_cls {
+            Some(Value::Class(sc)) => {
+                let env = Rc::new(RefCell::new(Environment::child(self.global.clone())));
+                env.borrow_mut()
+                    .set("__super_ctor", sc.constructor.as_ref().clone());
+                env
+            }
+            _ => self.global.clone(),
+        };
+
+        let constructor = Value::Function(Box::new(FunctionData {
+            name: Some(Rc::from(name)),
+            params: Rc::new(
+                ctor_params
+                    .into_iter()
+                    .map(|p| Rc::from(p.as_str()))
+                    .collect(),
+            ),
+            uses_arguments: stmts_reference(&full_ctor_body, "arguments"),
+            body: Rc::new(full_ctor_body),
+            closure: Some(ctor_closure),
+            is_arrow: false,
+            is_async: false,
+            is_generator: false,
+        }));
+
+        let prototype = Value::object_with_proto(proto_props, super_proto);
+        prototype.set_prop("constructor".to_string(), constructor.clone())?;
+
+        let class_val = Value::Class(Box::new(ClassData {
+            name: name.to_string(),
+            constructor: Box::new(constructor),
+            prototype: Rc::new(prototype),
+            statics: Rc::new(RefCell::new(statics)),
+        }));
+
+        // The class binds its own name inside static blocks and
+        // method bodies, so `static { A.y = … }` can reach it.
+        for block in static_blocks {
+            let scope = Rc::new(RefCell::new(Environment::child(self.global.clone())));
+            scope.borrow_mut().set("this", class_val.clone());
+            scope.borrow_mut().set(name, class_val.clone());
+            let saved = std::mem::replace(&mut self.global, scope);
+            let result = self.run_program_body(&block);
+            self.global = saved;
+            result?;
+        }
+        Ok(class_val)
+    }
+
     pub(super) fn eval_stmt(&mut self, s: &Statement) -> Result<Value, VmErr> {
         match s {
             Statement::Expr(e) => self.eval_expr(e),
@@ -144,169 +340,7 @@ impl Interpreter {
                 superclass,
                 body,
             } => {
-                let super_cls = if let Some(sc) = superclass {
-                    Some(self.eval_expr(sc)?)
-                } else {
-                    None
-                };
-                // Inheritance: the instance prototype chains to the superclass's
-                // prototype so inherited methods resolve.
-                let super_proto = match &super_cls {
-                    Some(Value::Class(c)) => Some(c.prototype.clone()),
-                    _ => None,
-                };
-
-                // Gather the constructor, instance fields, and methods.
-                let mut ctor_params: Vec<String> = Vec::new();
-                let mut ctor_body: Vec<Statement> = Vec::new();
-                let mut instance_fields: Vec<(String, Option<Expr>)> = Vec::new();
-                let mut proto_props: Vec<(String, Value)> = Vec::new();
-                let mut statics: Vec<(String, Value)> =
-                    vec![("name".to_string(), Value::String(name.clone()))];
-
-                for member in body {
-                    match member {
-                        ClassMember::Method {
-                            name: mname,
-                            is_static: st,
-                            params: mp,
-                            body: mb,
-                        } => {
-                            let fn_val = Value::Function(Box::new(FunctionData {
-                                name: Some(mname.as_str().into()),
-                                params: intern_params(mp),
-                                body: Rc::new(mb.clone()),
-                                closure: Some(self.global.clone()),
-                                is_arrow: false,
-                                is_async: false,
-                                is_generator: false,
-                                uses_arguments: stmts_reference(mb, "arguments"),
-                            }));
-                            if *st {
-                                statics.push((mname.clone(), fn_val));
-                            } else if mname == "constructor" {
-                                ctor_params = mp.clone();
-                                ctor_body = mb.clone();
-                            } else {
-                                proto_props.push((mname.clone(), fn_val));
-                            }
-                        }
-                        ClassMember::Field {
-                            name: fname,
-                            is_static: st,
-                            init,
-                        } => {
-                            if *st {
-                                let init_val = match init {
-                                    Some(e) => self.eval_expr(e)?,
-                                    None => Value::Undefined,
-                                };
-                                statics.push((fname.clone(), init_val));
-                            } else {
-                                instance_fields.push((fname.clone(), init.clone()));
-                            }
-                        }
-                        ClassMember::Getter {
-                            name: gname,
-                            is_static: st,
-                            body: gb,
-                        } => {
-                            let getter_fn = Value::Function(Box::new(FunctionData {
-                                name: Some(format!("get {}", gname).into()),
-                                params: Rc::new(vec![]),
-                                body: Rc::new(gb.clone()),
-                                closure: Some(self.global.clone()),
-                                is_arrow: false,
-                                is_async: false,
-                                is_generator: false,
-                                uses_arguments: stmts_reference(gb, "arguments"),
-                            }));
-                            if *st {
-                                statics.push((gname.clone(), getter_fn));
-                            } else {
-                                proto_props.push((gname.clone(), getter_fn));
-                            }
-                        }
-                        ClassMember::Setter {
-                            name: sname,
-                            param,
-                            is_static: st,
-                            body: sb,
-                        } => {
-                            let setter_fn = Value::Function(Box::new(FunctionData {
-                                name: Some(format!("set {}", sname).into()),
-                                params: Rc::new(vec![Rc::from(param.as_str())]),
-                                body: Rc::new(sb.clone()),
-                                closure: Some(self.global.clone()),
-                                is_arrow: false,
-                                is_async: false,
-                                is_generator: false,
-                                uses_arguments: stmts_reference(sb, "arguments"),
-                            }));
-                            if *st {
-                                statics.push((sname.clone(), setter_fn));
-                            } else {
-                                proto_props.push((sname.clone(), setter_fn));
-                            }
-                        }
-                    }
-                }
-
-                // Desugar instance fields into `this.<field> = <init>;` statements
-                // prepended to the constructor body.
-                let mut full_ctor_body = Vec::new();
-                for (fname, init) in instance_fields {
-                    let value = init.unwrap_or(Expr::Undefined);
-                    full_ctor_body.push(Statement::Expr(Expr::Assignment {
-                        target: Box::new(Expr::Member {
-                            object: Box::new(Expr::This),
-                            property: Box::new(Expr::String(fname.clone())),
-                            computed: false,
-                        }),
-                        op: AssignOp::Assign,
-                        value: Box::new(value),
-                    }));
-                }
-                full_ctor_body.extend(ctor_body);
-
-                // For a derived class, expose the superclass constructor to the
-                // constructor body as `__super_ctor` so `super(...)` can call it.
-                let ctor_closure = match &super_cls {
-                    Some(Value::Class(sc)) => {
-                        let env = Rc::new(RefCell::new(Environment::child(self.global.clone())));
-                        env.borrow_mut()
-                            .set("__super_ctor", sc.constructor.as_ref().clone());
-                        env
-                    }
-                    _ => self.global.clone(),
-                };
-
-                let constructor = Value::Function(Box::new(FunctionData {
-                    name: Some(name.as_str().into()),
-                    params: Rc::new(
-                        ctor_params
-                            .into_iter()
-                            .map(|p| Rc::from(p.as_str()))
-                            .collect(),
-                    ),
-                    uses_arguments: stmts_reference(&full_ctor_body, "arguments"),
-                    body: Rc::new(full_ctor_body),
-                    closure: Some(ctor_closure),
-                    is_arrow: false,
-                    is_async: false,
-                    is_generator: false,
-                }));
-
-                let prototype = Value::object_with_proto(proto_props, super_proto);
-                prototype.set_prop("constructor".to_string(), constructor.clone())?;
-
-                let class_val = Value::Class(Box::new(ClassData {
-                    name: name.clone(),
-                    constructor: Box::new(constructor),
-                    prototype: Rc::new(prototype),
-                    statics: Rc::new(RefCell::new(statics)),
-                }));
-
+                let class_val = self.build_class(name, superclass.as_deref(), body)?;
                 self.set_binding(name, class_val)?;
                 Ok(Value::Undefined)
             }
@@ -397,9 +431,18 @@ impl Interpreter {
                 }
                 Ok(r)
             }
-            Statement::ForOf { name, iter, body } => {
+            Statement::ForOf {
+                name,
+                iter,
+                body,
+                is_await,
+            } => {
                 let source = self.eval_expr(iter)?;
-                let iterator = self.iterator_for(&source)?;
+                let iterator = if *is_await {
+                    self.async_iterator_for(&source)?
+                } else {
+                    self.iterator_for(&source)?
+                };
                 let next_fn = self.prop(&iterator, &Value::String("next".to_string()))?;
                 if matches!(next_fn, Value::Undefined) {
                     return vm_err("iterator has no next() method");
@@ -415,7 +458,13 @@ impl Interpreter {
                     // body iteration. This keeps custom/infinite iterators
                     // budgeted without eagerly collecting their output.
                     self.consume_loop()?;
-                    let result = self.call_this(&next_fn, iterator.clone(), vec![])?;
+                    let mut result = self.call_this(&next_fn, iterator.clone(), vec![])?;
+                    // `for await` awaits the step object itself, which is what
+                    // lets an async iterator return a promise of `{value,
+                    // done}` rather than the object directly.
+                    if *is_await {
+                        result = self.perform_await(result)?;
+                    }
                     let done = result
                         .get_prop("done")
                         .map(|v| v.is_truthy())
@@ -424,7 +473,12 @@ impl Interpreter {
                         exhausted = true;
                         break;
                     }
-                    let value = result.get_prop("value").unwrap_or(Value::Undefined);
+                    let mut value = result.get_prop("value").unwrap_or(Value::Undefined);
+                    // A sync iterator of promises is also valid input to
+                    // `for await`, so each value is awaited too.
+                    if *is_await {
+                        value = self.perform_await(value)?;
+                    }
                     self.set_binding(name, value)?;
                     match self.run_block(body) {
                         Err(VmErr::Break(None)) => break,
@@ -510,11 +564,8 @@ impl Interpreter {
             Statement::ExportDefault(e) => {
                 let v = self.eval_expr(e)?;
                 let mn = self.cur_mod.clone().unwrap_or_default();
-                let mo = self.modules.entry(mn).or_insert_with(|| Module {
-                    exports: HashMap::new(),
-                    default: None,
-                });
-                mo.default = Some(v);
+                let _ = mn;
+                self.current_module().default = Some(v);
                 Ok(Value::Undefined)
             }
             Statement::ExportNamed { specifiers, source } => {
@@ -523,7 +574,7 @@ impl Interpreter {
                     // module's live bindings without binding anything locally.
                     Some(source) => {
                         let entries = self.resolve_reexports(source, specifiers)?;
-                        let record = self.current_module();
+                        let mut record = self.current_module();
                         for (exported, value) in entries {
                             if exported == "default" {
                                 record.default = Some(value);
@@ -545,7 +596,7 @@ impl Interpreter {
                                 }
                             }
                         }
-                        let record = self.current_module();
+                        let mut record = self.current_module();
                         for (exported, value) in cells {
                             if exported == "default" {
                                 record.default = Some(value);
@@ -563,9 +614,7 @@ impl Interpreter {
                     .ok_or_else(|| VmErr::Msg(format!("Module not found: {}", source)))?;
                 self.ensure_module(&resolved)?;
                 let other = self
-                    .modules
-                    .get(&resolved)
-                    .cloned()
+                    .module(&resolved)
                     .ok_or_else(|| VmErr::Msg(format!("Module not found: {}", source)))?;
                 match alias {
                     // `export * as ns from 'm'`: one export holding the
@@ -579,7 +628,7 @@ impl Interpreter {
                     // `export * from 'm'`: every *named* export of `m`, which
                     // deliberately excludes its default.
                     None => {
-                        let record = self.current_module();
+                        let mut record = self.current_module();
                         for (name, value) in other.exports {
                             record.exports.insert(name, value);
                         }
@@ -598,11 +647,7 @@ impl Interpreter {
                     let name = name.clone();
                     self.ensure_module(&name)?;
                 }
-                if let Some(md) = resolved_module
-                    .as_ref()
-                    .and_then(|name| self.modules.get(name))
-                    .cloned()
-                {
+                if let Some(md) = resolved_module.as_ref().and_then(|name| self.module(name)) {
                     if let Some(d) = default {
                         let v = md.default.clone().unwrap_or(Value::Undefined);
                         self.bind_import(d, v)?;
@@ -662,6 +707,21 @@ impl Interpreter {
                 return Err(crate::value::limit_err("Maximum array length exceeded"));
             }
         }
+    }
+
+    /// Obtain an iterator for `for await (… of source)`.
+    ///
+    /// `Symbol.asyncIterator` wins when the source has one; otherwise the
+    /// synchronous iterator is used and each of its values is awaited, which
+    /// is how `for await` consumes an array of promises.
+    fn async_iterator_for(&mut self, source: &Value) -> Result<Value, VmErr> {
+        let key = crate::builtins::well_known("asyncIterator")
+            .unwrap_or(Value::String("Symbol.asyncIterator".to_string()));
+        let async_iter_fn = self.prop(source, &key)?;
+        if !matches!(async_iter_fn, Value::Undefined) {
+            return self.call_this(&async_iter_fn, source.clone(), vec![]);
+        }
+        self.iterator_for(source)
     }
 
     /// Obtain an iterator for `source`, following the `Symbol.iterator`
@@ -952,15 +1012,21 @@ impl Interpreter {
                             };
                             o.push((key, self.eval_expr(v)?));
                         }
-                        ObjectProp::Method { name, params, body } => {
+                        ObjectProp::Method {
+                            name,
+                            params,
+                            body,
+                            is_async,
+                            is_generator,
+                        } => {
                             let fn_val = Value::Function(Box::new(FunctionData {
                                 name: Some(name.as_str().into()),
                                 params: intern_params(params),
                                 body: Rc::new(body.clone()),
                                 closure: Some(self.global.clone()),
                                 is_arrow: false,
-                                is_async: false,
-                                is_generator: false,
+                                is_async: *is_async,
+                                is_generator: *is_generator,
                                 uses_arguments: stmts_reference(body, "arguments"),
                             }));
                             o.push((name.clone(), fn_val));
@@ -1311,7 +1377,28 @@ impl Interpreter {
                     self.eval_expr(alternate)
                 }
             }
-            Expr::ArrowFn { params, body } => Ok(Value::Function(Box::new(FunctionData {
+            // A class expression's own name is visible only inside its body,
+            // which a child scope provides.
+            Expr::ClassExpr {
+                name,
+                superclass,
+                body,
+            } => {
+                let scope = Rc::new(RefCell::new(Environment::child(self.global.clone())));
+                let saved = std::mem::replace(&mut self.global, scope);
+                let built =
+                    self.build_class(name.as_deref().unwrap_or(""), superclass.as_deref(), body);
+                if let (Ok(value), Some(name)) = (&built, name) {
+                    self.global.borrow_mut().set(name, value.clone());
+                }
+                self.global = saved;
+                built
+            }
+            Expr::ArrowFn {
+                params,
+                body,
+                is_async,
+            } => Ok(Value::Function(Box::new(FunctionData {
                 name: None,
                 params: intern_params(params),
                 closure: Some(self.global.clone()),
@@ -1321,7 +1408,7 @@ impl Interpreter {
                     ExprOrBlock::Expr(e) => vec![Statement::Return(Some(e.clone()))],
                 }),
                 is_arrow: true,
-                is_async: false,
+                is_async: *is_async,
                 is_generator: false,
             }))),
             Expr::FnExpr {
@@ -1361,18 +1448,18 @@ impl Interpreter {
                     let target = target.clone();
                     self.ensure_module(&target)?;
                 }
-                match resolved.and_then(|n| self.modules.get(&n)).cloned() {
-                    Some(module) => Ok(Value::Promise {
-                        state: PromiseState::Fulfilled,
-                        value: Some(Box::new(Self::namespace_object(&module)?)),
-                    }),
-                    None => Ok(Value::Promise {
-                        state: PromiseState::Rejected,
-                        value: Some(Box::new(Value::Error(Box::new(crate::value::ErrorData {
+                match resolved.and_then(|n| self.module(&n)) {
+                    Some(module) => Ok(Value::settled_promise(
+                        PromiseState::Fulfilled,
+                        Self::namespace_object(&module)?,
+                    )),
+                    None => Ok(Value::settled_promise(
+                        PromiseState::Rejected,
+                        Value::Error(Box::new(crate::value::ErrorData {
                             name: "TypeError".to_string(),
                             message: format!("Module not found: {}", name),
-                        })))),
-                    }),
+                        })),
+                    )),
                 }
             }
             Expr::ImportMeta => {
@@ -1435,30 +1522,8 @@ impl Interpreter {
             }
             Expr::Super => vm_err("'super' must be called as a function"),
             Expr::Await(inner) => {
-                // The promise model is eager: by the time we `await` a promise it
-                // is already settled, so unwrap a fulfilled value or re-throw a
-                // rejection reason. Awaiting a non-promise yields it unchanged.
                 let v = self.eval_expr(inner)?;
-                // Async host call: park the VM thread until the host resolves.
-                if let Value::HostPending { id } = v {
-                    let bridge = self.host.clone().ok_or_else(|| {
-                        VmErr::Msg("cannot await host promise: no bridge attached".to_string())
-                    })?;
-                    return bridge.await_host(id);
-                }
-                if let Value::Promise { state, value } = &v {
-                    let inner_val = value
-                        .as_ref()
-                        .map(|b| (**b).clone())
-                        .unwrap_or(Value::Undefined);
-                    if *state == PromiseState::Rejected {
-                        vm_throw(inner_val)
-                    } else {
-                        Ok(inner_val)
-                    }
-                } else {
-                    Ok(v)
-                }
+                self.perform_await(v)
             }
             Expr::Yield(arg) => {
                 // Evaluate the yielded expression, then switch back to whoever
@@ -1479,6 +1544,9 @@ impl Interpreter {
                 if let Some(yielder) = self.gen_yielder.as_ref() {
                     return match yielder.suspend(v) {
                         crate::value::GenResume::Next(sent) => Ok(sent.unwrap_or(Value::Undefined)),
+                        // `gen.throw(e)`: raise at the suspension point, so a
+                        // `try`/`catch` around the `yield` sees it.
+                        crate::value::GenResume::Throw(reason) => vm_throw(reason),
                         // Abandoned: return from the body so the surrounding
                         // `try`/`finally` still runs on the way out.
                         crate::value::GenResume::Return => vm_ret(Value::Undefined),
@@ -1519,6 +1587,10 @@ impl Interpreter {
                         Some(yielder) => match yielder.suspend(value) {
                             crate::value::GenResume::Next(v) => {
                                 sent = v.unwrap_or(Value::Undefined);
+                            }
+                            crate::value::GenResume::Throw(reason) => {
+                                close_iterator(&iterator);
+                                return vm_throw(reason);
                             }
                             crate::value::GenResume::Return => {
                                 // The outer generator is being closed: close

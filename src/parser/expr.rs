@@ -603,6 +603,18 @@ impl Parser {
                 }
                 Token::Dot => {
                     self.adv();
+                    // `obj.#name`: a private member. The `#` is part of the
+                    // property name, so nothing outside the class body can
+                    // name it — that is the whole of the privacy.
+                    if self.eat(&Token::Hash) {
+                        let p = self.ident()?;
+                        e = Expr::Member {
+                            object: Box::new(e),
+                            property: Box::new(Expr::String(format!("#{}", p))),
+                            computed: false,
+                        };
+                        continue;
+                    }
                     if self.eat(&Token::QuestionDot) {
                         // optional chaining: obj?.prop
                         let p = self.ident_or_keyword()?;

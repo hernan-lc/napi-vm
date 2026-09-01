@@ -21,6 +21,7 @@ pub fn strict_equals(a: &Value, b: &Value) -> bool {
         (Value::GlobalObject, Value::GlobalObject) => true,
         (Value::Object { props: x }, Value::Object { props: y }) => Rc::ptr_eq(x, y),
         (Value::Array(x), Value::Array(y)) => Rc::ptr_eq(x, y),
+        (Value::Promise(x), Value::Promise(y)) => Rc::ptr_eq(x, y),
         (Value::Generator { inner: x }, Value::Generator { inner: y }) => Rc::ptr_eq(x, y),
         (Value::StringIterator { inner: x }, Value::StringIterator { inner: y }) => {
             Rc::ptr_eq(x, y)
@@ -43,7 +44,10 @@ pub fn strict_equals(a: &Value, b: &Value) -> bool {
 /// finds them, but they must stay out of `Object.keys`, `for…in` and
 /// `JSON.stringify`, which enumerate string keys only.
 pub fn is_internal_key(key: &str) -> bool {
-    key.starts_with("__symbol") || key.starts_with("__setter:")
+    // A private class member (`#x`) is stored as an ordinary slot named `#x`.
+    // Nothing outside the class body can write that name, and it must not
+    // appear in `Object.keys`, `for…in` or `JSON.stringify`.
+    key.starts_with('#') || key.starts_with("__symbol") || key.starts_with("__setter:")
 }
 
 /// The slot name backing a symbol-keyed property.
@@ -264,7 +268,9 @@ impl Interpreter {
                     Value::Generator { .. } => "object",
                     Value::Symbol(_) => "symbol",
                     Value::Error(_) => "object",
-                    // Resolved by the guard above; unreachable here.
+                    // Internal values, resolved before they reach guest code.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Value::AsyncTask(_) => "object",
                     Value::Binding(_) => "undefined",
                 }
                 .to_string(),
@@ -369,6 +375,8 @@ impl Interpreter {
     ) -> Result<(), VmErr> {
         match v {
             Value::Binding(cell) => self.vs_rec(&cell.borrow(), visited, depth, output),
+            #[cfg(not(target_arch = "wasm32"))]
+            Value::AsyncTask(_) => output.push_str("[object AsyncTask]"),
             Value::Undefined => output.push_str("undefined"),
             Value::Null => output.push_str("null"),
             Value::Bool(b) => output.push_str(if *b { "true" } else { "false" }),

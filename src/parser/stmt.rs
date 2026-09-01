@@ -339,6 +339,8 @@ impl Parser {
 
     fn for_(&mut self) -> Option<Statement> {
         self.adv();
+        // `for await (… of …)`.
+        let is_await = self.eat(&Token::KwAwait);
         self.eat(&Token::LParen);
         let init = if matches!(self.cur(), Token::KwVar | Token::KwLet | Token::KwConst) {
             let kind = match self.cur() {
@@ -395,6 +397,7 @@ impl Parser {
                     name: n,
                     iter: i,
                     body: b,
+                    is_await,
                 });
             }
         }

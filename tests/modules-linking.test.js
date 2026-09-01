@@ -125,20 +125,20 @@ test("export * as names the namespace", () => {
 test("import() resolves to the namespace", () => {
   const vm = new Vm();
   vm.registerModule("a", "export const v = 1;");
-  expect(vm.run("let out; import('a').then((m) => { out = m.v; }); out;")).toBe("1");
+  expect(vm.run("let out; import('a').then((m) => { out = m.v; }); await 0; out;")).toBe("1");
 });
 
 test("await import() works inside an async function", () => {
   const vm = new Vm();
   vm.registerModule("a", "export const w = 2;");
   expect(
-    vm.run("let out; async function load() { const m = await import('a'); out = m.w; } load(); out;"),
+    vm.run("let out; async function load() { const m = await import('a'); out = m.w; } await load(); out;"),
   ).toBe("2");
 });
 
 test("import() of a missing module rejects", () => {
   const vm = new Vm();
-  expect(vm.run("let out; import('zzz').catch(() => { out = 'caught'; }); out;")).toBe("caught");
+  expect(vm.run("let out; import('zzz').catch(() => { out = 'caught'; }); await 0; out;")).toBe("caught");
 });
 
 // --- Deferred definition and cycles ----------------------------------------

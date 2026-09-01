@@ -921,6 +921,7 @@ impl Builder<'_> {
             Expr::TaggedTemplate { .. } => Type::Unknown,
             // `import(…)` resolves to a namespace object.
             Expr::DynamicImport(_) => Type::Unknown,
+            Expr::ClassExpr { .. } => Type::Unknown,
             Expr::Bool(_) => Type::Boolean,
             Expr::Null => Type::Null,
             Expr::Undefined => Type::Undefined,
@@ -952,7 +953,9 @@ impl Builder<'_> {
                             self.properties.insert(name.clone(), ty.clone());
                             fields.insert(name.clone(), ty);
                         }
-                        ObjectProp::Method { name, params, body } => {
+                        ObjectProp::Method {
+                            name, params, body, ..
+                        } => {
                             fields.insert(
                                 name.clone(),
                                 Type::Function {
@@ -1008,7 +1011,7 @@ impl Builder<'_> {
                         ));
                     }
                     if method == "then"
-                        && let Some(Expr::ArrowFn { params, body }) = args.first()
+                        && let Some(Expr::ArrowFn { params, body, .. }) = args.first()
                     {
                         let mut arrow_env = env.clone();
                         let value_ty = object_ty.unwrap_promise();
@@ -1062,7 +1065,7 @@ impl Builder<'_> {
                     .or_insert_with(|| property_ty.clone());
                 property_ty
             }
-            Expr::ArrowFn { params, body } => {
+            Expr::ArrowFn { params, body, .. } => {
                 let result = match body.as_ref() {
                     ExprOrBlock::Expr(value) => self.expr(value, env),
                     ExprOrBlock::Block(body) => self.function_result(params, body, env),
@@ -1131,6 +1134,7 @@ impl Builder<'_> {
                     is_static,
                     params,
                     body,
+                    ..
                 } if !is_static && member_name == "constructor" => {
                     constructor = params.clone();
                     let mut env = outer.clone();
@@ -1144,6 +1148,7 @@ impl Builder<'_> {
                     is_static,
                     params,
                     body,
+                    ..
                 } if !is_static => {
                     let env = outer.clone();
                     let result = self.function_result(params, body, &env);

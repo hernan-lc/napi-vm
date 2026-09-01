@@ -244,6 +244,23 @@ impl Interpreter {
                 let slot = self.property_key(prop)?;
                 self.assign_member(obj, &Value::String(slot), val)
             }
+            // A class's statics live in its own table, not in an object, so
+            // `A.y = 1` and `static { … }` write there.
+            (Value::Class(class), Value::String(k)) => {
+                let mut statics = class.statics.borrow_mut();
+                match statics.iter_mut().find(|(name, _)| name == k) {
+                    Some((_, slot)) => *slot = val,
+                    None => {
+                        if statics.len() >= crate::value::MAX_OBJECT_PROPS {
+                            return Err(crate::value::limit_err(
+                                "Maximum object property count exceeded",
+                            ));
+                        }
+                        statics.push((k.clone(), val));
+                    }
+                }
+                Ok(())
+            }
             // `window.x = v` / `globalThis.x = v` define a real global.
             (Value::GlobalObject, Value::String(k)) => self.set_global_checked(k, val),
             // A non-index key on an array is a named property, not an
@@ -402,6 +419,22 @@ impl Interpreter {
                     }
                 };
 
+                // An async body runs on its own stack so `await` can suspend
+                // it. The frame is already built, so the coroutine starts
+                // straight into the body.
+                #[cfg(not(target_arch = "wasm32"))]
+                if fd.is_async {
+                    if self.gen_depth >= crate::interpreter::MAX_GENERATOR_DEPTH {
+                        return Err(crate::value::limit_err("Maximum async nesting exceeded"));
+                    }
+                    return super::async_fn::spawn_async(
+                        self,
+                        fd.body.clone(),
+                        fe,
+                        self.gen_depth + 1,
+                    );
+                }
+
                 let s = std::mem::replace(&mut self.global, fe);
                 // `name` is an `Rc<str>`: cloning it for the stack frame is a
                 // refcount bump, so the hot path allocates nothing here.
@@ -433,14 +466,14 @@ impl Interpreter {
                 if fd.is_async {
                     // An async function always resolves to a promise.
                     match result {
-                        Ok(v) => Ok(Value::Promise {
-                            state: PromiseState::Fulfilled,
-                            value: Some(Box::new(v)),
-                        }),
-                        Err(VmErr::Throw(v)) => Ok(Value::Promise {
-                            state: PromiseState::Rejected,
-                            value: Some(Box::new(v)),
-                        }),
+                        Ok(v) => {
+                            let promise = Value::pending_promise();
+                            self.resolve_promise(&promise, v)?;
+                            Ok(Value::Promise(promise))
+                        }
+                        Err(VmErr::Throw(v)) => {
+                            Ok(Value::settled_promise(PromiseState::Rejected, v))
+                        }
                         other => other,
                     }
                 } else {
@@ -466,7 +499,19 @@ impl Interpreter {
             // carrying its statics *and* an internal call slot, so it can be
             // both `String.fromCharCode(…)` and `String(x)`.
             Value::Object { .. } => match callable_slot(f, CALL_SLOT) {
-                Some(target) => self.call_this(&target, this_val, args),
+                // The object itself becomes the receiver when the call site
+                // supplied none. A native function is a bare pointer with
+                // nowhere to keep state, so the built-ins that need to carry
+                // something — a promise's `resolve`, a combinator's slot index
+                // — keep it in a hidden property and read it off `this`.
+                Some(target) => {
+                    let receiver = if matches!(this_val, Value::Undefined) {
+                        f.clone()
+                    } else {
+                        this_val
+                    };
+                    self.call_this(&target, receiver, args)
+                }
                 None => vm_err("TypeError: object is not a function".to_string()),
             },
             _ => {
@@ -655,6 +700,7 @@ fn make_generator_coroutine(
     args: Vec<Value>,
     builtins_env: Option<super::Env>,
     gen_depth: u32,
+    realm: super::Realm,
 ) -> Option<crate::value::GenCoroutine> {
     use corosensei::Coroutine;
     use corosensei::stack::DefaultStack;
@@ -680,6 +726,8 @@ fn make_generator_coroutine(
             if let Some(global) = inherited_global {
                 interp.persistent_global = global;
             }
+            // One event loop and one module registry across every stack.
+            realm.install(&mut interp);
             // Carried so recursion *through* generators stays bounded: each
             // body runs on a fresh interpreter whose call stack starts empty,
             // so `MAX_CALL_DEPTH` alone never sees it.
@@ -703,19 +751,12 @@ fn make_generator_coroutine(
 
             match interp.run_program_body(&body) {
                 Ok(v) | Err(VmErr::Ret(v)) => GenOutcome::Returned(v),
-                Err(VmErr::Throw(v)) => {
-                    let msg = match &v {
-                        Value::String(s) => s.clone(),
-                        Value::Error(e) => e.message.clone(),
-                        other => interp.vs(other).unwrap_or_else(|e| e.to_string()),
-                    };
-                    GenOutcome::Threw(msg)
-                }
-                Err(VmErr::Msg(m)) => GenOutcome::Threw(m),
-                Err(VmErr::RuntimeError(e)) => GenOutcome::Threw(e.message.clone()),
+                Err(VmErr::Throw(v)) => GenOutcome::Threw(v),
+                Err(VmErr::Msg(m)) => GenOutcome::Failed(m),
+                Err(VmErr::RuntimeError(e)) => GenOutcome::Failed(e.message.clone()),
                 // A break/continue escaping the generator body is a runtime error.
                 Err(e @ (VmErr::Break(_) | VmErr::Continue(_))) => {
-                    GenOutcome::Threw(format!("{}", e))
+                    GenOutcome::Failed(format!("{}", e))
                 }
             }
         },
@@ -776,6 +817,7 @@ pub(crate) fn generator_next(
                     inner.args.clone(),
                     builtins_env,
                     interp.gen_depth + 1,
+                    super::Realm::of(interp),
                 );
                 if inner.coroutine.is_none() {
                     // Stack allocation failed; report an exhausted generator.
@@ -806,7 +848,11 @@ pub(crate) fn generator_next(
                 inner.return_value = Some(value.clone());
                 Ok(iter_result(value, true))
             }
-            corosensei::CoroutineResult::Return(GenOutcome::Threw(message)) => {
+            corosensei::CoroutineResult::Return(GenOutcome::Threw(value)) => {
+                inner.done = true;
+                Err(VmErr::Throw(value))
+            }
+            corosensei::CoroutineResult::Return(GenOutcome::Failed(message)) => {
                 inner.done = true;
                 Err(VmErr::Msg(message))
             }

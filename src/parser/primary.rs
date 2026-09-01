@@ -4,6 +4,11 @@
 use super::{Expr, ExprOrBlock, ObjectProp, Parser, Statement};
 use crate::lexer::Token;
 
+/// Placeholder name for an anonymous `class` expression. Any name a class
+/// expression does have binds only inside its own body, so the placeholder is
+/// never observable.
+const ANONYMOUS_CLASS: &str = "*anonymous class*";
+
 impl Parser {
     pub(super) fn primary(&mut self) -> Option<Expr> {
         match self.cur() {
@@ -92,6 +97,16 @@ impl Parser {
                         }
                         continue;
                     }
+                    // `async` and `*` modify the method that follows, and are
+                    // contextual for the same reason `get` is: `{ async: 1 }`
+                    // names a property.
+                    let is_async = matches!(self.cur(), Token::KwAsync)
+                        && !matches!(
+                            self.peek(),
+                            Token::Colon | Token::LParen | Token::Comma | Token::RBrace
+                        )
+                        && self.eat(&Token::KwAsync);
+                    let is_generator = self.eat(&Token::Star);
                     // `get`/`set` introduce an accessor only when a property
                     // name follows. In `{ get: 1 }` and `{ get() {} }` they are
                     // the property name themselves.
@@ -122,6 +137,10 @@ impl Parser {
                         Token::KwSet => {
                             self.adv();
                             "set".to_string()
+                        }
+                        Token::KwAsync => {
+                            self.adv();
+                            "async".to_string()
                         }
                         Token::LBracket => {
                             self.adv();
@@ -174,6 +193,8 @@ impl Parser {
                                                 name: key_str,
                                                 params,
                                                 body,
+                                                is_async,
+                                                is_generator,
                                             });
                                         }
                                     } else {
@@ -183,8 +204,8 @@ impl Parser {
                                             name: None,
                                             params,
                                             body,
-                                            is_async: false,
-                                            is_generator: false,
+                                            is_async,
+                                            is_generator,
                                         };
                                         p.push(ObjectProp::Computed(e, fn_expr));
                                     }
@@ -225,6 +246,8 @@ impl Parser {
                                 name: key,
                                 params,
                                 body,
+                                is_async,
+                                is_generator,
                             });
                         }
                     } else if self.eat(&Token::Colon) {
@@ -244,27 +267,23 @@ impl Parser {
                 self.adv();
                 // Generator expression: `function*`.
                 let is_generator = self.eat(&Token::Star);
-                let n = if let Token::Identifier(x) = self.cur() {
-                    let v = x.clone();
-                    self.adv();
-                    Some(v)
-                } else {
-                    None
-                };
-                self.eat(&Token::LParen);
-                let (p, defaults) = self.params();
-                self.expect(&Token::RParen);
-                self.eat(&Token::LBrace);
-                let b = self.block_body();
-                self.expect(&Token::RBrace);
-                let mut body = defaults;
-                body.extend(b);
-                Some(Expr::FnExpr {
-                    name: n,
-                    params: p,
+                self.fn_expr_tail(is_generator, false)
+            }
+            Token::KwAsync => self.async_expr(),
+            // `class` in expression position.
+            Token::KwClass => {
+                let Statement::ClassDecl {
+                    name,
+                    superclass,
                     body,
-                    is_async: false,
-                    is_generator,
+                } = self.class_decl_named(Some(ANONYMOUS_CLASS))?
+                else {
+                    return None;
+                };
+                Some(Expr::ClassExpr {
+                    name: (name != ANONYMOUS_CLASS).then_some(name),
+                    superclass,
+                    body,
                 })
             }
             Token::KwNew => {
@@ -446,7 +465,42 @@ impl Parser {
         Some(self.arrow_body(params, defaults))
     }
 
+    /// Parse a function expression after its `function` (and any `*`) token.
+    fn fn_expr_tail(&mut self, is_generator: bool, is_async: bool) -> Option<Expr> {
+        let n = if let Token::Identifier(x) = self.cur() {
+            let v = x.clone();
+            self.adv();
+            Some(v)
+        } else {
+            None
+        };
+        self.eat(&Token::LParen);
+        let (p, defaults) = self.params();
+        self.expect(&Token::RParen);
+        self.eat(&Token::LBrace);
+        let b = self.block_body();
+        self.expect(&Token::RBrace);
+        let mut body = defaults;
+        body.extend(b);
+        Some(Expr::FnExpr {
+            name: n,
+            params: p,
+            body,
+            is_async,
+            is_generator,
+        })
+    }
+
     pub(super) fn arrow_body(&mut self, params: Vec<String>, defaults: Vec<Statement>) -> Expr {
+        self.arrow_body_async(params, defaults, false)
+    }
+
+    pub(super) fn arrow_body_async(
+        &mut self,
+        params: Vec<String>,
+        defaults: Vec<Statement>,
+        is_async: bool,
+    ) -> Expr {
         if self.eat(&Token::LBrace) {
             let b = self.block_body();
             self.expect(&Token::RBrace);
@@ -455,6 +509,7 @@ impl Parser {
             Expr::ArrowFn {
                 params,
                 body: Box::new(ExprOrBlock::Block(body)),
+                is_async,
             }
         } else {
             let e = self.assign().unwrap_or(Expr::Undefined);
@@ -462,6 +517,7 @@ impl Parser {
                 Expr::ArrowFn {
                     params,
                     body: Box::new(ExprOrBlock::Expr(Box::new(e))),
+                    is_async,
                 }
             } else {
                 let mut body = defaults;
@@ -469,8 +525,47 @@ impl Parser {
                 Expr::ArrowFn {
                     params,
                     body: Box::new(ExprOrBlock::Block(body)),
+                    is_async,
                 }
             }
         }
+    }
+
+    /// `async` in expression position: an async arrow (`async () => …`,
+    /// `async x => …`) or an async function expression.
+    ///
+    /// `async` is contextual, so anything else — `async + 1`, a variable
+    /// actually named `async` — falls back to the identifier.
+    fn async_expr(&mut self) -> Option<Expr> {
+        let save = self.pos;
+        self.adv();
+        match self.cur() {
+            Token::KwFunction => {
+                self.adv();
+                let is_generator = self.eat(&Token::Star);
+                return self.fn_expr_tail(is_generator, true);
+            }
+            // `async x => …`
+            Token::Identifier(name) => {
+                let name = name.clone();
+                self.adv();
+                if self.eat(&Token::Arrow) {
+                    return Some(self.arrow_body_async(vec![name], Vec::new(), true));
+                }
+            }
+            Token::LParen => {
+                if let Some(Expr::ArrowFn { params, body, .. }) = self.try_arrow() {
+                    return Some(Expr::ArrowFn {
+                        params,
+                        body,
+                        is_async: true,
+                    });
+                }
+            }
+            _ => {}
+        }
+        self.pos = save;
+        self.adv();
+        Some(Expr::Identifier("async".to_string()))
     }
 }

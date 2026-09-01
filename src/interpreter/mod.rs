@@ -1,10 +1,49 @@
+pub(crate) mod async_fn;
 pub(crate) mod call;
 mod env;
 mod eval;
+pub mod jobs;
 mod ops;
+mod promise;
 mod resolve;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use async_fn::AsyncTask;
 pub use env::{AssignOutcome, BindKind, Env, Environment, Lookup, ModifyOutcome, Module};
+
+/// The state a generator or async body must share with the interpreter that
+/// started it: the one event loop, and the one module registry.
+///
+/// Those bodies run on their own stack with their own `Interpreter`, so
+/// without an explicit hand-off a promise settled inside one would schedule
+/// reactions nobody drains, and an `import` inside one would resolve against
+/// an empty registry.
+#[derive(Clone)]
+pub struct Realm {
+    jobs: Jobs,
+    modules: Rc<RefCell<HashMap<String, Module>>>,
+    module_sources: Rc<RefCell<HashMap<String, String>>>,
+    evaluating: Rc<RefCell<std::collections::HashSet<String>>>,
+}
+
+impl Realm {
+    pub fn of(interp: &Interpreter) -> Self {
+        Self {
+            jobs: interp.jobs.clone(),
+            modules: interp.modules.clone(),
+            module_sources: interp.module_sources.clone(),
+            evaluating: interp.evaluating.clone(),
+        }
+    }
+
+    pub fn install(self, interp: &mut Interpreter) {
+        interp.jobs = self.jobs;
+        interp.modules = self.modules;
+        interp.module_sources = self.module_sources;
+        interp.evaluating = self.evaluating;
+    }
+}
+pub use jobs::{Job, JobQueue, Jobs};
 pub use ops::{SYMBOL_ITERATOR_SLOT, is_internal_key, strict_equals, symbol_slot_key};
 
 use std::cell::RefCell;
@@ -51,16 +90,19 @@ pub struct Interpreter {
     /// and catch frames while those bodies execute, but `globalThis` aliases
     /// and top-level binding quotas must always target this frame.
     pub(crate) persistent_global: Env,
-    pub modules: HashMap<String, Module>,
+    /// Export records, shared with every generator and async body: those run
+    /// on their own `Interpreter`, and an `import` inside one must resolve
+    /// against the same registry as the code that started it.
+    pub modules: Rc<RefCell<HashMap<String, Module>>>,
     /// Sources of modules that have been *defined* but not yet evaluated.
     /// `import` evaluates one on first use, which is what lets a cyclic graph
     /// link: whichever module is imported first runs, and its own import of
     /// the partner runs that one, whose import back is already in flight and
     /// so returns the partially-populated record.
-    pub module_sources: HashMap<String, String>,
+    pub module_sources: Rc<RefCell<HashMap<String, String>>>,
     /// Modules whose bodies are currently running, so a cycle is detected
     /// instead of recursing forever.
-    evaluating: std::collections::HashSet<String>,
+    evaluating: Rc<RefCell<std::collections::HashSet<String>>>,
     /// Optional bridge for calling host (Node.js) functions from inside the VM.
     /// Attached by the N-API layer when functions are exposed via
     /// `Vm.exposeFunction`; `None` for a standalone interpreter.
@@ -75,6 +117,14 @@ pub struct Interpreter {
     /// one that drives the generator.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) gen_yielder: Option<crate::value::GenYielder>,
+    /// When executing inside an *async* function body, the handle used to
+    /// suspend at an `await`. Distinct from `gen_yielder` so an async
+    /// generator can suspend for either reason.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) await_yielder: Option<crate::value::GenYielder>,
+    /// The one event loop, shared with every generator and async body so a
+    /// promise settled on another stack schedules work the outer drain runs.
+    pub jobs: Jobs,
     /// Call stack for error reporting. Pushed on function entry, popped on exit.
     call_stack: Vec<StackFrame>,
     /// The source code for the current module/script, used to extract
@@ -103,15 +153,18 @@ impl Interpreter {
         Self {
             global: global.clone(),
             persistent_global: global,
-            modules: HashMap::new(),
-            module_sources: HashMap::new(),
-            evaluating: std::collections::HashSet::new(),
+            modules: Rc::new(RefCell::new(HashMap::new())),
+            module_sources: Rc::new(RefCell::new(HashMap::new())),
+            evaluating: Rc::new(RefCell::new(std::collections::HashSet::new())),
             host: None,
             cur_mod: None,
             is_main: false,
             active_label: None,
             #[cfg(not(target_arch = "wasm32"))]
             gen_yielder: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            await_yielder: None,
+            jobs: Jobs::default(),
             call_stack: Vec::new(),
             source_lines: Vec::new(),
             gen_depth: 0,
@@ -174,12 +227,19 @@ impl Interpreter {
     }
 
     /// The export record of the module being evaluated, created on first use.
-    pub(crate) fn current_module(&mut self) -> &mut Module {
+    pub(crate) fn current_module(&mut self) -> std::cell::RefMut<'_, Module> {
         let name = self.cur_mod.clone().unwrap_or_default();
-        self.modules.entry(name).or_insert_with(|| Module {
-            exports: std::collections::HashMap::new(),
-            default: None,
-        })
+        let mut modules = self.modules.borrow_mut();
+        if !modules.contains_key(&name) {
+            modules.insert(
+                name.clone(),
+                Module {
+                    exports: std::collections::HashMap::new(),
+                    default: None,
+                },
+            );
+        }
+        std::cell::RefMut::map(modules, |m| m.get_mut(&name).expect("just inserted"))
     }
 
     /// Look up the export entries named by `specifiers` in another module,
@@ -195,8 +255,7 @@ impl Interpreter {
             .ok_or_else(|| VmErr::Msg(format!("Module not found: {}", source)))?;
         self.ensure_module(&resolved)?;
         let other = self
-            .modules
-            .get(&resolved)
+            .module(&resolved)
             .ok_or_else(|| VmErr::Msg(format!("Module not found: {}", source)))?;
         Ok(specifiers
             .iter()
@@ -447,7 +506,7 @@ impl Interpreter {
     /// still answers. The displaced record is returned so a body that fails
     /// part-way through can be rolled back with `restore_module`.
     pub fn begin_module(&mut self, name: &str) -> Option<Module> {
-        let prior = self.modules.insert(
+        let prior = self.modules.borrow_mut().insert(
             name.to_string(),
             Module {
                 exports: HashMap::new(),
@@ -472,19 +531,26 @@ impl Interpreter {
     pub fn restore_module(&mut self, name: &str, prior: Option<Module>) {
         match prior {
             Some(module) => {
-                self.modules.insert(name.to_string(), module);
+                self.modules.borrow_mut().insert(name.to_string(), module);
             }
             None => {
-                self.modules.remove(name);
+                self.modules.borrow_mut().remove(name);
             }
         }
         self.cur_mod = None;
     }
 
+    /// A module's export record, if it has been evaluated.
+    pub fn module(&self, name: &str) -> Option<Module> {
+        self.modules.borrow().get(name).cloned()
+    }
+
     /// Record a module's source without running it. `import` evaluates it on
     /// first use.
     pub fn define_module(&mut self, name: &str, source: String) {
-        self.module_sources.insert(name.to_string(), source);
+        self.module_sources
+            .borrow_mut()
+            .insert(name.to_string(), source);
     }
 
     /// Make sure `name` has an export record, evaluating its deferred source
@@ -496,17 +562,17 @@ impl Interpreter {
     /// a function imported from a half-initialized module still sees the final
     /// value once the body finishes.
     pub fn ensure_module(&mut self, name: &str) -> Result<bool, VmErr> {
-        if self.modules.contains_key(name) || self.evaluating.contains(name) {
+        if self.modules.borrow().contains_key(name) || self.evaluating.borrow().contains(name) {
             return Ok(true);
         }
-        let Some(source) = self.module_sources.get(name).cloned() else {
+        let Some(source) = self.module_sources.borrow().get(name).cloned() else {
             return Ok(false);
         };
         let outer = self.cur_mod.take();
         let displaced = self.begin_module(name);
-        self.evaluating.insert(name.to_string());
+        self.evaluating.borrow_mut().insert(name.to_string());
         let result = self.eval_module_source(&source);
-        self.evaluating.remove(name);
+        self.evaluating.borrow_mut().remove(name);
         match result {
             Ok(()) => {
                 self.cur_mod = outer;
@@ -545,13 +611,13 @@ impl Interpreter {
     /// map, so a module left here stays importable no matter what the public
     /// API reports.
     pub fn remove_module(&mut self, name: &str) -> bool {
-        let had_source = self.module_sources.remove(name).is_some();
-        self.modules.remove(name).is_some() || had_source
+        let had_source = self.module_sources.borrow_mut().remove(name).is_some();
+        self.modules.borrow_mut().remove(name).is_some() || had_source
     }
 
     /// Whether `name` has an export record that `import` would resolve.
     pub fn has_module(&self, name: &str) -> bool {
-        self.modules.contains_key(name) || self.module_sources.contains_key(name)
+        self.modules.borrow().contains_key(name) || self.module_sources.borrow().contains_key(name)
     }
 
     /// Resolve a relative import from the module currently being evaluated.
@@ -659,7 +725,14 @@ mod tests {
         let toks = lex.tokenize_with_spans();
         let mut parser = Parser::new_with_spans(toks);
         let stmts = parser.parse();
-        interp.run_program_body(&stmts)
+        let completion = interp.run_program_body(&stmts);
+        match completion {
+            Ok(value) => interp.drain_jobs().map(|()| value),
+            Err(error) => {
+                let _ = interp.drain_jobs();
+                Err(error)
+            }
+        }
     }
 
     fn eval_str(src: &str) -> String {

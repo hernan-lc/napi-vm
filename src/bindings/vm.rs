@@ -393,7 +393,7 @@ impl VM {
                     .iter()
                     .map(|(global, _, _)| (global.clone(), runtime.interp.global_value(global)))
                     .collect();
-                let prior_module = runtime.interp.modules.get(&name).cloned();
+                let prior_module = runtime.interp.module(&name);
                 let prior_source = runtime.modules.get(&name).cloned();
 
                 // Phase 1 — register every callback. Nothing is visible yet.
@@ -458,8 +458,12 @@ impl VM {
                         }
                     }
                     match prior_module {
-                        Some(module) => runtime.interp.modules.insert(name.clone(), module),
-                        None => runtime.interp.modules.remove(&name),
+                        Some(module) => runtime
+                            .interp
+                            .modules
+                            .borrow_mut()
+                            .insert(name.clone(), module),
+                        None => runtime.interp.modules.borrow_mut().remove(&name),
                     };
                     match prior_source {
                         Some(source) => runtime.modules.insert(name.clone(), source),
@@ -920,25 +924,33 @@ fn execute_source(interp: &mut Interpreter, source: &str) -> Result<Value, VmErr
         }
         Err(error) => return Err(VmErr::Msg(error.to_string())),
     };
-    interp.run_program_body(&statements)
+    let completion = interp.run_program_body(&statements);
+    // The event loop runs to completion before the entry point returns:
+    // promise reactions and timer callbacks scheduled by the program are part
+    // of running it, not work left for a caller that has nowhere to put it.
+    // A drain error only surfaces when the program itself succeeded.
+    match completion {
+        Ok(value) => interp.drain_jobs().map(|()| value),
+        Err(error) => {
+            let _ = interp.drain_jobs();
+            Err(error)
+        }
+    }
 }
 
 fn async_result_string(value: Value) -> Result<String, String> {
     match &value {
-        Value::Promise {
-            state: PromiseState::Fulfilled,
-            value,
-        } => value
-            .as_ref()
-            .map(|value| try_to_string(value).map_err(|e| e.to_string()))
-            .unwrap_or_else(|| Ok("undefined".to_string())),
-        Value::Promise {
-            state: PromiseState::Rejected,
-            value,
-        } => value
-            .as_ref()
-            .map(|value| try_to_string(value).map_err(|e| e.to_string()))
-            .unwrap_or_else(|| Err("undefined".to_string())),
+        Value::Promise(inner) => {
+            let inner = inner.borrow();
+            let rendered = try_to_string(&inner.value).map_err(|e| e.to_string());
+            match inner.state {
+                PromiseState::Rejected => Err(rendered.unwrap_or_else(|e| e)),
+                // A promise still pending after the event loop drained can
+                // never settle: nothing is left to settle it.
+                PromiseState::Pending => Err("promise never settled".to_string()),
+                PromiseState::Fulfilled => rendered,
+            }
+        }
         _ => try_to_string(&value).map_err(|e| e.to_string()),
     }
 }

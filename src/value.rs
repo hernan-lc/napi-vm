@@ -305,10 +305,7 @@ pub enum Value {
     /// `Interpreter::prop` / `assign_member`, which have scope access).
     GlobalObject,
     Class(Box<ClassData>),
-    Promise {
-        state: PromiseState,
-        value: Option<Box<Value>>,
-    },
+    Promise(Rc<RefCell<PromiseInner>>),
     Generator {
         inner: Rc<RefCell<GeneratorInner>>,
     },
@@ -322,6 +319,10 @@ pub enum Value {
         id: usize,
     },
     Symbol(Rc<SymbolData>),
+    /// A suspended async call, carried through the reaction functions that
+    /// resume it. Internal: it never reaches guest code.
+    #[cfg(not(target_arch = "wasm32"))]
+    AsyncTask(Rc<RefCell<crate::interpreter::AsyncTask>>),
     /// A *live binding*: an indirection an ES module export and its importers
     /// share, so a write on either side is seen by the other.
     ///
@@ -338,11 +339,52 @@ pub enum Value {
 // the enum, this assert fails at compile time — box its payload instead.
 const _: () = assert!(std::mem::size_of::<Value>() <= 32);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromiseState {
     Pending,
     Fulfilled,
     Rejected,
+}
+
+/// One `then` registration waiting for a promise to settle.
+///
+/// `derived` is the promise `then` handed back; settling it is what propagates
+/// the handler's result (or the absence of a handler) down the chain.
+#[derive(Debug)]
+pub struct Reaction {
+    pub on_fulfilled: Value,
+    pub on_rejected: Value,
+    pub derived: Rc<RefCell<PromiseInner>>,
+}
+
+/// The shared state of one promise.
+///
+/// A promise is a mutable, *shared* object: `p.then(…)` on any reference must
+/// see settlements caused through any other, which is why this lives behind an
+/// `Rc<RefCell<…>>` rather than inline in the `Value`.
+#[derive(Debug)]
+pub struct PromiseInner {
+    pub state: PromiseState,
+    /// The fulfilment value or the rejection reason; `undefined` while pending.
+    pub value: Value,
+    /// Registrations made before the promise settled. Once it settles these
+    /// are drained into the microtask queue and the list stays empty:
+    /// a later `then` on a settled promise schedules its job immediately.
+    pub reactions: Vec<Reaction>,
+    /// Set once a rejection has a handler, so an unhandled rejection can be
+    /// distinguished from one that was caught.
+    pub handled: bool,
+}
+
+impl Default for PromiseInner {
+    fn default() -> Self {
+        Self {
+            state: PromiseState::Pending,
+            value: Value::Undefined,
+            reactions: Vec::new(),
+            handled: false,
+        }
+    }
 }
 
 /// What a generator body is being resumed *for*.
@@ -355,14 +397,23 @@ pub enum GenResume {
     /// normally and guest `finally` blocks still run -- which is what
     /// `for...of` + `break` does in JavaScript, via the implicit `return()`.
     Return,
+    /// `gen.throw(e)`, or an `await` whose promise rejected: the suspension
+    /// point raises `e` instead of producing a value, so guest `try`/`catch`
+    /// around it runs.
+    Throw(Value),
 }
 
 /// How a generator body finished.
 pub enum GenOutcome {
     /// The body ran to completion (or hit `return`), carrying its value.
     Returned(Value),
-    /// The body threw. Carries the message, already rendered to a string.
-    Threw(String),
+    /// The body threw. Carries the thrown *value*, not a rendering of it, so
+    /// a `catch` on the other side of the coroutine boundary sees the original
+    /// error object rather than its `toString`.
+    Threw(Value),
+    /// The body hit an internal failure — a limit, or a signal that escaped —
+    /// which is reported as a message rather than as a guest value.
+    Failed(String),
 }
 
 /// The coroutine backing one generator.
@@ -530,6 +581,21 @@ impl Value {
         }
     }
 
+    /// A promise that is already settled — what `Promise.resolve`,
+    /// `Promise.reject` and a completed async function hand back.
+    pub fn settled_promise(state: PromiseState, value: Value) -> Self {
+        Value::Promise(Rc::new(RefCell::new(PromiseInner {
+            state,
+            value,
+            reactions: Vec::new(),
+            handled: state != PromiseState::Rejected,
+        })))
+    }
+
+    pub fn pending_promise() -> Rc<RefCell<PromiseInner>> {
+        Rc::new(RefCell::new(PromiseInner::default()))
+    }
+
     pub fn array(items: Vec<Value>) -> Self {
         Value::Array(Rc::new(ArrayCell::new(items)))
     }
@@ -554,6 +620,26 @@ impl Value {
         match self {
             Value::Binding(cell) => cell.borrow().clone(),
             other => other.clone(),
+        }
+    }
+
+    /// The shared promise state, if this is a promise.
+    ///
+    /// A by-reference accessor: `Value` implements `Drop`, so its payloads
+    /// cannot be moved out of a pattern and every caller would otherwise need
+    /// a `match … => x.clone()`.
+    pub fn as_promise(&self) -> Option<Rc<RefCell<PromiseInner>>> {
+        match self {
+            Value::Promise(inner) => Some(inner.clone()),
+            _ => None,
+        }
+    }
+
+    /// The shared element storage, if this is an array.
+    pub fn as_array(&self) -> Option<Rc<ArrayCell>> {
+        match self {
+            Value::Array(cell) => Some(cell.clone()),
+            _ => None,
         }
     }
 
@@ -745,9 +831,16 @@ impl Value {
                     work.push(std::mem::replace(inner.get_mut(), Value::Undefined));
                 }
             }
-            Value::Promise { value, .. } => {
-                if let Some(v) = value.take() {
-                    work.push(*v);
+            Value::Promise(inner) => {
+                if Rc::strong_count(inner) == 1
+                    && let Some(cell) = Rc::get_mut(inner)
+                {
+                    let inner = cell.get_mut();
+                    work.push(std::mem::replace(&mut inner.value, Value::Undefined));
+                    for reaction in inner.reactions.drain(..) {
+                        work.push(reaction.on_fulfilled);
+                        work.push(reaction.on_rejected);
+                    }
                 }
             }
             Value::Generator { inner } => {

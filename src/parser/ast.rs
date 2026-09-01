@@ -135,6 +135,14 @@ pub enum Expr {
     ArrowFn {
         params: Vec<String>,
         body: Box<ExprOrBlock>,
+        is_async: bool,
+    },
+    /// `class { … }` / `class Named extends Base { … }` in expression
+    /// position. The name, when present, binds only inside the class body.
+    ClassExpr {
+        name: Option<String>,
+        superclass: Option<Box<Expr>>,
+        body: Vec<ClassMember>,
     },
     FnExpr {
         name: Option<String>,
@@ -178,6 +186,8 @@ pub enum ObjectProp {
         name: String,
         params: Vec<String>,
         body: Vec<Statement>,
+        is_async: bool,
+        is_generator: bool,
     },
     Getter {
         name: String,
@@ -247,6 +257,9 @@ pub enum Statement {
         name: String,
         iter: Box<Expr>,
         body: Vec<Statement>,
+        /// `for await (… of …)`: each step's result is awaited, and an async
+        /// iterator (`Symbol.asyncIterator`) is preferred over a sync one.
+        is_await: bool,
     },
     Block(Vec<Statement>),
     /// Several declarators from one `let`/`const`/`var` statement:
@@ -324,12 +337,17 @@ pub enum ClassMember {
         is_static: bool,
         params: Vec<String>,
         body: Vec<Statement>,
+        is_async: bool,
+        is_generator: bool,
     },
     Field {
         name: String,
         is_static: bool,
         init: Option<Expr>,
     },
+    /// `static { … }`: runs once against the class, after its static fields
+    /// are installed, with `this` bound to the class.
+    StaticBlock { body: Vec<Statement> },
     Getter {
         name: String,
         is_static: bool,
@@ -527,6 +545,7 @@ fn stmt_references(s: &Statement, name: &str) -> bool {
                         .unwrap_or(false),
                     ClassMember::Getter { body, .. } => stmts_reference(body, name),
                     ClassMember::Setter { body, .. } => stmts_reference(body, name),
+                    ClassMember::StaticBlock { body } => stmts_reference(body, name),
                 })
         }
         Statement::Return(e) => e
@@ -633,6 +652,24 @@ fn expr_references(e: &Expr, name: &str) -> bool {
             expr_references(left, name) || expr_references(right, name)
         }
         Expr::Unary { operand, .. } => expr_references(operand, name),
+        Expr::ClassExpr {
+            superclass, body, ..
+        } => {
+            superclass
+                .as_ref()
+                .map(|e| expr_references(e, name))
+                .unwrap_or(false)
+                || body.iter().any(|m| match m {
+                    ClassMember::Method { body, .. } => stmts_reference(body, name),
+                    ClassMember::Field { init, .. } => init
+                        .as_ref()
+                        .map(|e| expr_references(e, name))
+                        .unwrap_or(false),
+                    ClassMember::Getter { body, .. } => stmts_reference(body, name),
+                    ClassMember::Setter { body, .. } => stmts_reference(body, name),
+                    ClassMember::StaticBlock { body } => stmts_reference(body, name),
+                })
+        }
         Expr::TaggedTemplate { tag, exprs, .. } => {
             expr_references(tag, name) || exprs.iter().any(|x| expr_references(x, name))
         }
