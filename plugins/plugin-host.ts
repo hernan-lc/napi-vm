@@ -37,6 +37,18 @@ import {
   installPathCapability,
   uninstallPathCapability,
 } from "./path-capability";
+import {
+  installCryptoCapability,
+  uninstallCryptoCapability,
+} from "./crypto-capability";
+import {
+  installTimersCapability,
+  uninstallTimersCapability,
+} from "./timers-capability";
+import {
+  installFetchCapability,
+  uninstallFetchCapability,
+} from "./fetch-capability";
 
 export const MANIFEST_FILENAME = "plugin.json";
 
@@ -233,6 +245,23 @@ export class PluginHost {
     try {
       installFsCapability(vm, { checker, fs: this.fs });
       if (permissions.path) installPathCapability(vm);
+      // Each remaining capability needs *both* the manifest's request and the
+      // host policy: neither side can widen the other.
+      if (permissions.crypto && this.policy.crypto === true) {
+        installCryptoCapability(vm);
+      }
+      if (permissions.timers && this.policy.timers) {
+        installTimersCapability(
+          vm,
+          typeof this.policy.timers === "object" ? this.policy.timers : {},
+        );
+      }
+      if ((permissions.fetch.any || permissions.fetch.origins.length > 0) && this.policy.fetch) {
+        installFetchCapability(vm, {
+          requested: permissions.fetch,
+          policy: this.policy.fetch,
+        });
+      }
 
       const moduleName = pluginModuleName(manifest.name);
       vm.registerModule(moduleName, entrySource);
@@ -297,6 +326,9 @@ export class PluginHost {
     const { vm } = plugin;
     try {
       uninstallLifecycle(vm, pluginModuleName(plugin.manifest.name));
+      uninstallFetchCapability(vm);
+      uninstallTimersCapability(vm);
+      uninstallCryptoCapability(vm);
       uninstallPathCapability(vm);
       uninstallFsCapability(vm);
     } catch {

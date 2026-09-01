@@ -80,6 +80,37 @@ export {
 } from "./path-capability";
 
 export {
+  installCryptoCapability,
+  uninstallCryptoCapability,
+  CRYPTO_GLOBALS,
+  CRYPTO_MODULE_NAME,
+  MAX_RANDOM_BYTES,
+} from "./crypto-capability";
+
+export {
+  installTimersCapability,
+  uninstallTimersCapability,
+  TIMERS_GLOBALS,
+  TIMERS_MODULE_NAME,
+  type TimersCapabilityOptions,
+} from "./timers-capability";
+
+export {
+  checkFetchOrigin,
+  compileFetchPermission,
+  installFetchCapability,
+  uninstallFetchCapability,
+  DEFAULT_MAX_RESPONSE_BYTES,
+  FETCH_GLOBALS,
+  FETCH_MODULE_NAME,
+  type CompiledFetchPermissions,
+  type FetchCapabilityOptions,
+  type FetchPermission,
+  type FetchPolicy,
+  type FetchTransport,
+} from "./fetch-capability";
+
+export {
   bootstrapSource,
   describePlugin,
   pluginModuleName,

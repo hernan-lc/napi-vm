@@ -9,7 +9,7 @@ plugin.json
      │
      ▼
 PluginHost ── validates manifest, compiles permissions, resolves paths,
-     │        installs napi:fs / napi:path, manages the lifecycle
+     │        installs the granted capability modules, manages the lifecycle
      ▼
   napi-vm
      │
@@ -34,7 +34,10 @@ bun examples/plugins.ts
       "read": ["./config.json", "./assets/**"],
       "write": "./cache/**"
     },
-    "path": true
+    "path": true,
+    "crypto": true,
+    "timers": true,
+    "fetch": ["https://api.example.com"]
   }
 }
 ```
@@ -239,3 +242,67 @@ runs against any published napi-vm build; `vm.registerHostModule()` (see the
 
 Security regressions live in `tests/plugins/` — permissions, traversal,
 symlink escapes, policy intersection, lifecycle and reload.
+
+## The capability modules
+
+| Module | Grants | Manifest | Host policy |
+|--------|--------|----------|-------------|
+| `napi:fs` | Reading and writing inside the granted patterns | `fs.read`, `fs.write` | `fs.absoluteRead`, `fs.absoluteWrite`, `fs.deny`, `fs.allow` |
+| `napi:path` | POSIX path manipulation (no I/O) | `path: true` | — |
+| `napi:crypto` | Random bytes, UUIDs, digests | `crypto: true` | `crypto: true` |
+| `napi:timers` | The host clock | `timers: true` | `timers: true` or `{ resolutionMs }` |
+| `napi:fetch` | HTTP to named origins | `fetch: [...]` | `fetch: { allow, deny, ... }` |
+
+Every one of them is installed only when the manifest asks *and* the host
+policy permits. Neither side can widen the other, and the default policy
+grants none of them: a host that wants the network, the clock or a
+cryptographic source says so.
+
+### `napi:crypto`
+
+`randomBytes`, `getRandomValues`, `randomUUID` and `digest`. Nothing here
+reaches outside the process or observes anything about it, so there is no path
+or origin to check — but it is still a capability, because a host may want to
+withhold a cryptographic source (a deterministic replay harness, or a plugin
+that has no business generating keys). One `randomBytes` call is capped, so a
+plugin cannot ask for a gigabyte of entropy.
+
+### `napi:timers`
+
+`now()`, `monotonic()` and `since(start)`. The VM's own `setTimeout` has no
+wall clock — it orders callbacks without letting guest code observe or wait on
+real time — and this capability is the opposite choice, granted explicitly. A
+host that grants time at all can still deny *precise* time:
+
+```ts
+policy: { timers: { resolutionMs: 100 } }
+```
+
+rounds the clock down before the guest sees it, which is what makes timing
+side channels expensive to use.
+
+### `napi:fetch`
+
+The capability that actually reaches outside the machine, so its checks are
+the ones that matter:
+
+- A manifest entry grants an **origin**, not a path. `"https://api.example.com/v1"`
+  grants the origin; a same-origin path restriction is not a boundary a client
+  can enforce, so it is not offered.
+- Effective permission is requested ∩ policy, with the policy's `deny` checked
+  first. A policy with no `allow` list permits nothing — the capability has to
+  be opened deliberately, not by omission.
+- Redirects are followed by hand and **each hop is re-checked**, so a permitted
+  origin cannot bounce a request to a denied one.
+- Only `http:` and `https:`; the response body is capped.
+
+`napi:fetch` performs an async host call, which parks the VM thread, so it
+runs under `runAsync`:
+
+```ts
+await vm.runAsync(`
+  import { fetch } from "napi:fetch";
+  const response = await fetch("https://api.example.com/items");
+  response.json();
+`);
+```

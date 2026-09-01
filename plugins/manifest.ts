@@ -6,6 +6,7 @@
  */
 
 import { PluginManifestError } from "./errors";
+import { compileFetchPermission } from "./fetch-capability";
 import {
   escapesRoot,
   isAbsoluteGuestPath,
@@ -29,6 +30,13 @@ export interface PluginManifest {
       write?: FsPermission;
     };
     path?: boolean;
+    crypto?: boolean;
+    timers?: boolean;
+    /**
+     * Origins the plugin asks to reach. `true`/`"*"` requests any, which the
+     * host policy must still permit.
+     */
+    fetch?: boolean | string | string[];
   };
 }
 
@@ -127,6 +135,22 @@ export function validateManifest(raw: unknown): PluginManifest {
         throw new PluginManifestError("permissions.path must be a boolean");
       }
       manifest.permissions.path = perms.path;
+    }
+
+    for (const flag of ["crypto", "timers"] as const) {
+      if (perms[flag] !== undefined) {
+        if (typeof perms[flag] !== "boolean") {
+          throw new PluginManifestError(`permissions.${flag} must be a boolean`);
+        }
+        manifest.permissions[flag] = perms[flag] as boolean;
+      }
+    }
+
+    if (perms.fetch !== undefined) {
+      // Validated eagerly, so a malformed origin fails at load time rather
+      // than on the first request — the same rule the path patterns follow.
+      compileFetchPermission(perms.fetch);
+      manifest.permissions.fetch = perms.fetch as boolean | string | string[];
     }
   }
 

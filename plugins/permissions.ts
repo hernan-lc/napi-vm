@@ -16,7 +16,13 @@ import * as nodePath from "node:path";
 
 import { PermissionDeniedError, PluginManifestError } from "./errors";
 import type { HostFileSystem } from "./host-filesystem";
+import {
+  compileFetchPermission,
+  type CompiledFetchPermissions,
+  type FetchPolicy,
+} from "./fetch-capability";
 import type { FsPermission, PluginManifest } from "./manifest";
+import type { TimersCapabilityOptions } from "./timers-capability";
 import {
   compilePattern,
   escapesRoot,
@@ -37,6 +43,9 @@ export interface CompiledFsPermissions {
 export interface CompiledPermissions {
   fs: CompiledFsPermissions;
   path: boolean;
+  crypto: boolean;
+  timers: boolean;
+  fetch: CompiledFetchPermissions;
 }
 
 export interface PluginHostPolicy {
@@ -50,11 +59,24 @@ export interface PluginHostPolicy {
     /** When present, an out-of-root path must also match one of these. */
     allow?: string[];
   };
+  /** Permit `napi:crypto` at all. */
+  crypto?: boolean;
+  /** Permit `napi:timers`, optionally with a coarsened clock. */
+  timers?: boolean | TimersCapabilityOptions;
+  /** Origins `napi:fetch` may reach. An absent allowlist permits nothing. */
+  fetch?: FetchPolicy;
 }
 
 /** The conservative default: plugins are confined to their own directory. */
 export function defaultPolicy(): PluginHostPolicy {
-  return { fs: { absoluteRead: false, absoluteWrite: false } };
+  // Everything a plugin could reach outside itself is off by default: a host
+  // that wants the network, the clock or a cryptographic source says so.
+  return {
+    fs: { absoluteRead: false, absoluteWrite: false },
+    crypto: false,
+    timers: false,
+    fetch: {},
+  };
 }
 
 interface CompiledPolicy {
@@ -116,6 +138,9 @@ export function compilePermissions(manifest: PluginManifest): CompiledPermission
       write: compileFsPermission(fs?.write, "permissions.fs.write"),
     },
     path: manifest.permissions?.path === true,
+    crypto: manifest.permissions?.crypto === true,
+    timers: manifest.permissions?.timers === true,
+    fetch: compileFetchPermission(manifest.permissions?.fetch),
   };
 }
 

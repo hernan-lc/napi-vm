@@ -127,8 +127,10 @@ Every claim below was checked against the current build.
   shared references, in both directions. A VM **function** crosses as a host
   callable that re-enters the interpreter, keeping its closure
   (`tests/bridge-values.test.js`)
-- Plugin capability host: manifests, filesystem permissions, `napi:fs`,
-  `napi:path`, byte limits
+- Plugin capability host: manifests, permissions, and the capability modules
+  — `napi:fs`, `napi:path`, `napi:crypto`, `napi:timers` and `napi:fetch`,
+  each installed only when the manifest asks *and* the host policy permits
+  (`tests/plugins/capabilities.test.ts`, `docs/plugins.md`)
 - **LSP**: synchronization, completion, hover, document symbols, definition,
   references, document highlight, rename, signature help, inlay hints and
   semantic tokens (`tests/lsp_protocol.rs`)
@@ -165,10 +167,11 @@ Reported as errors rather than silently mis-executed:
 
 - The web-like globals that reach outside the sandbox — `fetch`, `Headers`,
   `Request`, `Response`, `WebSocket`, `crypto`, `localStorage` and friends —
-  remain inert shapes. This is deliberate. The intended direction is the
-  capability-host pattern that `napi:fs` already uses: the host grants
-  `napi:fetch`, `napi:crypto` and friends explicitly, and the guest gets
-  nothing by default.
+  remain inert shapes, and are meant to. What they would grant arrives instead
+  through the capability host: `napi:fetch`, `napi:crypto` and `napi:timers`
+  are implemented there, where a request is checked against the manifest and
+  the host policy before anything is reached. The guest gets nothing by
+  default.
 - `Intl`, `Object.groupBy`, and the other recent library additions not listed
   above.
 - `with`, which is not in the grammar at all. (Labelled `break` and `continue`
@@ -180,8 +183,8 @@ Reported as errors rather than silently mis-executed:
 2. `toString` in `+` concatenation, which needs `vs` to be able to call guest
    code — and so needs the read-modify-write path not to hold a borrow across
    it
-3. A resumable evaluator, for true generator suspension on `wasm32`
-4. LSP formatting and code actions
+2. A resumable evaluator, for true generator suspension on `wasm32`
+3. LSP formatting and code actions
 
 ## Known boundaries
 
