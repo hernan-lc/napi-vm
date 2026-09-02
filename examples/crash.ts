@@ -239,8 +239,8 @@ const CASES: CrashCase[] = [
     id: "generator-deep-yieldstar",
     title: "Recursive yield* inside a generator",
     code: "function* g() { yield* g(); } let it = g(); it.next(); 'ok';",
-    expected: "SURVIVED",
-    note: "the call-depth guard fires on the generator's own 8MB thread; the failure is absorbed as {done:true}",
+    expected: "THROWN",
+    note: "dedicated generator-nesting cap raises a catchable RangeError (each yield* level runs on its own coroutine stack, so MAX_CALL_DEPTH never sees it)",
   },
   {
     id: "generator-abandon",
