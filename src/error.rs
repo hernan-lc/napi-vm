@@ -48,6 +48,19 @@ pub enum VmErr {
     Break(Option<String>),
     /// Control-flow signal for `continue`, with an optional target label.
     Continue(Option<String>),
+    /// Internal teardown signal: a suspended generator or async body whose
+    /// last handle was dropped is resumed once with `GenResume::Abandon`, and
+    /// every suspend point converts that into this. It propagates outward
+    /// like an error but must never run guest code on the way out — no
+    /// `catch`, no `finally`, no iterator `close` — so an abandoned body is
+    /// torn down purely by dropping its frames, and the coroutine completes
+    /// with a normal return instead of a cross-stack forced unwind (which the
+    /// Windows unwinder cannot walk: `STATUS_ACCESS_VIOLATION`).
+    ///
+    /// This is never guest-visible: the `Drop` that initiates the abandon
+    /// consumes the resulting `GenOutcome::Abandon`. Any other site that
+    /// matches on `VmErr` must propagate it untouched.
+    Abandon,
 }
 
 // Guard the hot-path size: every eval function returns this `Result`. If it
@@ -55,6 +68,13 @@ pub enum VmErr {
 const _: () = assert!(std::mem::size_of::<Result<Value, VmErr>>() <= 48);
 
 impl VmErr {
+    /// Whether this is the internal abandon-teardown signal, which skips
+    /// every guest-code handler (`catch`, `finally`, iterator `close`) on
+    /// its way out of an abandoned body.
+    pub fn is_abandon(&self) -> bool {
+        matches!(self, VmErr::Abandon)
+    }
+
     /// Attach source location and call stack to a `VmErr::Msg`.
     pub fn with_context(self, span: Option<Span>, stack: &[StackFrame]) -> Self {
         match self {
@@ -95,6 +115,9 @@ impl fmt::Display for VmErr {
             VmErr::Break(None) => write!(f, "break outside loop"),
             VmErr::Continue(Some(l)) => write!(f, "continue outside loop (label {})", l),
             VmErr::Continue(None) => write!(f, "continue outside loop"),
+            // Internal only: the initiating `Drop` consumes this before it
+            // can reach any rendering. Present so the match stays exhaustive.
+            VmErr::Abandon => write!(f, "abandoned generator cleanup"),
         }
     }
 }

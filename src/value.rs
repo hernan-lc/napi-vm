@@ -522,6 +522,14 @@ pub enum GenResume {
     /// point raises `e` instead of producing a value, so guest `try`/`catch`
     /// around it runs.
     Throw(Value),
+    /// The body is being abandoned: its last handle was dropped while it was
+    /// suspended. The suspension point must return `VmErr::Abandon`
+    /// immediately — running no guest `catch`/`finally`/`close` on the way
+    /// out — so the coroutine completes with a normal return. This is what
+    /// keeps an abandoned body off the platform unwinder entirely (the forced
+    /// unwind `Coroutine::drop` would otherwise perform is what faults with
+    /// `STATUS_ACCESS_VIOLATION` on Windows).
+    Abandon,
 }
 
 /// How a generator body finished.
@@ -535,6 +543,51 @@ pub enum GenOutcome {
     /// The body hit an internal failure — a limit, or a signal that escaped —
     /// which is reported as a message rather than as a guest value.
     Failed(String),
+    /// The body was abandoned while suspended (see `GenResume::Abandon`): it
+    /// unwound without running guest handlers and returned normally. Only
+    /// the initiating `Drop` ever observes this, via [`force_abandon`].
+    Abandon,
+}
+
+/// Tear down a suspended coroutine without the platform unwinder.
+///
+/// Resumes it with [`GenResume::Abandon`] until it returns. Every suspend
+/// point converts that into `VmErr::Abandon`, which skips all guest-code
+/// handlers, so the body unwinds purely by dropping its own frames and the
+/// coroutine completes with a normal return — a plain stack switch, which
+/// works from any depth on every platform. Letting a suspended coroutine
+/// drop instead would run corosensei's forced unwind (a cross-stack panic),
+/// which the Windows unwinder cannot walk.
+///
+/// If the abandon itself panics (e.g. a borrow already held on shared state),
+/// the coroutine is leaked rather than dropped: leaking one stack is the safe
+/// fallback, because `Drop` implementations must never panic.
+#[cfg(stackful_coroutines)]
+pub(crate) fn force_abandon(coroutine: GenCoroutine) {
+    struct LeakOnPanic<'a>(&'a mut Option<GenCoroutine>);
+    impl Drop for LeakOnPanic<'_> {
+        fn drop(&mut self) {
+            if let Some(coroutine) = self.0.take() {
+                std::mem::forget(coroutine);
+            }
+        }
+    }
+
+    let mut slot = Some(coroutine);
+    {
+        let guard = LeakOnPanic(&mut slot);
+        let coroutine = guard.0.as_mut().expect("slot holds the coroutine");
+        // Suspend points never yield on `Abandon` — they return the teardown
+        // signal instead — so resuming until the first `Return` always
+        // terminates.
+        while let corosensei::CoroutineResult::Yield(_) = coroutine.resume(GenResume::Abandon) {}
+
+        // Abandon completed without panicking: disarm the leak guard and drop
+        // the finished coroutine, which frees its stack with no unwinding.
+        let finished = guard.0.take().expect("slot holds the coroutine");
+        std::mem::forget(guard);
+        drop(finished);
+    }
 }
 
 /// The coroutine backing one generator.
@@ -638,20 +691,41 @@ pub struct GeneratorInner {
 }
 
 #[cfg(stackful_coroutines)]
+impl Drop for GeneratorInner {
+    /// Tear down a generator abandoned while suspended.
+    ///
+    /// The suspended coroutine is resumed once with `GenResume::Abandon`
+    /// (see [`force_abandon`]), which unwinds the body without running any
+    /// guest code — no `finally`, no `catch`, no iterator `close` — and
+    /// completes the coroutine with a normal return. That keeps the teardown
+    /// off the platform unwinder entirely: dropping a suspended coroutine
+    /// would run corosensei's forced unwind, a cross-stack panic the Windows
+    /// unwinder cannot walk (`STATUS_ACCESS_VIOLATION`).
+    ///
+    /// This is deliberately *not* [`GeneratorInner::close`]: closing runs
+    /// guest `finally` blocks, and a `Drop` fires at arbitrary points where
+    /// running guest code could panic and abort the process. Abandoning runs
+    /// none, matching JavaScript, where a generator collected by the GC never
+    /// resumes into its handlers.
+    fn drop(&mut self) {
+        if let Some(coroutine) = self.coroutine.take()
+            && !coroutine.done()
+        {
+            force_abandon(coroutine);
+        }
+    }
+}
+
+#[cfg(stackful_coroutines)]
 impl GeneratorInner {
     /// Close a suspended generator the way JavaScript's `return()` does:
     /// resume the body once so its `finally` blocks run, then discard it.
     ///
-    /// This is deliberately *not* done in `Drop`. Resuming runs guest code,
-    /// and a `Drop` fires at arbitrary points -- including while the
-    /// interpreter holds a `RefCell` borrow on the very environment that guest
-    /// code would touch, which panics inside a drop and aborts the process.
-    /// Closing is therefore an explicit act, performed where the language says
-    /// an iterator is closed: leaving a `for...of` early.
-    ///
-    /// A generator that is merely dropped is *not* closed, and its `finally`
-    /// does not run. That matches JavaScript, where a generator collected by
-    /// the GC never resumes.
+    /// Closing is an explicit act, performed where the language says an
+    /// iterator is closed: leaving a `for...of` early. A generator that is
+    /// merely dropped is *not* closed (see the `Drop` impl above): its
+    /// `finally` does not run, matching JavaScript, where a generator
+    /// collected by the GC never resumes.
     pub fn close(&mut self) {
         if self.done {
             return;
@@ -663,10 +737,15 @@ impl GeneratorInner {
         if coroutine.done() {
             return;
         }
-        if let corosensei::CoroutineResult::Yield(_) = coroutine.resume(GenResume::Return) {
-            // A `yield` inside the `finally` block: honouring it would let the
-            // generator resurrect itself mid-teardown. Stop, and let
-            // `Coroutine::drop` force-unwind the rest of the stack.
+        match coroutine.resume(GenResume::Return) {
+            corosensei::CoroutineResult::Return(_) => {}
+            corosensei::CoroutineResult::Yield(_) => {
+                // A `yield` inside the `finally` block: honouring it would
+                // let the generator resurrect itself mid-teardown. Abandon
+                // the remainder without running further handlers — and
+                // without a forced unwind.
+                force_abandon(coroutine);
+            }
         }
     }
 }

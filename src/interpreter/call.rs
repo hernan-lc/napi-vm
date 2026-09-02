@@ -887,6 +887,9 @@ fn make_generator_coroutine(
             match interp.run_program_body(&body) {
                 Ok(v) | Err(VmErr::Ret(v)) => GenOutcome::Returned(v),
                 Err(VmErr::Throw(v)) => GenOutcome::Threw(v),
+                // Abandoned while suspended: the initiating `Drop` consumes
+                // this; it is never reported to the driver.
+                Err(VmErr::Abandon) => GenOutcome::Abandon,
                 Err(VmErr::Msg(m)) => GenOutcome::Failed(m),
                 Err(VmErr::RuntimeError(e)) => GenOutcome::Failed(e.message.clone()),
                 // A break/continue escaping the generator body is a runtime error.
@@ -1022,6 +1025,13 @@ pub(crate) fn generator_next(
                 inner.done = true;
                 Err(VmErr::Msg(message))
             }
+            // Unreachable: only an abandon-resume produces this, and the
+            // initiating `Drop` consumes it. If one ever escapes, report the
+            // generator as finished rather than surfacing internals.
+            corosensei::CoroutineResult::Return(GenOutcome::Abandon) => {
+                inner.done = true;
+                Ok(iter_result(Value::Undefined, true))
+            }
         }
     }
 }
@@ -1090,7 +1100,9 @@ pub(crate) fn generator_throw(
                 None => return vm_err("TypeError: Generator is already running"),
             }
         };
-        let outcome = coroutine.resume(GenResume::Throw(thrown));
+        // Cloned so the defensive `Abandon` arm below can still re-throw
+        // the caller's value.
+        let outcome = coroutine.resume(GenResume::Throw(thrown.clone()));
         let mut state = inner.borrow_mut();
         match outcome {
             corosensei::CoroutineResult::Yield(value) => {
@@ -1110,6 +1122,14 @@ pub(crate) fn generator_throw(
             corosensei::CoroutineResult::Return(GenOutcome::Failed(message)) => {
                 state.done = true;
                 Err(VmErr::Msg(message))
+            }
+            // Unreachable: only an abandon-resume produces this, and the
+            // initiating `Drop` consumes it. Re-throw as the caller's value
+            // rather than surfacing internals (`thrown` was cloned for the
+            // resume above so it is still available here).
+            corosensei::CoroutineResult::Return(GenOutcome::Abandon) => {
+                state.done = true;
+                Err(VmErr::Throw(thrown))
             }
         }
     }

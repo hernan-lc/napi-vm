@@ -589,7 +589,11 @@ impl Interpreter {
                                 )?;
                             }
                             if let Err(error) = self.destructure(pattern, &value) {
-                                close_iterator(&iterator);
+                                // An abandon teardown runs no handlers — and
+                                // closing is a handler. Anything else closes.
+                                if !error.is_abandon() {
+                                    close_iterator(&iterator);
+                                }
                                 return Err(error);
                             }
                         }
@@ -602,8 +606,12 @@ impl Interpreter {
                         Err(VmErr::Continue(l)) if label_matches(&label, &l) => continue,
                         // `return`, `throw`, or a break/continue aimed at an
                         // outer label also leaves the loop, and also closes.
+                        // An abandon teardown is the exception: it runs no
+                        // handlers, so it must not close either.
                         Err(error) => {
-                            close_iterator(&iterator);
+                            if !error.is_abandon() {
+                                close_iterator(&iterator);
+                            }
                             return Err(error);
                         }
                         Ok(value) => r = value,
@@ -644,7 +652,14 @@ impl Interpreter {
                 finally,
             } => {
                 // Run the body, routing thrown and runtime errors into catch.
+                // An abandon teardown bypasses both `catch` and `finally`:
+                // it runs no guest code on the way out.
                 let body_result = self.run_block(body);
+                if let Err(error) = &body_result
+                    && error.is_abandon()
+                {
+                    return body_result;
+                }
 
                 let after_catch = match body_result {
                     Err(VmErr::Throw(val)) => self.run_catch(catch, val),
@@ -1840,9 +1855,13 @@ impl Interpreter {
                         // `gen.throw(e)`: raise at the suspension point, so a
                         // `try`/`catch` around the `yield` sees it.
                         crate::value::GenResume::Throw(reason) => vm_throw(reason),
-                        // Abandoned: return from the body so the surrounding
+                        // Closed (`gen.return()` / leaving `for...of` early):
+                        // return from the body so the surrounding
                         // `try`/`finally` still runs on the way out.
                         crate::value::GenResume::Return => vm_ret(Value::Undefined),
+                        // Abandoned while suspended: unwind with no guest
+                        // handlers at all (see `VmErr::Abandon`).
+                        crate::value::GenResume::Abandon => Err(VmErr::Abandon),
                     };
                 }
                 // Outside a generator body: yield is a no-op returning undefined.
@@ -1898,6 +1917,13 @@ impl Interpreter {
                                 // the delegate too, then unwind.
                                 close_iterator(&iterator);
                                 return vm_ret(Value::Undefined);
+                            }
+                            crate::value::GenResume::Abandon => {
+                                // Abandoning the outer generator: do *not*
+                                // close the delegate (that would run its
+                                // handlers). It is a local; dropping it on
+                                // the way out abandons it in turn.
+                                return Err(VmErr::Abandon);
                             }
                         },
                         // Outside a generator body there is nobody to yield

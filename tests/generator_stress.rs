@@ -189,6 +189,75 @@ fn abandoning_ten_suspended_generators() {
     assert_eq!(out, "60");
 }
 
+/// Abandoning a suspended generator runs no guest handlers.
+///
+/// The abandon path (`Drop` → `GenResume::Abandon`) must unwind the body
+/// without `finally`, `catch`, or delegate `close` — matching JavaScript,
+/// where a GC-collected generator never resumes into its handlers. Only an
+/// explicit `close()` (leaving `for...of` early) runs them. This also
+/// exercises the teardown that used to be a cross-stack forced unwind (the
+/// Windows `STATUS_ACCESS_VIOLATION`): it now completes with a normal return.
+#[test]
+fn abandoning_a_suspended_generator_runs_no_finally() {
+    let out = run(r#"
+        let log = "";
+        function* g() { try { yield 1; yield 2; } finally { log = log + "fin"; } }
+        {
+            const x = g();
+            x.next();
+        }
+        log + "end";
+    "#);
+    assert_eq!(out, "end");
+}
+
+#[test]
+fn abandoning_a_suspended_generator_runs_no_catch() {
+    let out = run(r#"
+        let log = "";
+        function* g() { try { yield 1; } catch (e) { log = log + "caught"; } }
+        {
+            const x = g();
+            x.next();
+        }
+        log + "end";
+    "#);
+    assert_eq!(out, "end");
+}
+
+#[test]
+fn abandoning_nested_generators_runs_no_finally() {
+    // Outer is suspended at a `yield*` re-yield; abandoning it must not close
+    // the delegate either — dropping the delegate abandons it in turn.
+    let out = run(r#"
+        let log = "";
+        function* inner() { try { yield 1; } finally { log = log + "inner"; } }
+        function* outer() { try { for (const v of inner()) { yield v; } } finally { log = log + "outer"; } }
+        {
+            const x = outer();
+            x.next();
+        }
+        log + "end";
+    "#);
+    assert_eq!(out, "end");
+}
+
+#[test]
+fn abandoning_many_generators_with_finally_runs_none() {
+    let out = run(r#"
+        let count = 0;
+        function* g() { try { yield 1; } finally { count = count + 1; } }
+        let i = 0;
+        while (i < 200) {
+            const x = g();
+            x.next();
+            i = i + 1;
+        }
+        count;
+    "#);
+    assert_eq!(out, "0");
+}
+
 #[test]
 fn abandoning_many_suspended_generators() {
     let out = run(r#"

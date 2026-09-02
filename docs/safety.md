@@ -20,7 +20,7 @@ bun examples/crash.ts
 | Array exhaustion | Catchable `RangeError` | Hard array-length cap on push, spread, and growth paths |
 | String exhaustion | Catchable `RangeError` | Hard string-size cap on concat, repeat, and join paths |
 | Infinite loops | Catchable `RangeError` | Per-execution loop budget, configurable with `setLoopLimit` |
-| Generator misuse | Safe completion | Same-thread stackful coroutine with a guard-paged stack; abandoned generators unwind and run `finally` |
+| Generator misuse | Safe completion | Same-thread stackful coroutine with a guard-paged stack; explicitly closed generators run `finally`, while merely abandoned ones unwind with no guest handlers and no platform unwinder |
 | Oversized plugin file reads | Catchable `ResourceLimit` | Per-call byte cap checked on the open descriptor, before the read |
 | Runtime/host errors | Catchable error objects | Error propagation into guest `catch` |
 

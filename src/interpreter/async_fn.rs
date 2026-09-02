@@ -64,6 +64,8 @@ impl Interpreter {
                 GenResume::Throw(reason) => Err(VmErr::Throw(reason)),
                 // The task was abandoned; unwind the body so `finally` runs.
                 GenResume::Return => Err(VmErr::Ret(Value::Undefined)),
+                // Dropped while suspended: unwind with no guest handlers.
+                GenResume::Abandon => Err(VmErr::Abandon),
             };
         }
 
@@ -166,6 +168,8 @@ pub(crate) fn spawn_async(
         match body_interp.run_program_body(&body) {
             Ok(v) | Err(VmErr::Ret(v)) => GenOutcome::Returned(v),
             Err(VmErr::Throw(v)) => GenOutcome::Threw(v),
+            // Abandoned while suspended: the initiating `Drop` consumes this.
+            Err(VmErr::Abandon) => GenOutcome::Abandon,
             Err(VmErr::Msg(m)) => GenOutcome::Failed(m),
             Err(VmErr::RuntimeError(e)) => GenOutcome::Failed(e.message.clone()),
             Err(e @ (VmErr::Break(_) | VmErr::Continue(_))) => GenOutcome::Failed(format!("{}", e)),
@@ -229,6 +233,25 @@ fn step(
                 Value::Error(crate::value::ErrorData::new("Error", message)),
             );
             Ok(())
+        }
+        // Unreachable: only an abandon-resume produces this, and the
+        // initiating `Drop` consumes it. Leave the promise pending rather
+        // than surfacing internals.
+        corosensei::CoroutineResult::Return(GenOutcome::Abandon) => Ok(()),
+    }
+}
+
+#[cfg(stackful_coroutines)]
+impl Drop for AsyncTask {
+    /// Tear down a task dropped while suspended at an `await`, without the
+    /// platform unwinder — the same abandon path generators use (see
+    /// [`crate::value::force_abandon`]). Dropping the coroutine directly
+    /// would force-unwind across stacks, which faults on Windows.
+    fn drop(&mut self) {
+        if let Some(coroutine) = self.coroutine.take()
+            && !coroutine.done()
+        {
+            crate::value::force_abandon(coroutine);
         }
     }
 }
