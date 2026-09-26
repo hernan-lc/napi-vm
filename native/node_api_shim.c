@@ -1,4 +1,8 @@
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
 #include <stdatomic.h>
+#endif
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -292,15 +296,30 @@ typedef struct napi_vm_node_api_table {
 #define NAPI_VM_NO_RETURN __attribute__((noreturn))
 #endif
 
+#if defined(_MSC_VER)
+// MSVC does not support C11 atomics in its default C mode. Its interlocked
+// pointer operations provide the same publication and read ordering here.
+static void* volatile api_table;
+#else
 static _Atomic(const napi_vm_node_api_table*) api_table;
+#endif
 
 NAPI_VM_EXPORT void napi_vm_install_node_api_table(
     const napi_vm_node_api_table* table) {
+#if defined(_MSC_VER)
+  _InterlockedExchangePointer(&api_table, (void*)table);
+#else
   atomic_store_explicit(&api_table, table, memory_order_release);
+#endif
 }
 
 static const napi_vm_node_api_table* get_api_table(void) {
+#if defined(_MSC_VER)
+  return (const napi_vm_node_api_table*)_InterlockedCompareExchangePointer(
+      &api_table, NULL, NULL);
+#else
   return atomic_load_explicit(&api_table, memory_order_acquire);
+#endif
 }
 
 NAPI_VM_EXPORT napi_status napi_get_undefined(napi_env env, napi_value* result) {
