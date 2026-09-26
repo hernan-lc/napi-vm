@@ -53,6 +53,49 @@ fn assert_same_file(filename: &str, expected: &Path) {
     );
 }
 
+/// Assert a guest filename names the same file Node resolved.
+///
+/// Node echoes the parent path it was given, while `FileCommonJsLoader`
+/// canonicalizes everything it resolves. On Windows runners those differ in
+/// spelling only (`C:\Users\RUNNER~1\…` 8.3 short names versus the long
+/// `C:\Users\runneradmin\…` form), so both sides are canonicalized before
+/// comparing.
+fn assert_same_resolved_file(vm_filename: &str, node_stdout: &[u8], context: &str) {
+    let node_stdout = String::from_utf8_lossy(node_stdout);
+    let node_filename = node_stdout.trim();
+    match (
+        Path::new(vm_filename).canonicalize(),
+        Path::new(node_filename).canonicalize(),
+    ) {
+        (Ok(vm), Ok(node)) => assert_eq!(vm, node, "{context}"),
+        _ => assert_eq!(vm_filename, node_filename, "{context}"),
+    }
+}
+
+/// Canonicalize every existing-file path stored as a string inside a JSON
+/// value, so Windows 8.3 short names (`RUNNER~1`) and long names compare
+/// equal. Non-path strings are left untouched.
+fn canonicalize_json_paths(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            if let Ok(canonical) = Path::new(text.as_str()).canonicalize() {
+                *text = canonical.to_string_lossy().into_owned();
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                canonicalize_json_paths(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for value in map.values_mut() {
+                canonicalize_json_paths(value);
+            }
+        }
+        _ => {}
+    }
+}
+
 impl CommonJsModuleLoader for MemoryLoader {
     fn resolve(
         &self,
@@ -288,7 +331,8 @@ fn require_resolve_native_path_matches_node_and_bun() {
     let Value::String(vm_json) = &vm_value else {
         panic!("require.resolve fixture did not return JSON: {vm_value:?}");
     };
-    let vm_result: serde_json::Value = serde_json::from_str(vm_json).unwrap();
+    let mut vm_result: serde_json::Value = serde_json::from_str(vm_json).unwrap();
+    canonicalize_json_paths(&mut vm_result);
 
     let runner = "process.stdout.write(JSON.stringify(require('./probe.cjs')))";
     for runtime in ["node", "bun"] {
@@ -309,7 +353,8 @@ fn require_resolve_native_path_matches_node_and_bun() {
             "{runtime} require.resolve reference failed: {}",
             String::from_utf8_lossy(&reference.stderr)
         );
-        let reference: serde_json::Value = serde_json::from_slice(&reference.stdout).unwrap();
+        let mut reference: serde_json::Value = serde_json::from_slice(&reference.stdout).unwrap();
+        canonicalize_json_paths(&mut reference);
         assert_eq!(vm_result, reference, "{runtime} and napi-vm differ");
     }
 
@@ -993,10 +1038,10 @@ fn filesystem_loader_resolves_wildcard_exports_with_node_pattern_precedence() {
                 "Node could not resolve {specifier}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert_eq!(
-                module.filename,
-                String::from_utf8_lossy(&output.stdout).trim(),
-                "Node and napi-vm resolved {specifier} differently"
+            assert_same_resolved_file(
+                &module.filename,
+                &output.stdout,
+                &format!("Node and napi-vm resolved {specifier} differently"),
             );
         }
     }
@@ -1024,10 +1069,10 @@ fn filesystem_loader_resolves_wildcard_exports_with_node_pattern_precedence() {
                 .arg(&root)
                 .output()
                 .unwrap();
-        assert_eq!(
-            fallback_module.filename,
-            String::from_utf8_lossy(&output.stdout),
-            "Node --no-addons and addon-free napi-vm resolved different exports"
+        assert_same_resolved_file(
+            &fallback_module.filename,
+            &output.stdout,
+            "Node --no-addons and addon-free napi-vm resolved different exports",
         );
     }
 
@@ -1123,7 +1168,11 @@ fn filesystem_loader_resolves_package_self_references_only_when_exported() {
                 String::from_utf8_lossy(&output.stderr)
             );
             if let Some(resolved) = resolved {
-                assert_eq!(String::from_utf8_lossy(&output.stdout), resolved);
+                assert_same_resolved_file(
+                    resolved,
+                    &output.stdout,
+                    &format!("Node and napi-vm resolved {specifier} differently"),
+                );
             }
         }
     }
@@ -1214,10 +1263,10 @@ fn filesystem_loader_resolves_package_import_maps() {
                 "Node could not resolve {specifier}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert_eq!(
-                module.filename,
-                String::from_utf8_lossy(&output.stdout),
-                "Node and napi-vm resolved {specifier} differently"
+            assert_same_resolved_file(
+                &module.filename,
+                &output.stdout,
+                &format!("Node and napi-vm resolved {specifier} differently"),
             );
         }
     }
@@ -1238,10 +1287,10 @@ fn filesystem_loader_resolves_package_import_maps() {
     if let Ok(output) = node_without_addons
         && output.status.success()
     {
-        assert_eq!(
-            fallback_module.filename,
-            String::from_utf8_lossy(&output.stdout),
-            "Node --no-addons and addon-free napi-vm resolved different imports"
+        assert_same_resolved_file(
+            &fallback_module.filename,
+            &output.stdout,
+            "Node --no-addons and addon-free napi-vm resolved different imports",
         );
     }
 
@@ -1343,10 +1392,10 @@ fn filesystem_loader_uses_export_array_fallbacks_only_for_invalid_targets() {
             );
             if should_fallback {
                 let module = loader.resolve(name, Some(&parent)).unwrap();
-                assert_eq!(
-                    module.filename,
-                    String::from_utf8_lossy(&output.stdout).trim(),
-                    "Node and napi-vm chose different fallback targets for {name}"
+                assert_same_resolved_file(
+                    &module.filename,
+                    &output.stdout,
+                    &format!("Node and napi-vm chose different fallback targets for {name}"),
                 );
             }
         }

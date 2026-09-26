@@ -660,7 +660,7 @@ impl ObjectCell {
         meta.uses_default_prototype = false;
     }
 
-    /// Uncontended access to the slots, for the iterative `Drop`.
+    /// Uncontended access to the slots.
     pub fn slots_mut(&mut self) -> &mut Vec<(String, Value)> {
         self.slots.get_mut()
     }
@@ -2658,28 +2658,26 @@ impl Value {
 
     /// Move the direct child `Value`s out of `self` into `work`, leaving
     /// shallow placeholders behind. See the `Drop` impl for why.
+    ///
+    /// Tracked cells (arrays, objects, promises, generators, bindings, and
+    /// class statics) always have a heap-registry `Weak` outstanding, so
+    /// `Rc::get_mut` unconditionally fails for them; with a single strong
+    /// owner, `try_borrow_mut` on the interior `RefCell`s is the way in.
+    /// Untracked payloads (functions, proxies) have no such `Weak` and keep
+    /// using `Rc::get_mut`. A borrow conflict — or a shared cell — skips the
+    /// drain and falls back to the ordinary recursive drop.
     fn take_children(&mut self, work: &mut Vec<Value>) {
         match self {
             Value::Array(items) => {
                 // Only drain when we own the buffer outright; a shared Rc
                 // keeps its contents until the last reference drops.
-                if Rc::strong_count(items) == 1
-                    && let Some(cell) = Rc::get_mut(items)
-                {
-                    work.append(cell.elements_mut());
-                    work.extend(cell.named.get_mut().drain(..).map(|(_, v)| v));
+                if Rc::strong_count(items) == 1 {
+                    drain_array_cell(items, work);
                 }
             }
             Value::Object { props } => {
-                if Rc::strong_count(props) == 1
-                    && let Some(cell) = Rc::get_mut(props)
-                {
-                    work.extend(cell.slots_mut().drain(..).map(|(_, v)| v));
-                    if let Some(p) = cell.meta.get_mut().proto.take()
-                        && let Ok(inner) = Rc::try_unwrap(p)
-                    {
-                        work.push(inner);
-                    }
+                if Rc::strong_count(props) == 1 {
+                    drain_object_cell(props, work);
                 }
             }
             Value::Function(fd) => {
@@ -2698,6 +2696,14 @@ impl Value {
                             work.append(&mut arguments);
                         }
                     }
+                    if Rc::strong_count(&fd.properties) == 1 {
+                        drain_object_cell(&fd.properties, work);
+                    }
+                }
+            }
+            Value::HostFunction { properties, .. } => {
+                if Rc::strong_count(properties) == 1 {
+                    drain_object_cell(properties, work);
                 }
             }
             Value::Class(cd) => {
@@ -2707,53 +2713,102 @@ impl Value {
                 {
                     p.take_children(work);
                 }
-                if Rc::strong_count(&cd.statics) == 1
-                    && let Some(cell) = Rc::get_mut(&mut cd.statics)
-                {
-                    work.extend(cell.slots_mut().drain(..).map(|(_, v)| v));
-                    if let Some(prototype) = cell.meta.get_mut().proto.take()
-                        && let Ok(inner) = Rc::try_unwrap(prototype)
-                    {
-                        work.push(inner);
-                    }
+                if Rc::strong_count(&cd.statics) == 1 {
+                    drain_object_cell(&cd.statics, work);
                 }
             }
-            Value::Binding(cell) => {
-                if Rc::strong_count(cell) == 1
-                    && let Some(inner) = Rc::get_mut(cell)
-                {
-                    work.push(std::mem::replace(inner.get_mut(), Value::Undefined));
+            Value::Proxy(data) => {
+                if let Some(data) = Rc::get_mut(data) {
+                    work.push(std::mem::replace(&mut data.target, Value::Undefined));
+                    work.push(std::mem::replace(&mut data.handler, Value::Undefined));
                 }
             }
             Value::Promise(inner) => {
                 if Rc::strong_count(inner) == 1
-                    && let Some(cell) = Rc::get_mut(inner)
+                    && let Ok(mut cell) = inner.try_borrow_mut()
                 {
-                    let inner = cell.get_mut();
-                    work.push(std::mem::replace(&mut inner.value, Value::Undefined));
-                    for reaction in inner.reactions.drain(..) {
+                    work.push(std::mem::replace(&mut cell.value, Value::Undefined));
+                    for reaction in cell.reactions.drain(..) {
                         work.push(reaction.on_fulfilled);
                         work.push(reaction.on_rejected);
+                        // The derived promise drains through the work stack;
+                        // dropping it here would recurse down a long chain.
+                        work.push(Value::Promise(reaction.derived));
                     }
                 }
             }
             Value::Generator { inner } => {
                 if Rc::strong_count(inner) == 1
-                    && let Some(cell) = Rc::get_mut(inner)
+                    && let Ok(mut cell) = inner.try_borrow_mut()
                 {
-                    let g = cell.get_mut();
-                    work.append(&mut g.args);
-                    if let Some(v) = g.return_value.take() {
+                    work.append(&mut cell.args);
+                    if let Some(v) = cell.return_value.take() {
                         work.push(v);
                     }
-                    if let Some(env) = g.closure.take() {
+                    if let Some(env) = cell.closure.take() {
                         crate::interpreter::Environment::drain_chain(env, work);
                     }
+                    #[cfg(not(stackful_coroutines))]
+                    work.extend(cell.buffered.drain(..));
+                }
+            }
+            #[cfg(stackful_coroutines)]
+            Value::AsyncTask(task) => {
+                if Rc::strong_count(task) == 1
+                    && let Ok(cell) = task.try_borrow()
+                {
+                    // The result promise drains through the work stack. The
+                    // suspended coroutine (if any) unwinds through the
+                    // abandon protocol, not through value drops.
+                    work.push(Value::Promise(cell.result_promise()));
+                }
+            }
+            Value::Binding(cell) => {
+                if Rc::strong_count(cell) == 1
+                    && let Ok(mut inner) = cell.try_borrow_mut()
+                {
+                    work.push(std::mem::replace(&mut inner, Value::Undefined));
                 }
             }
             // All remaining variants hold no heap-nested `Value`s.
             _ => {}
         }
+    }
+}
+
+/// Move an array cell's children onto the iterative-drop work stack. Called
+/// only for the last strong owner; see `take_children` for why the interior
+/// `RefCell`s are borrowed instead of using `Rc::get_mut`.
+fn drain_array_cell(cell: &Rc<ArrayCell>, work: &mut Vec<Value>) {
+    if let Ok(mut elements) = cell.elements.try_borrow_mut() {
+        work.append(&mut elements);
+    }
+    if let Ok(mut named) = cell.named.try_borrow_mut() {
+        work.extend(named.drain(..).map(|(_, value)| value));
+    }
+    drain_prototype(&cell.meta, work);
+}
+
+/// Move an object cell's children onto the iterative-drop work stack. Called
+/// only for the last strong owner.
+fn drain_object_cell(cell: &Rc<ObjectCell>, work: &mut Vec<Value>) {
+    if let Ok(mut slots) = cell.slots.try_borrow_mut() {
+        work.extend(slots.drain(..).map(|(_, value)| value));
+    }
+    drain_prototype(&cell.meta, work);
+}
+
+/// Move a uniquely-owned prototype link onto the work stack. A shared
+/// prototype stays alive elsewhere; its extra reference here is released.
+fn drain_prototype(meta: &RefCell<ObjectMeta>, work: &mut Vec<Value>) {
+    let taken = meta
+        .try_borrow_mut()
+        .ok()
+        .and_then(|mut meta| meta.proto.take());
+    if let Some(link) = taken
+        && let Ok(inner) = Rc::try_unwrap(link)
+    {
+        work.push(inner);
     }
 }
 
@@ -2851,5 +2906,43 @@ mod array_index_tests {
         assert!(matches!(str_char_at("😀x", 1), Some(Value::String(ref s)) if s == "x"));
         assert!(str_char_at("hi", 2).is_none());
         assert!(str_char_at("", 0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::{ProxyData, Value};
+
+    /// Nested values must tear down iteratively: guest code can nest arrays,
+    /// objects, and proxies hundreds of thousands deep, and a recursive
+    /// `Drop` overflows the native stack when the last owner drops. The heap
+    /// registry holds a `Weak` to every tracked cell, so this also guards the
+    /// drain against `Rc::get_mut`, which fails while any `Weak` exists. If
+    /// this regresses, the test process aborts with a stack overflow instead
+    /// of failing cleanly.
+    #[test]
+    fn deeply_nested_values_drop_without_overflowing_the_stack() {
+        const DEPTH: usize = 100_000;
+
+        let mut array = Value::Number(0.0);
+        for _ in 0..DEPTH {
+            array = Value::array(vec![array]);
+        }
+        drop(array);
+
+        let mut object = Value::Number(0.0);
+        for _ in 0..DEPTH {
+            object = Value::object(vec![("child".to_string(), object)]);
+        }
+        drop(object);
+
+        let mut proxy = Value::Number(0.0);
+        for _ in 0..DEPTH {
+            proxy = Value::Proxy(std::rc::Rc::new(ProxyData {
+                target: proxy,
+                handler: Value::object(vec![]),
+            }));
+        }
+        drop(proxy);
     }
 }
