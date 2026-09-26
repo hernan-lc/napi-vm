@@ -100,6 +100,30 @@ fn windows_node_api_shim_loads_with_the_node_import_name() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let shim = NodeApiShim::load().expect("load the Windows Node-API import provider");
     assert_eq!(shim.path.file_name().unwrap(), "node.exe");
+    assert!(
+        shim.path.with_file_name("node.dll").is_file(),
+        "the dynamic-lookup alias was not materialized alongside the import provider"
+    );
+}
+
+#[test]
+fn windows_node_api_shim_resolves_through_the_dynamic_node_lookup() {
+    use std::os::windows::ffi::OsStrExt;
+
+    let _guard = SHIM_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // MSVC napi-rs addons find Node-API through `GetModuleHandleW("node")`
+    // (napi-sys `find_node_library`), which never matches the `node.exe`
+    // import provider. Without the `node.dll` mapping their registration
+    // panics inside `napi_register_module_v1` and aborts the process.
+    let _shim = NodeApiShim::load().expect("load the Windows Node-API import provider");
+    let mut module_name: Vec<u16> = std::ffi::OsStr::new("node").encode_wide().collect();
+    module_name.push(0);
+    assert!(
+        !unsafe { super::GetModuleHandleW(module_name.as_ptr()) }.is_null(),
+        "the loaded shim did not resolve through GetModuleHandleW(\"node\")"
+    );
 }
 
 #[test]

@@ -286,7 +286,12 @@ jobs:
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
-      - run: bun test
+      # `vendor/rdev-node` carries its own upstream suite whose native binding
+      # is not built here (its `.node` files are gitignored build outputs), so
+      # an unscoped `bun test` fails on a fresh checkout while looking for
+      # them. (A positional `tests/` filter does not work: bun matches it as
+      # a substring, which still matches `vendor/rdev-node/tests/`.)
+      - run: bun test --path-ignore-patterns 'vendor/**'
 
       - name: Upload .node artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

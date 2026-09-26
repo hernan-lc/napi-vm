@@ -57,7 +57,9 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run JavaScript tests
-        run: bun test
+        # Ignore the vendored rdev-node suite (see ci.yml): it has no native
+        # binding on a fresh checkout and must not run here.
+        run: bun test --path-ignore-patterns 'vendor/**'
 
       - name: Run subprocess crash catalogue
         run: bun examples/crash.ts
