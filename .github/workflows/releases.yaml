@@ -15,7 +15,7 @@ jobs:
   # native, core-only, JavaScript, and subprocess crash-safety suites.
   verify:
     name: Verify tagged commit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -24,7 +24,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: 1.96.0
           # The pinned toolchain ships without them; the runner's preinstalled
@@ -65,13 +65,13 @@ jobs:
   # ── Linux x86_64 ──────────────────────────────────────────────────────
   linux-x64:
     name: Linux x86_64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: verify
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: 1.96.0
           targets: x86_64-unknown-linux-gnu
@@ -151,7 +151,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: 1.96.0
           targets: aarch64-unknown-linux-gnu
@@ -217,7 +217,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: 1.96.0
           targets: aarch64-apple-darwin
@@ -274,7 +274,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: 1.96.0
           targets: x86_64-apple-darwin
@@ -331,7 +331,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: 1.96.0
           targets: x86_64-pc-windows-msvc
@@ -388,7 +388,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # v1.2.0
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: 1.96.0
           targets: aarch64-pc-windows-msvc
@@ -439,7 +439,7 @@ jobs:
   # ── Create Release ────────────────────────────────────────────────────
   release:
     name: Create Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [linux-x64, linux-arm64, darwin-arm64, darwin-x64, win-x64, win-arm64]
     steps:
       # No checkout: every published file must come from a build job's
@@ -492,7 +492,7 @@ jobs:
           done
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@fe965f7af51af5f2602596916f38a38df2e33de0 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: release/*
           generate_release_notes: true
