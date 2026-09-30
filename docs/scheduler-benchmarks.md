@@ -1,135 +1,72 @@
-# Scheduler benchmark results
+# Final PR #7 scheduler benchmarks
 
-Measured on 2026-09-30 in the configured cloud environment: Linux x86_64,
-5 available CPUs, Rust 1.96.0, Node 24.19.0, release builds. Baseline:
-`0fa987d8860d620cd1008a84f2a17c9b67c495cd`; implementation:
-`41ab789` (all implementation and benchmark commits, before documentation).
+Measured 2026-09-30 on Linux x86_64, 12 available CPUs, Rust 1.97.1 and Node 26.10.0, release builds. Original baseline: `0fa987d8860d620cd1008a84f2a17c9b67c495cd`. Final implementation: `b918b389f7f2c12cdca0844bbd45c0c86ca48d46`. Subsequent commits only document these results.
 
 ## Reproduce
 
 ```sh
-# On this configured environment, first source /workspace/.cloud-setup/activate.sh.
 bench/run-scheduler.sh
 ```
 
-The script archives the baseline into an isolated directory, copies identical
-comparison workloads into both builds, compiles both before timing, and runs them
-sequentially. Set `SCHEDULER_BASELINE_DIR` and `SCHEDULER_OUTPUT_DIR` to override
-cache/output locations. The current script copies Linux x64 GNU addon filenames;
-adapt those names to run on another platform. Rust allocator/queue comparisons
-use one warmup and 25 samples. Node comparisons use 20 warmups and 500 sequential
-calls. These are single runs in a shared cloud environment, not confidence intervals
-or production guarantees. p99 for 25 batches is the slowest observed batch.
+The harness archives the original baseline into a separate source/build directory, copies identical common workloads to both builds, and builds before timing. Baseline and implementation timing runs are sequential. It records the implementation revision in `machine.txt`; use an unchanged source checkout throughout. Linux x64 addon filenames are currently hard-coded. Node admission retries accommodate the original baseline’s occasional post-completion busy race; the final measured run required zero retries.
 
-[Raw JSONL and machine metadata](benchmarks/scheduler-2026-09-30/machine.txt) are
-checked in alongside this report. JSON includes all percentiles, allocations,
-poll counts, queue bounds and unavailable metrics as null.
+[Raw JSONL and machine metadata](benchmarks/pr7-final/machine.txt) are stored in `docs/benchmarks/pr7-final/`. Queue workloads use one warmup and 25 batches. Node workloads use 20 warmups and 500 sequential calls per workload. This is one host run, not a confidence interval. Batch latency includes setup, execution, drain and teardown. Rust allocations count allocation/reallocation calls across the entire batch, not bytes or retained memory. Unmeasured Node allocations remain `null`.
 
-## Isolated queues and end-to-end interpreter
+## Timer queues, cancellation, promises and mixed events
 
-Throughput counts timer registrations/drains, cancellation operations, promise
-reactions, or the mixed workload's 4,000 dispatched jobs per sample. Batch latency
-includes queue setup, guest execution, drain and destruction; it is not individual
-callback latency. Allocations count Rust allocation/reallocation calls across the
-whole sample, not bytes or retained memory.
-
-| Workload | Baseline ops/s | Modified ops/s | Ratio | Allocations/sample baseline → modified |
+| Workload | Baseline ops/s | Final ops/s | Final / baseline | Allocations/batch baseline → final |
 | --- | ---: | ---: | ---: | ---: |
-| timers/100 | 11,104,547 | 3,932,295 | 0.35× | 6.0 → 24.0 |
-| cancel/100 | 4,639,338 | 4,106,621 | 0.89× | 13.0 → 30.0 |
-| timers/1000 | 1,040,044 | 2,528,958 | 2.43× | 9.0 → 177.0 |
-| cancel/1000 | 523,253 | 2,739,803 | 5.24× | 19.0 → 188.0 |
-| timers/10000 | 88,648 | 1,933,407 | 21.81× | 13.0 → 1,680.0 |
-| cancel/10000 | 52,295 | 2,323,690 | 44.43× | 27.0 → 1,693.0 |
-| vm/timers | 410,941 | 519,531 | 1.26× | 19,515.4 → 18,678.4 |
-| vm/cancel | 785,401 | 679,702 | 0.87× | 19,514.9 → 19,513.0 |
-| vm/promises | 515,658 | 518,803 | 1.01× | 24,520.2 → 24,521.2 |
-| vm/mixed | 1,040,298 | 1,140,466 | 1.10× | 34,520.8 → 34,693.8 |
+| timers/100 | 5,612,164 | 2,563,769 | 0.46× | 6.00 → 18.00 |
+| cancel/100 | 3,235,207 | 3,609,832 | 1.12× | 13.00 → 24.00 |
+| timers/1000 | 656,883 | 1,472,665 | 2.24× | 9.00 → 167.00 |
+| cancel/1000 | 392,978 | 1,688,362 | 4.30× | 19.00 → 178.00 |
+| timers/10000 | 56,244 | 1,117,977 | 19.88× | 13.00 → 1667.00 |
+| cancel/10000 | 36,724 | 1,553,129 | 42.29× | 27.00 → 1680.00 |
+| vm/timers | 247,011 | 320,680 | 1.30× | 19515.28 → 17670.12 |
+| vm/cancel | 501,323 | 450,196 | 0.90× | 19514.80 → 18513.92 |
+| vm/promises | 319,233 | 271,422 | 0.85× | 24520.20 → 23521.12 |
+| vm/mixed | 674,344 | 893,666 | 1.33× | 34520.96 → 32685.84 |
 
-| Workload | Baseline batch p50 / p95 / p99 (µs) | Modified batch p50 / p95 / p99 (µs) |
+| Workload | Baseline batch p50 / p95 / p99 (µs) | Final batch p50 / p95 / p99 (µs) |
 | --- | ---: | ---: |
-| timers/100 | 8.8 / 9.9 / 12.2 | 25.2 / 27.3 / 30.0 |
-| cancel/100 | 17.9 / 45.5 / 69.9 | 23.6 / 26.2 / 42.0 |
-| timers/1000 | 938.5 / 1,043.9 / 1,047.6 | 380.5 / 440.7 / 675.6 |
-| cancel/1000 | 1,883.2 / 1,994.6 / 2,260.6 | 355.3 / 438.0 / 441.0 |
-| timers/10000 | 111,835.0 / 119,871.1 / 121,151.9 | 4,774.9 / 7,283.8 / 9,016.8 |
-| cancel/10000 | 190,151.2 / 195,966.8 / 196,524.8 | 4,275.6 / 4,579.9 / 4,696.5 |
-| vm/timers | 2,419.0 / 2,704.5 / 2,745.0 | 1,880.0 / 2,203.0 / 2,311.7 |
-| vm/cancel | 1,248.4 / 1,365.1 / 1,550.0 | 1,456.8 / 1,632.1 / 1,759.8 |
-| vm/promises | 1,925.9 / 2,232.0 / 2,288.1 | 1,880.4 / 2,226.5 / 2,374.3 |
-| vm/mixed | 3,776.0 / 4,132.9 / 4,271.2 | 3,334.5 / 4,707.9 / 5,730.9 |
+| timers/100 | 17.5 / 19.5 / 19.5 | 29.0 / 102.9 / 181.7 |
+| cancel/100 | 30.4 / 33.6 / 43.0 | 27.1 / 31.7 / 40.1 |
+| timers/1000 | 1,517.4 / 1,713.4 / 1,786.9 | 609.1 / 1,144.6 / 1,386.3 |
+| cancel/1000 | 2,523.8 / 2,926.6 / 2,927.3 | 571.7 / 671.8 / 983.4 |
+| timers/10000 | 173,220.6 / 205,031.4 / 214,928.8 | 9,132.0 / 9,624.9 / 9,967.3 |
+| cancel/10000 | 271,415.5 / 284,427.5 / 314,478.6 | 5,996.2 / 7,799.1 / 8,420.6 |
+| vm/timers | 3,986.0 / 4,594.4 / 5,038.7 | 3,062.2 / 3,789.1 / 3,979.6 |
+| vm/cancel | 1,980.6 / 2,276.7 / 2,482.2 | 2,151.0 / 2,619.3 / 2,648.4 |
+| vm/promises | 3,183.4 / 3,674.6 / 4,002.8 | 3,760.7 / 4,343.1 / 4,530.7 |
+| vm/mixed | 5,404.8 / 7,167.8 / 7,488.4 | 4,247.8 / 5,396.4 / 5,499.7 |
 
-The ordered structure improves large timer/cancellation batches and has a higher
-allocation cost. The 100-item queues regress; a tree and two cancellation indices
-cost more than a short vector scan. Promise/fuel/checkpoint bookkeeping also has
-costs, shown in the table rather than assumed away. Cancellation-churn throughput
-in the interpreter includes scheduling and immediately cancelling one timer at a
-time, whereas the isolated cancellation workload creates a whole batch first.
+Large queues benefit from ordered removal compared with the original vector scan. The small-queue and interpreter results above include regressions; they must not be summarized as a universal speedup. The tree still allocates more than a vector. Cancellation churn in `vm/cancel` repeatedly schedules and cancels one timer, unlike the isolated batch cancellation workload. Promise and mixed-event figures also include checkpoint, wake, root and teardown accounting.
 
-The mixed workload makes 4,001 baseline versus 2,001 modified host polls/sample. Checkpoint polling removes per-microtask host sampling.
+Removing the reverse timer index has direct allocation evidence: the exploratory queue trial changed timer registration/drain allocations for 100 / 1,000 / 10,000 timers from 24 / 177 / 1,680 to 18 / 167 / 1,667. Cancellation batches changed 30 / 188 / 1,693 to 24 / 178 / 1,680. See [trial caveats](benchmarks/pr7-final/trial-notes.txt). Trial wall times were not commit-isolated and are not used as a controlled speedup claim. A small-vector/tree hybrid was not introduced without additional threshold and churn measurements.
 
-## Repeated trivial asynchronous calls
+## Repeated async execution and awaited host calls
 
-| Mode | Calls/s | p50 / p95 / p99 (ms) | CPU ms for 500 calls | Idle CPU ms / 250 ms | Wake notifications |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| baseline Vm.runAsync | 21,732 | 0.0370 / 0.0925 / 0.1660 | 15.192 | 0.327 | unmeasured |
-| modified Vm.runAsync | 22,185 | 0.0354 / 0.0933 / 0.1787 | 14.747 | 0.367 | unmeasured |
-| modified AsyncSession.run | 37,121 | 0.0238 / 0.0378 / 0.0719 | 11.751 | 0.312 | 500 |
+| Workload / owner | Calls/s | p50 / p95 / p99 (ms) | CPU for 500 calls (ms) | Idle CPU / 250 ms (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| trivial-async / Original legacy | 21,364 | 0.0383 / 0.0877 / 0.1531 | 27.139 | 1.630 |
+| awaited-host-async / Original legacy | 11,633 | 0.0714 / 0.1848 / 0.3598 | 47.880 | unmeasured |
+| trivial-async / Final legacy | 18,821 | 0.0460 / 0.0923 / 0.1584 | 31.176 | 1.627 |
+| awaited-host-async / Final legacy | 11,455 | 0.0724 / 0.1776 / 0.3412 | 49.017 | unmeasured |
+| trivial-async / Final persistent | 57,170 | 0.0118 / 0.0319 / 0.0612 | 9.585 | 1.148 |
+| awaited-host-async / Final persistent | 25,710 | 0.0289 / 0.0614 / 0.1463 | 20.176 | unmeasured |
 
-The explicit persistent session delivers 1.71× baseline throughput in this workload. All calls are sequential, so outstanding command depth is 1. Node allocations were not instrumented.
+The original baseline has no `AsyncSession`; its legacy worker is the comparison for persistent ownership. The host-call workload explicitly exposes an async Node callback and awaits it on every execution. Idle CPU is process-wide and includes Node background activity. These figures do not establish Node allocation counts or retained-memory use.
 
-## New real-time and wake APIs
+## Real-time timers, wakes and bounds
 
-These metrics have no equivalent absolute-deadline/wake instrumentation in the
-legacy baseline, so they are observations of the new APIs, not claimed speedups.
+- 2,500 timer samples: 17,828 jobs/s; lateness p50 / p95 / p99: 41.9 / 84.3 / 292.8 µs; peak queue 100.
+- 10,000 ingress samples: 3,011,400 events/s; wake latency p50 / p95 / p99: 1.06 / 5.91 / 12.19 µs; 1713 coalesced wakes; capacity 32; idle thread CPU 3.0 µs / 250 ms.
+- vm/timers measured peak queue: 1000.
+- vm/cancel measured peak queue: 1.
+- vm/promises measured peak queue: 1.
 
-- 2,500 real-time timer callbacks: 18,789 jobs/s;
-  caller-deadline lateness p50 / p95 / p99:
-  39.95 / 72.64 / 323.55 µs.
-  Measured queue peak: 100.
-- 10,000 ingress events through capacity 32:
-  1,727,424 events/s; delivery latency p50 / p95 / p99:
-  8.69 / 9.97 / 26.45 µs;
-  314 coalesced wake notifications. No events lost.
-  Idle process CPU during one 250 ms wait: 18 µs.
-- Measured queue peak `vm/timers`: 1000.
-- Measured queue peak `vm/cancel`: 1.
-- Measured queue peak `vm/promises`: 1.
-
-The common queue benchmark reports conservative depth bounds; measured peaks are
-separate instrumentation using the modified VM. Timer lateness measures dispatch
-relative to the caller's deadline and includes insertion overhead. Wake counts
-count latched transitions, not OS context switches. Idle CPU uses process CPU
-accounting, not host-wide utilization. Baseline timer lateness, baseline wake
-counts, Node allocations, memory bytes, and per-callback latency for legacy timer
-batches were not measured.
+These new-clock/wake metrics have no equivalent original-baseline API, so no baseline timer-lateness or wake-latency ratio is claimed. Browser idle CPU and other operating systems were not measured.
 
 ## Verification
 
-Passed on this environment:
-
-- `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings`.
-- `cargo test --locked --release --all-features`: 449 passed, 1 ignored.
-- All-feature debug library and scheduler tests: 368 + 16 passed.
-- Node tests: 29 passed, including persistent ownership, Node-thread marshalling,
-  bounded admission, cancellation before dequeue, pending promise GC rooting,
-  same-session reentrancy rejection, idle lifetime, shutdown, and Worker teardown.
-- Bun suite: 1,470 passed; TypeScript and playground TypeScript checks passed.
-- WASM release build and adapter tests: 9 passed in the Node harness.
-- Native addon loading/TSFN tests in the all-feature Rust suite, runtime smoke,
-  and IPC smoke passed.
-- CJS/ESM/TypeScript bindings regenerated and matched checked-in files.
-
-Scheduler tests cover equal deadlines, nested timers, normalized invalid delays,
-ID wrap without collision, callback/root release, job/fuel boundaries, checkpoint
-resumption, real/virtual clocks, host fairness and retained overflow, actual progress,
-cooperative long-callback interruption and nested hard-budget accounting. Wake
-race tests retain all 10,000 events; a Worker teardown regression originally exposed
-late TSFN release and now passes after joining the owner during cleanup.
-
-Not run: the ignored real rdev-node/X-display test (requires a built external addon
-and isolated display), real browser UI/manual timing checks, other native platforms
-and architectures, Miri/sanitizers, heap-byte profiling, or long-duration soak tests.
-See [event-loop.md](event-loop.md) for migration and remaining scheduling/ownership
-limitations. No claim is made that the old unbounded producer ABI or synchronous
-native host code now has strict memory/preemption bounds.
+See [PR #7 verification](pr7-verification.md) for exact commands, reproductions, test counts, available native-addon/WASM checks, CI status and unresolved limitations.

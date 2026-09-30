@@ -33,12 +33,19 @@ against backward movement.
 and `Idle`, `JobBudget`, `TimeBudget`, or `Backpressure`. Deadlines use the selected
 clock's millisecond origin. `run_event_loop_once(timeout)` reports true only when
 jobs executed and does not wait after making progress. Native real-time waits end
-at the earlier incoming wake or timer deadline; virtual turns never advance time.
+at the earliest caller timeout, incoming wake, timer deadline, or execution
+deadline. Cancellation also wakes an already sleeping owner. Spurious/stale wakes
+recheck readiness within the remaining timeout; virtual turns never advance time.
 WASM methods always poll without blocking the browser thread.
 
 Microtasks are FIFO and recursively drained before another macrotask. Host ingress
 is sampled at checkpoints. A yielded checkpoint must finish before timers or a new
 evaluation; `ensure_can_evaluate()` enforces this for embedding entry points.
+Every drain exit reconciles checkpoint state, including thrown callbacks and
+hard-limit errors. Legacy `Vm.run` resumes an interrupted microtask checkpoint
+before admitting new guest code, without refilling that checkpoint's hard budget.
+A final throwing microtask clears the checkpoint; queued successors keep their
+roots and checkpoint priority.
 The Node and WASM adapters apply that guard automatically. Low-level Rust embedders
 must call it before starting an evaluation themselves.
 
@@ -56,8 +63,11 @@ checkpoint follows either. This prevents a sustained external stream from starvi
 due timers. Default host batches are 64 and admitted external capacity is 1024.
 `try_push_external_event` returns the rejected event to its producer when full.
 Native ingress retains unconsumed events and re-notifies the owner. Custom bridges
-with interruptible blocking polls should override `supports_blocking_event_wait`
-so real-time waits can stop promptly when incoming work arrives. Legacy bridges
+with threaded ingress must implement `set_wake_notifier`; the scheduler uses
+nonblocking ingress checks and a latched owner wait. `set_execution_context` is
+an optional compatible trait hook for blocking host operations to receive the
+execution cancellation token and remaining timeout. The Node sidecar uses it;
+interrupting a transport request retires that connection to prevent stale replies. Legacy bridges
 that return oversized batches retain overflow and report backpressure rather than
 lose callbacks; their overflow cannot be memory-bounded without producer support.
 Configure finite native producer queue sizes: existing native ABI queue size zero
@@ -101,6 +111,21 @@ Idle sessions do not keep Node alive; pending command completions do. `dispose()
 is idempotent, cancels pending work, wakes the owner, waits for it to relinquish
 Node handles, and retires references. Environment cleanup also joins the owner
 before Node destroys its TSFNs, including Worker termination.
+
+Unawaited host calls do not lock command admission. Stored result handles remain
+available for a later guest await while reachable through globals, closures,
+promises, or queued jobs. At command completion, the owner traces those roots and
+retires abandoned receivers; Node retires their promise references at completion
+or dispatch boundaries. Opaque suspended coroutine stacks conservatively retain
+results. Pending-result capacity remains 1024. Await consumes a result handle
+(as in the existing bridge); cancellation/disposal settle Node callbacks once.
+
+Native real-time top-level await processes future and nested timers, preserving
+microtask checkpoints and the active hard budget. A promise with no possible VM
+or host progress fails clearly. Virtual and browser awaits of future timers
+return a host-driven-progress error without advancing time or sleeping. Keep the
+promise in a guest global, advance/poll from the host, then await it again; an
+arbitrary top-level continuation is not automatically suspended and restored.
 
 A host callback must not submit another command to its own waiting session:
 that would deadlock, so the adapter rejects it explicitly. Unrelated synchronous
