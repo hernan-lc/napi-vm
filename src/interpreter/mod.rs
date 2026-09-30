@@ -68,6 +68,7 @@ pub struct Realm {
     commonjs_entry: Option<String>,
     execution: Rc<scheduler::ExecutionState>,
     limits: (u64, u64, usize, usize),
+    event_loop_options: EventLoopOptions,
 }
 
 impl Realm {
@@ -83,6 +84,7 @@ impl Realm {
             commonjs_cache: interp.commonjs_cache.clone(),
             commonjs_entry: interp.commonjs_entry.clone(),
             execution: interp.execution.clone(),
+            event_loop_options: interp.event_loop_options,
             limits: (
                 interp.loop_budget,
                 interp.fuel_budget,
@@ -94,6 +96,7 @@ impl Realm {
 
     pub fn install(self, interp: &mut Interpreter) {
         interp.execution = self.execution;
+        interp.event_loop_options = self.event_loop_options;
         (
             interp.loop_budget,
             interp.fuel_budget,
@@ -265,9 +268,6 @@ pub struct Interpreter {
     /// `consume_loop()` on every loop iteration.
     execution: Rc<scheduler::ExecutionState>,
     event_loop_options: EventLoopOptions,
-    // Compatibility spill for legacy bridges that over-return a bounded request.
-    // It retains every callback and root while reporting backpressure.
-    host_overflow: std::collections::VecDeque<Job>,
     /// Configured per-execution instruction-fuel cap (bytecode tier).
     fuel_budget: u64,
     /// Remaining instruction fuel in the current execution. Refilled by
@@ -409,7 +409,6 @@ impl Interpreter {
             loop_budget: DEFAULT_LOOP_BUDGET,
             execution: Rc::new(scheduler::ExecutionState::new()),
             event_loop_options: EventLoopOptions::default(),
-            host_overflow: std::collections::VecDeque::new(),
             fuel_budget: DEFAULT_FUEL_BUDGET,
 
             max_call_depth: MAX_CALL_DEPTH,
@@ -711,6 +710,7 @@ export default { createRequire, isBuiltin, builtinModules };
         let mut roots = crate::heap::GcRoots {
             envs: vec![self.global.clone(), self.persistent_global.clone()],
             values: self.new_target_stack.clone(),
+            jobs: vec![self.jobs.clone()],
         };
         if let Ok(modules) = self.modules.try_borrow() {
             for module in modules.values() {
@@ -724,12 +724,6 @@ export default { createRequire, isBuiltin, builtinModules };
                 roots.values.push(entry.exports.clone());
                 roots.values.extend(entry.module.clone());
             }
-        }
-        for job in &self.host_overflow {
-            job.trace_values(&mut roots.values);
-        }
-        if let Ok(jobs) = self.jobs.try_borrow() {
-            jobs.trace_roots(&mut roots.values);
         }
         #[cfg(not(stackful_coroutines))]
         if let Some(sink) = &self.yield_sink
@@ -1521,6 +1515,7 @@ impl Interpreter {
         {
             return;
         }
+        self.execution.active.set(true);
         self.execution.loops.set(self.loop_budget);
         self.execution.fuel.set(self.fuel_budget);
         self.execution.jobs.set(self.max_jobs_per_drain);

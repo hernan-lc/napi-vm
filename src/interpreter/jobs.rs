@@ -106,6 +106,8 @@ struct AtomicsWaiter {
 pub struct JobQueue {
     microtasks: VecDeque<Job>,
     external_events: VecDeque<Job>,
+    // Retain oversized legacy ingress without silently discarding settlements.
+    pub(crate) host_overflow: VecDeque<Job>,
     /// Timer callbacks, ordered by delay then by insertion. There is no real
     /// clock here: a timer runs after every microtask has, which preserves the
     /// ordering guarantees guest code depends on without a wall clock.
@@ -126,7 +128,12 @@ impl JobQueue {
     /// Every value the queued jobs and waiters keep alive, for the cycle
     /// collector's root set.
     pub(crate) fn trace_roots(&self, out: &mut Vec<Value>) {
-        for job in self.microtasks.iter().chain(self.external_events.iter()) {
+        for job in self
+            .microtasks
+            .iter()
+            .chain(self.external_events.iter())
+            .chain(self.host_overflow.iter())
+        {
             job.trace_values(out);
         }
         for job in self.timers.values() {
@@ -321,7 +328,10 @@ impl JobQueue {
         })
     }
     pub fn is_empty(&self) -> bool {
-        self.microtasks.is_empty() && self.external_events.is_empty() && self.timers.is_empty()
+        self.microtasks.is_empty()
+            && self.external_events.is_empty()
+            && self.timers.is_empty()
+            && self.host_overflow.is_empty()
     }
 }
 

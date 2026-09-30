@@ -164,6 +164,7 @@ pub(super) struct ExecutionState {
     pub deadline: Cell<Option<f64>>,
     pub clock: RealTimeClock,
     pub drain_depth: Cell<usize>,
+    pub active: Cell<bool>,
 }
 impl ExecutionState {
     pub fn new() -> Self {
@@ -175,6 +176,7 @@ impl ExecutionState {
             deadline: Cell::new(None),
             clock: RealTimeClock::default(),
             drain_depth: Cell::new(0),
+            active: Cell::new(true),
         }
     }
     pub fn check(&self) -> Result<(), VmErr> {

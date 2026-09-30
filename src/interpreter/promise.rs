@@ -383,12 +383,15 @@ impl Interpreter {
     fn outcome(&mut self, executed_jobs: usize, mut yield_reason: YieldReason) -> TurnOutcome {
         let mut queue = self.jobs.borrow_mut();
         queue.checkpoint_pending = queue.has_microtasks();
-        if !self.host_overflow.is_empty() {
+        if !queue.host_overflow.is_empty() {
             yield_reason = YieldReason::Backpressure;
+        }
+        if yield_reason == YieldReason::Idle && queue.is_empty() {
+            self.execution.active.set(false);
         }
         TurnOutcome {
             executed_jobs,
-            runnable: queue.is_runnable() || !self.host_overflow.is_empty(),
+            runnable: queue.is_runnable() || !queue.host_overflow.is_empty(),
             yield_reason,
             next_deadline: queue.next_deadline(),
             checkpoint_pending: queue.checkpoint_pending,
@@ -400,6 +403,9 @@ impl Interpreter {
         budget: TurnBudget,
         microtasks_only: bool,
     ) -> Result<TurnOutcome, VmErr> {
+        if !self.execution.active.get() && self.execution.drain_depth.get() == 0 {
+            self.begin_execution();
+        }
         struct DrainGuard(Rc<super::scheduler::ExecutionState>);
         impl Drop for DrainGuard {
             fn drop(&mut self) {
@@ -500,14 +506,14 @@ impl Interpreter {
         {
             let mut queue = self.jobs.borrow_mut();
             while queue.external_len() < capacity {
-                let Some(job) = self.host_overflow.pop_front() else {
+                let Some(job) = queue.host_overflow.pop_front() else {
                     break;
                 };
                 queue.push_external_event(job);
             }
         }
         let room = capacity.saturating_sub(self.jobs.borrow().external_len());
-        if room == 0 || !self.host_overflow.is_empty() {
+        if room == 0 || !self.jobs.borrow().host_overflow.is_empty() {
             return Ok(0);
         }
         let Some(bridge) = self.host.clone() else {
@@ -541,7 +547,7 @@ impl Interpreter {
             if let Err(job) =
                 queue.try_push_external_event(job, self.event_loop_options.external_capacity)
             {
-                self.host_overflow.push_back(job);
+                queue.host_overflow.push_back(job);
             }
         }
     }

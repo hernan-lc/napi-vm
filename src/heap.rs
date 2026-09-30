@@ -43,6 +43,7 @@ fn id_of<T>(rc: &Rc<T>) -> HeapId {
 pub(crate) struct GcRoots {
     pub envs: Vec<Env>,
     pub values: Vec<Value>,
+    pub jobs: Vec<crate::interpreter::Jobs>,
 }
 
 /// Per-collection statistics.
@@ -492,10 +493,9 @@ pub(crate) fn collect() -> HeapStats {
         };
     }
     let executing = HEAP.with(|heap| {
-        heap.borrow()
-            .interps
-            .values()
-            .any(|(_, depth)| depth.get() > 0)
+        heap.borrow().interps.values().any(|(roots, depth)| {
+            depth.get() > 0 || roots.jobs.iter().any(|q| q.try_borrow().is_err())
+        })
     });
     if executing {
         return HeapStats {
@@ -505,6 +505,8 @@ pub(crate) fn collect() -> HeapStats {
     }
 
     let mut marker = Marker::new();
+    let mut queued_roots = Vec::new();
+    let mut seen_queues = HashSet::new();
     HEAP.with(|heap| {
         let heap = heap.borrow();
         for (roots, _) in heap.interps.values() {
@@ -514,11 +516,21 @@ pub(crate) fn collect() -> HeapStats {
             for value in &roots.values {
                 marker.mark_value(value);
             }
+            for queue in &roots.jobs {
+                if seen_queues.insert(Rc::as_ptr(queue)) {
+                    // Borrowability was checked above at this quiescent point.
+                    queue.borrow().trace_roots(&mut queued_roots);
+                }
+            }
         }
         for pinned in heap.pins.values() {
             marker.mark_value(pinned);
         }
     });
+    for value in &queued_roots {
+        marker.mark_value(value);
+    }
+    drop(queued_roots);
     marker.drain();
 
     let mut stats = HeapStats {

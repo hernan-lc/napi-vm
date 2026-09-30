@@ -356,3 +356,21 @@ fn cancellation_and_deadlines_interrupt_long_callbacks_and_coroutine_bodies() {
     );
     producer.join().unwrap();
 }
+
+#[test]
+fn published_gc_roots_do_not_retain_a_cancelled_timer() {
+    let mut vm = Interpreter::with_builtins();
+    let value = Value::object(vec![]);
+    let weak = match &value {
+        Value::Object { props, .. } => Rc::downgrade(props),
+        _ => unreachable!(),
+    };
+    let id = vm.jobs.borrow_mut().push_timer(1., value, vec![]);
+    vm.run_program_body(&[]).unwrap(); // publish interpreter roots with timer pending
+    assert!(weak.upgrade().is_some());
+    vm.jobs.borrow_mut().cancel_timer(id);
+    assert!(
+        weak.upgrade().is_none(),
+        "published snapshots must not pin removed callbacks"
+    );
+}
