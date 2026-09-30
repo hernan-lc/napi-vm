@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use napi::sys;
 
+use crate::Interpreter;
 use crate::error::VmErr;
 use crate::format::to_string;
 use crate::host::HostBridge;
@@ -73,6 +74,23 @@ impl BridgeState {
             .remove(&id);
         if let Some((reference, _)) = entry {
             self.delete_reference(reference);
+        }
+    }
+    pub(super) fn prune_abandoned_on_main(&self) {
+        let abandoned: Vec<_> = self
+            .promises
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(|(&id, (_, weak))| {
+                weak.upgrade()
+                    .filter(|s| !s.result_alive.load(Ordering::Acquire))
+                    .map(|s| (id, s))
+            })
+            .collect();
+        for (id, settlement) in abandoned {
+            settlement.reject("async host result abandoned".into());
+            self.release_promise_on_main(id);
         }
     }
     pub(super) fn cancel_pending_on_main(&self) {
@@ -291,6 +309,7 @@ struct AsyncCallMsg {
     args: Vec<WireValue>,
     reply_tx: mpsc::Sender<Result<WireValue, String>>,
     cancellation: crate::CancellationToken,
+    result_alive: Arc<AtomicBool>,
 }
 
 /// Shared async state used by the interpreter while it waits for host calls.
@@ -298,10 +317,20 @@ pub(super) struct AsyncState {
     state: Arc<BridgeState>,
     next_pending: AtomicUsize,
     waiting_for_node: AtomicUsize,
-    pending: Mutex<HashMap<usize, mpsc::Receiver<Result<WireValue, String>>>>,
+    pending: Mutex<HashMap<usize, PendingResult>>,
     cancellation: Mutex<crate::CancellationToken>,
     deadline: Mutex<Option<std::time::Instant>>,
     reply_wake: Mutex<Option<Arc<crate::host::WakeSignal>>>,
+}
+
+struct PendingResult {
+    receiver: Option<mpsc::Receiver<Result<WireValue, String>>>,
+    alive: Arc<AtomicBool>,
+}
+impl Drop for PendingResult {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Release);
+    }
 }
 
 struct NodeWaitGuard<'a>(&'a AsyncState);
@@ -416,9 +445,23 @@ impl NapiHostBridge {
 
     /// Prepare Node-owned handles once, then construct a separate bridge on
     /// the persistent owner. No Rc, guest value, or coroutine crosses threads.
+    pub(super) fn prune_owner_results(&self, vm: &Interpreter) {
+        if let Some(state) = self.get_async_state() {
+            if state.pending_len() == 0 {
+                return;
+            }
+            if let Some(live) = crate::heap::reachable_host_calls(vm.gc_roots()) {
+                state
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .retain(|id, _| live.contains(id));
+            }
+        }
+    }
     pub(super) fn owner_waiting_for_node(&self) -> bool {
         self.get_async_state()
-            .is_some_and(|s| s.waiting_for_node.load(Ordering::Acquire) > 0 || s.pending_len() > 0)
+            .is_some_and(|s| s.waiting_for_node.load(Ordering::Acquire) > 0)
     }
     pub(super) fn owner_seed(&self) -> Result<Arc<AsyncState>, VmErr> {
         self.prepare_for_async()?;
@@ -578,6 +621,7 @@ impl NapiHostBridge {
         id: usize,
         args: Vec<WireValue>,
         reply_tx: mpsc::Sender<Result<WireValue, String>>,
+        result_alive: Arc<AtomicBool>,
     ) -> Result<(), VmErr> {
         if state.state.shutting_down.load(Ordering::Acquire) {
             return Err(VmErr::Msg("async bridge is shutting down".into()));
@@ -589,6 +633,7 @@ impl NapiHostBridge {
             func_ref,
             args,
             reply_tx,
+            result_alive,
             cancellation: state
                 .cancellation
                 .lock()
@@ -626,7 +671,13 @@ impl NapiHostBridge {
         let _waiting = state.wait_guard();
         let args = Self::wire_args(&args)?;
         let (reply_tx, reply_rx) = mpsc::channel::<Result<WireValue, String>>();
-        self.dispatch(state.clone(), id, args, reply_tx)?;
+        self.dispatch(
+            state.clone(),
+            id,
+            args,
+            reply_tx,
+            Arc::new(AtomicBool::new(true)),
+        )?;
         Self::receive_reply(&state, reply_rx)
     }
 }
@@ -744,14 +795,21 @@ impl HostBridge for NapiHostBridge {
 
         let args = Self::wire_args(&args)?;
         let (reply_tx, reply_rx) = mpsc::channel::<Result<WireValue, String>>();
+        let alive = Arc::new(AtomicBool::new(true));
         let pending_id = state.next_pending.fetch_add(1, Ordering::Relaxed);
         state
             .pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(pending_id, reply_rx);
+            .insert(
+                pending_id,
+                PendingResult {
+                    receiver: Some(reply_rx),
+                    alive: alive.clone(),
+                },
+            );
 
-        if let Err(error) = self.dispatch(state.clone(), id, args, reply_tx) {
+        if let Err(error) = self.dispatch(state.clone(), id, args, reply_tx, alive) {
             state
                 .pending
                 .lock()
@@ -767,13 +825,13 @@ impl HostBridge for NapiHostBridge {
             .get_async_state()
             .ok_or_else(|| VmErr::Msg("async bridge not initialized".to_string()))?;
         let _waiting = state.wait_guard();
-        let receiver = state
+        let mut pending = state
             .pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&pending_id)
             .ok_or_else(|| VmErr::Msg(format!("no pending async call #{}", pending_id)))?;
-        Self::receive_reply(&state, receiver)
+        Self::receive_reply(&state, pending.receiver.take().expect("owned receiver"))
     }
 }
 
@@ -940,6 +998,7 @@ extern "C" fn tsfn_callback(
         wake: msg.state.wake.clone(),
         state: msg.state.clone(),
         promise_id,
+        result_alive: msg.result_alive,
     });
     msg.state
         .promises
@@ -981,6 +1040,7 @@ extern "C" fn tsfn_callback(
 }
 
 struct Settlement {
+    result_alive: Arc<AtomicBool>,
     state: Arc<BridgeState>,
     promise_id: usize,
     wake: Arc<crate::host::WakeSlot>,

@@ -250,6 +250,7 @@ fn owner(
     let bridge = Rc::new(NapiHostBridge::from_owner_seed(seed));
     let mut vm = Interpreter::with_builtins();
     vm.set_host_bridge(bridge.clone());
+    bridge.set_owner_wake(state.wake.clone());
     let wake = state.wake.clone();
     vm.set_host_wake_notifier(Arc::new(move || wake.fire()));
     let virtual_clock = if options.clock.as_deref() == Some("virtual") {
@@ -277,7 +278,6 @@ fn owner(
     .expect("valid defaults");
     let budget = TurnBudget::jobs(options.max_jobs_per_turn.unwrap_or(1024) as usize);
     let auto_poll = options.auto_poll.unwrap_or(true);
-    bridge.set_owner_wake(state.wake.clone());
     let mut configured_timeout = None;
     let mut stopped_error = None;
     while !state.closed.load(Ordering::Acquire) {
@@ -384,6 +384,7 @@ fn owner(
                 } else {
                     result
                 };
+                bridge.prune_owner_results(&vm);
                 complete(&state, deferred, result);
                 if auto_poll {
                     match vm.poll_event_loop(budget) {
@@ -705,6 +706,7 @@ impl AsyncSession {
         }
     }
     fn submit(&self, env: Env, operation: Operation) -> napi::Result<Unknown<'_>> {
+        self.main_bridge.shared_state().prune_abandoned_on_main();
         if self.main_bridge.owner_waiting_for_node() {
             return Err(napi::Error::from_reason(
                 "async session is awaiting Node; reentrant commands must wait for the active execution to complete",

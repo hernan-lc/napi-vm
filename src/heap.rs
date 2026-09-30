@@ -210,6 +210,8 @@ enum MarkItem {
 struct Marker {
     marked: HashSet<HeapId>,
     work: Vec<MarkItem>,
+    host_calls: HashSet<usize>,
+    opaque: bool,
 }
 
 impl Marker {
@@ -217,6 +219,8 @@ impl Marker {
         Self {
             marked: HashSet::new(),
             work: Vec::new(),
+            host_calls: HashSet::new(),
+            opaque: false,
         }
     }
 
@@ -228,6 +232,9 @@ impl Marker {
 
     fn mark_value(&mut self, value: &Value) {
         match value {
+            Value::HostPending { id } => {
+                self.host_calls.insert(*id);
+            }
             Value::Object { props } => {
                 if self.marked.insert(id_of(props)) {
                     self.work.push(MarkItem::Object(props.clone()));
@@ -357,6 +364,7 @@ impl Marker {
                     for value in borrowed.buffered.iter() {
                         self.mark_value(value);
                     }
+                    self.opaque |= borrowed.suspends_values();
                     // A suspended coroutine's stack is opaque by design;
                     // collection refuses to run while one is suspended.
                 }
@@ -374,10 +382,38 @@ impl Marker {
                 MarkItem::AsyncTask(inner) => {
                     // The result promise is tracked in its own right; the
                     // coroutine stack is opaque, hence the suspend barrier.
-                    let _ = inner;
+                    self.opaque |= inner
+                        .try_borrow()
+                        .map_or(true, |task| task.suspends_values());
                 }
             }
         }
+    }
+}
+
+/// Trace result handles at a quiescent owner boundary. Opaque coroutine stacks
+/// require conservative retention, just as they do for cycle collection.
+#[cfg(feature = "napi")]
+pub(crate) fn reachable_host_calls(roots: GcRoots) -> Option<HashSet<usize>> {
+    let mut marker = Marker::new();
+    for env in roots.envs {
+        marker.mark_env(&env);
+    }
+    for value in roots.values {
+        marker.mark_value(&value);
+    }
+    for queue in roots.jobs {
+        let mut values = Vec::new();
+        queue.borrow().trace_roots(&mut values);
+        for value in values {
+            marker.mark_value(&value);
+        }
+    }
+    marker.drain();
+    if marker.opaque {
+        None
+    } else {
+        Some(marker.host_calls)
     }
 }
 

@@ -110,3 +110,52 @@ test('Node worker teardown wakes and terminates the persistent guest owner',asyn
   try {assert.equal(await Promise.race([worker.terminate(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('worker teardown timed out')),2000);})]),1);}
   finally {clearTimeout(timer);await worker.terminate();}
 });
+
+test('throwing checkpoint recovers before new guest code', () => {
+  const vm = new Vm();
+  try {
+    assert.throws(() => vm.run("queueMicrotask(() => { throw new Error('boom'); });"), /boom/);
+    assert.equal(vm.run('42;'), '42');
+    assert.throws(() => vm.run("var seen=[];queueMicrotask(()=>{throw new Error('boom')});queueMicrotask(()=>seen.push('queued'));"), /boom/);
+    assert.equal(vm.run("seen.push('new');seen.join(',');"), 'queued,new');
+  } finally { vm.dispose(); }
+});
+test('unawaited host results do not lock admission and remain awaitable', async () => {
+  const s = new AsyncSession();
+  let resolve;
+  try {
+    await s.exposeFunction('background', async () => 1, true);
+    assert.equal(await s.run('background();42;'), '42');
+    assert.equal(await s.run('2+2;'), '4');
+    await s.exposeFunction('pending', () => new Promise(r => { resolve = r; }), true);
+    assert.equal(await s.run('var saved=pending();42;'), '42');
+    assert.equal(await s.run('2+2;'), '4');
+    resolve(7);
+    assert.equal(await s.run('await saved;'), '7');
+    await s.exposeFunction('bad', async () => { throw new Error('rejected'); }, true);
+    await s.run('var rejected=bad();');
+    await assert.rejects(s.run('await rejected;'), /rejected/);
+  } finally { s.dispose(); }
+});
+test('top-level await waits for future and nested real-time timers', async () => {
+  const s = new AsyncSession({ clock: 'real-time' });
+  try {
+    assert.equal(await s.run('await new Promise(r=>setTimeout(()=>r(42),50));'), '42');
+    assert.equal(await s.run('await new Promise(r=>setTimeout(()=>setTimeout(()=>r(7),5),5));'), '7');
+    await assert.rejects(s.run("await new Promise((r,j)=>setTimeout(()=>j(new Error('timer rejection')),5));"), /timer rejection/);
+    await assert.rejects(s.run('await new Promise(()=>{});'), /no VM or host event/);
+  } finally { s.dispose(); }
+});
+test('cancel and dispose wake a future-timer await after a host barrier', async () => {
+  for (const dispose of [false,true]) {
+    const s = new AsyncSession({ clock: 'real-time' });
+    let started;
+    const barrier = new Promise(r => { started = r; });
+    await s.exposeFunction('started', () => { started(); return 0; });
+    const p = s.run('started();await new Promise(r=>setTimeout(()=>r(42),60000));');
+    await barrier;
+    if (dispose) s.dispose(); else s.cancel();
+    await assert.rejects(p, /cancelled|disposed/);
+    s.dispose();
+  }
+});
