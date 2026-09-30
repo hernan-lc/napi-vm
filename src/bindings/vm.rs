@@ -64,13 +64,49 @@ fn is_export_identifier(key: &str) -> bool {
         )
 }
 
+// Unexecuted code templates contain no guest Value/Env or owner-local shape
+// guards. Keep this cache thread-local (Rc code is not Send), bounded, and
+// fork all feedback before running a template in a fresh owner.
+#[derive(Default)]
+struct FreshProgramCache {
+    programs: HashMap<Arc<str>, crate::interpreter::PreparedProgram>,
+    order: std::collections::VecDeque<Arc<str>>,
+    bytes: usize,
+}
+impl FreshProgramCache {
+    fn prepare(&mut self, source: &str) -> Result<crate::interpreter::PreparedProgram, VmErr> {
+        if let Some(program) = self.programs.get(source) {
+            return Ok(program.fork_for_owner());
+        }
+        let program = Interpreter::compile(source)?;
+        const MAX_BYTES: usize = 2 * 1024 * 1024;
+        if source.len() <= MAX_BYTES {
+            while self.programs.len() >= 64 || self.bytes + source.len() > MAX_BYTES {
+                let old = self.order.pop_front().expect("cached program");
+                self.programs.remove(&old);
+                self.bytes -= old.len();
+            }
+            let key: Arc<str> = source.into();
+            self.bytes += key.len();
+            self.order.push_back(key.clone());
+            self.programs.insert(key, program.clone());
+        }
+        Ok(program.fork_for_owner())
+    }
+}
+thread_local! {
+    static FRESH_PROGRAMS: std::cell::RefCell<FreshProgramCache> = Default::default();
+}
+
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
     let mut context = crate::runtime::OwnerContext::default();
     let _lease = context.enter();
     let result = {
         let mut interp = Interpreter::with_builtins();
         interp.is_main = is_main;
-        let result = execute_source(&mut interp, source)
+        let result = FRESH_PROGRAMS
+            .with(|cache| cache.borrow_mut().prepare(source))
+            .and_then(|program| interp.execute(&program))
             .and_then(|value| try_to_string(&value))
             .map_err(|error| VmErr::Msg(interp.enrich_error(error, None).to_string()));
         // Only a formatted string leaves this fresh runtime. Sever its
@@ -1232,6 +1268,60 @@ pub fn debug_parse(source: String) -> napi::Result<String> {
 mod owner_migration_tests {
     use super::*;
     use std::rc::Rc;
+
+    #[test]
+    fn owner_migration_prepared_templates_reset_feedback() {
+        let source = "function f(o){return o.x;} var o={x:42}; f(o);f(o);f(o);";
+        let mut cache = FreshProgramCache::default();
+        let first = cache.prepare(source).unwrap();
+        assert_eq!(first.tier(), crate::interpreter::ExecutionTier::Bytecode);
+        let mut owner = crate::runtime::OwnerContext::default();
+        {
+            let _lease = owner.enter();
+            let mut interp = Interpreter::with_builtins();
+            interp.set_tier_tracking(crate::jit::TierTracking::CountersOnly);
+            assert!(matches!(
+                interp.execute(&first).unwrap(),
+                Value::Number(42.)
+            ));
+            assert!(first.stats().unwrap().calls > 0);
+            assert!(first.stats().unwrap().ic_hits > 0);
+            interp.global.borrow_mut().clear_edges();
+            drop(interp);
+            assert_eq!(crate::heap::collect_after_interpreter_drop().skipped, None);
+        }
+        let second = cache.prepare(source).unwrap();
+        let stats = second.stats().unwrap();
+        assert_eq!(stats.calls, 0);
+        assert_eq!(stats.loop_iters, 0);
+        assert_eq!(stats.ic_hits, 0);
+        assert_eq!(stats.ic_misses, 0);
+        assert_eq!(stats.compiled, 0);
+        assert_eq!(
+            cache.programs.get(source).unwrap().stats().unwrap().calls,
+            0
+        );
+        assert_eq!(
+            run_source("Map.prototype.marker=42;42;", false).unwrap(),
+            "42"
+        );
+        assert_eq!(
+            run_source("Map.prototype.marker;", false).unwrap(),
+            "undefined"
+        );
+        assert_eq!(run_source(source, false).unwrap(), "42");
+        assert_eq!(run_source(source, false).unwrap(), "42");
+        for index in 0..70 {
+            cache.prepare(&format!("{index};")).unwrap();
+        }
+        assert_eq!(cache.programs.len(), 64);
+        assert_eq!(cache.order.len(), 64);
+        assert!(!cache.programs.contains_key(source));
+        assert_eq!(
+            cache.bytes,
+            cache.order.iter().map(|s| s.len()).sum::<usize>()
+        );
+    }
 
     fn shape_identity() -> usize {
         Rc::as_ptr(&crate::shape::Shape::root()) as usize

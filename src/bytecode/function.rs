@@ -112,6 +112,24 @@ impl FunctionStats {
 }
 
 impl BytecodeFunction {
+    /// Fork immutable code into a new owner, resetting every function's
+    /// shape guards, feedback and compiled artifacts. Nested functions must
+    /// also be forked: a shallow clone would share their mutable counters.
+    #[cfg(feature = "napi")]
+    pub(crate) fn fork_for_owner(&self) -> Self {
+        let mut fresh = self.clone();
+        fresh.caches = (0..self.caches.len())
+            .map(|_| crate::shape::PropCache::empty())
+            .collect();
+        fresh.tiers = Default::default();
+        for constant in &mut fresh.constants {
+            if let Constant::Function(function) = constant {
+                *function = std::rc::Rc::new(function.fork_for_owner());
+            }
+        }
+        fresh
+    }
+
     /// Render the instruction stream with addresses, for tests and debugging.
     pub fn disassemble(&self) -> String {
         let mut out = String::new();

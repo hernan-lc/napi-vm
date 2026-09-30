@@ -2831,7 +2831,22 @@ impl Drop for Value {
         ) {
             return;
         }
-        self.drop_children();
+        match self {
+            Value::Array(_)
+            | Value::Object { .. }
+            | Value::Function(_)
+            | Value::HostFunction { .. }
+            | Value::Class(_)
+            | Value::Proxy(_)
+            | Value::Promise(_)
+            | Value::Generator { .. }
+            | Value::Binding(_) => self.drop_children(),
+            #[cfg(stackful_coroutines)]
+            Value::AsyncTask(_) => self.drop_children(),
+            // The remaining variants own no nested Values. Their ordinary
+            // field drops suffice (notably builtin NativeFunction payloads).
+            _ => {}
+        }
     }
 }
 

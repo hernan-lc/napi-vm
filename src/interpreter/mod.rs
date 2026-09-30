@@ -1004,6 +1004,15 @@ pub enum ExecutionTier {
 }
 
 impl PreparedProgram {
+    #[cfg(feature = "napi")]
+    pub(crate) fn fork_for_owner(&self) -> Self {
+        let mut fresh = self.clone();
+        if let Executable::Bytecode(module) = &mut fresh.executable {
+            module.main = Rc::new(module.main.fork_for_owner());
+        }
+        fresh
+    }
+
     /// Return the selected tier without walking the function tree.
     pub fn tier(&self) -> ExecutionTier {
         match &self.executable {
