@@ -2821,7 +2821,22 @@ fn drain_prototype(meta: &RefCell<ObjectMeta>, work: &mut Vec<Value>) {
 /// would simply leak) are skipped via the strong-count checks, so they can
 /// neither recurse infinitely nor crash.
 impl Drop for Value {
+    #[inline]
     fn drop(&mut self) {
+        // Scalars cannot own guest edges. Keep their common register-drop
+        // path small enough for callers to eliminate it entirely.
+        if matches!(
+            self,
+            Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_)
+        ) {
+            return;
+        }
+        self.drop_children();
+    }
+}
+
+impl Value {
+    fn drop_children(&mut self) {
         let mut work: Vec<Value> = Vec::new();
         self.take_children(&mut work);
         while let Some(mut v) = work.pop() {

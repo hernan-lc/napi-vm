@@ -690,6 +690,7 @@ impl Instr {
     /// Fuel cost of one execution, per the §22 budget table. Plain moves
     /// are free; allocation and calls cost more. Exact numbers are a
     /// starting point for benchmark tuning, not a final schedule.
+    #[inline(always)]
     pub fn cost(&self) -> u64 {
         match self.opcode() {
             Opcode::Call | Opcode::CallMethod | Opcode::CallSpread | Opcode::MethodSpread => 5,

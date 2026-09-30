@@ -484,7 +484,7 @@ pub fn add_root(value: Value) -> RootId {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "napi"))]
 pub(crate) fn pin_count() -> usize {
     HEAP.with(|heap| heap.borrow().pins.len())
 }

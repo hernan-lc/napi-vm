@@ -70,9 +70,13 @@ pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
     let result = {
         let mut interp = Interpreter::with_builtins();
         interp.is_main = is_main;
-        execute_source(&mut interp, source)
+        let result = execute_source(&mut interp, source)
             .and_then(|value| try_to_string(&value))
-            .map_err(|error| VmErr::Msg(interp.enrich_error(error, None).to_string()))
+            .map_err(|error| VmErr::Msg(interp.enrich_error(error, None).to_string()));
+        // Only a formatted string leaves this fresh runtime. Sever its
+        // discarded global edges before sweeping the remaining cycles.
+        interp.global.borrow_mut().clear_edges();
+        result
     };
     crate::heap::collect_after_interpreter_drop();
     result
@@ -1356,6 +1360,7 @@ mod runtime_profile {
                 let started = std::time::Instant::now();
                 std::hint::black_box(try_to_string(&value).unwrap());
                 drop(value);
+                interp.global.borrow_mut().clear_edges();
                 drop(interp);
                 let teardown = started.elapsed().as_nanos();
                 let started = std::time::Instant::now();
