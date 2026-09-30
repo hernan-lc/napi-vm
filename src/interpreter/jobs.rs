@@ -112,9 +112,8 @@ pub struct JobQueue {
     /// clock here: a timer runs after every microtask has, which preserves the
     /// ordering guarantees guest code depends on without a wall clock.
     // Nonnegative finite f64 bit patterns have the same order as their values.
-    timers: BTreeMap<(u64, u128), Job>,
+    timers: BTreeMap<(u64, u128), (u64, Job)>,
     timer_ids: HashMap<u64, (u64, u128)>,
-    timer_keys: HashMap<(u64, u128), u64>,
     next_timer_id: u64,
     next_sequence: u128,
     peak_depth: usize,
@@ -138,7 +137,7 @@ impl JobQueue {
         {
             job.trace_values(out);
         }
-        for job in self.timers.values() {
+        for (_, job) in self.timers.values() {
             job.trace_values(out);
         }
         for waiters in self.atomics_waiters.values() {
@@ -196,9 +195,8 @@ impl JobQueue {
         let delay = normalize_delay(delay);
         let deadline = (self.clock.now_ms() + delay).min(f64::MAX);
         let key = (deadline.to_bits(), self.next_sequence);
-        self.timers.insert(key, job);
+        self.timers.insert(key, (id, job));
         self.timer_ids.insert(id, key);
-        self.timer_keys.insert(key, id);
         self.observe_depth();
         id
     }
@@ -264,7 +262,6 @@ impl JobQueue {
 
     pub fn cancel_timer(&mut self, id: u64) {
         if let Some(key) = self.timer_ids.remove(&id) {
-            self.timer_keys.remove(&key);
             self.timers.remove(&key);
         }
     }
@@ -274,10 +271,8 @@ impl JobQueue {
         if !self.has_due_timer() {
             return None;
         }
-        let (key, job) = self.timers.pop_first()?;
-        if let Some(id) = self.timer_keys.remove(&key) {
-            self.timer_ids.remove(&id);
-        }
+        let (_, (id, job)) = self.timers.pop_first()?;
+        self.timer_ids.remove(&id);
         Some(job)
     }
 
@@ -439,7 +434,7 @@ mod scheduler_tests {
             vec![1., 2., 3., 4., 5., 0., 6.]
         );
         assert!(q.timer_ids.is_empty());
-        assert!(q.timer_keys.is_empty());
+        assert!(q.timers.is_empty());
     }
     #[test]
     fn timer_ids_wrap_without_collisions_or_reordering() {
