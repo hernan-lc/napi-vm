@@ -161,3 +161,77 @@ stored unawaited results alone do not lock an idle session. Actual background
 failures remain terminal. macOS/Windows native execution, real browser GUI
 execution and the isolated X-display test were not run. Remote CI remains
 explicitly outside this follow-up's scope.
+
+## Cross-execution reentry follow-up (2026-09-30)
+
+Review baseline: `05e1cf0657cffeb264748455ee45a9c54f30b4ee`. The earlier
+execution-epoch admission claim was incomplete: an unresolved result saved by
+A could be awaited by B while A's callback queued and awaited a command behind
+B. Fixed in `1131fc4f97519f1b453e4b61d0079a9041cb808b`.
+
+### Reproduction and fix
+
+Before the fix:
+
+- `node --test --test-name-pattern='saved host result protects' tests/node/async-session.test.js`
+  failed on the original release addon after 2009 ms with `Guest execution
+  deadline exceeded`. A stored `saved=background()` and completed; B was
+  admitted before the Node continuation barrier was released. B executed a
+  pure guest prelude before `await saved`. The reentrant command was admitted
+  and the execution deadline served only as an escape from the cycle.
+- `cargo test --all-features dependency_lifecycle_tests` failed at
+  `assert!(bridge.owner_waiting_for_node())`. This test creates no Node handles
+  and explicitly transitions A to inactive and then starts B with A's
+  dependency still unresolved, deterministically exposing the epoch reset.
+
+The dependency registry is now an immutable session-lifetime `Arc`. Ending an
+execution changes its active flag; it cannot replace the registry and orphan
+old leases. Admission consults every unsettled Node call while guest execution
+is active or admitted. A guest command reserves admission before enqueueing
+and keeps its RAII lease through completion, so an old callback cannot queue
+behind B even before B starts. Failed submissions, cancelled/removed commands,
+panics and shutdown drop the reservation through the same ownership path.
+`await_host` retains its existing wait guard and stored-result ownership.
+
+This does not lock idle sessions based on the number of stored results: while
+no guest execution is active/admitted, unresolved unawaited results permit new
+commands. Settled stored results have released their Node dependency. Later
+await, settlement/rejection, abandonment and cancellation keep their existing
+cleanup and GC-root behavior. Deadlines, scheduler waits, public APIs and hard
+budgets are unchanged by this fix. The restriction is conservative during guest
+work: guest code may await an old unresolved result later in that execution.
+
+After the fix, the native regression rejects the callback's reentry, B returns
+`7`, and subsequent work succeeds, without cancelling B. The Rust test covers
+both B-admitted and B-active phases and verifies release on settlement. Existing
+same-execution, idle callback reentry, unresolved/completed saved results,
+rejection, cancellation, disposal and unrelated-session tests remain enabled.
+
+### Exact final local checks
+
+| Command | Result on the final implementation |
+| --- | --- |
+| `npm run lint:rust` | Formatting and Clippy all targets/all features with warnings denied: passed |
+| `npm run lint:ts` | Passed |
+| `cargo check --all-features` | Passed |
+| `cargo test --release --all-features` | 461 passed, 1 ignored; includes native-addon fixtures and the new deterministic dependency test |
+| `cargo test --no-default-features` | 427 passed, 0 ignored |
+| `npm run build:all` | Release ESM and CommonJS native-addon builds passed |
+| `git diff --exit-code -- index.js index.mjs index.d.ts` | Passed; regenerated bindings unchanged |
+| `npm run test:node` | 41 passed with release addon, 0 failed |
+| `npm test` | Release addon: 1,482 passed across 64 files, 0 failed, 2,423 assertions |
+| `npm run test:wasm` | Release WASM build, playground types, and 9 Node-hosted WASM tests passed |
+| `git diff --check` | Passed |
+
+The initial debug-addon `npm test` run had 1,481 passes and one timeout:
+`dynamic global creation is bounded through all global aliases` exceeded Bun's
+5000 ms default (6583 ms recorded). The unchanged test passed with release in
+1152 ms, and the full release suite passed in 8.61 s. The default-timeout debug
+suite is therefore **not claimed to pass**. The debug Node suite passed all 41
+tests; the final release regression passed in Bun in 41 ms.
+
+Logs: `/tmp/pr7-cross-epoch-{repro,rust-repro,release,core,lint-final,ts,build,node,bun,wasm}.log`.
+The ignored X-display/native-input test and unrun macOS/Windows and real-browser
+GUI checks retain the limitations documented above. No remote CI was queried,
+no workflows/account/billing/permission settings changed, and no merge was
+performed. No performance speedup is claimed.
