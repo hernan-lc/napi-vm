@@ -376,7 +376,7 @@ pub(super) unsafe extern "C" fn api_call_threadsafe_function(
                 .map_err(|_| NAPI_GENERIC_FAILURE)?;
         }
         state.values.push_back(data as usize);
-        if shared
+        if state.values.len()==1 && shared
             .notifications
             .send(HostRuntimeNotification::ThreadsafeFunction(shared.id))
             .is_err()

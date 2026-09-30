@@ -1150,13 +1150,22 @@ impl NativeAddonLoader for NodeAddonSidecar {
 
 impl HostBridge for NodeAddonSidecar {
     fn poll_host_events(&self, timeout: Duration) -> Result<Vec<HostEvent>, VmErr> {
-        if self.is_shutdown() {
+        self.poll_host_events_bounded(timeout, usize::MAX)
+    }
+
+    fn poll_host_events_bounded(
+        &self,
+        timeout: Duration,
+        limit: usize,
+    ) -> Result<Vec<HostEvent>, VmErr> {
+        if limit == 0 || self.is_shutdown() {
             return Ok(Vec::new());
         }
         let events = {
             let mut state = self.state.borrow_mut();
             let mut events = Vec::new();
-            events.extend(state.pending_events.drain(..));
+            let count = limit.min(state.pending_events.len());
+            events.extend(state.pending_events.drain(..count));
             if events.is_empty() {
                 let first = if timeout.is_zero() {
                     state.event_rx.try_recv().ok()
@@ -1165,7 +1174,7 @@ impl HostBridge for NodeAddonSidecar {
                 };
                 if let Some(event) = first {
                     events.push(event);
-                    events.extend(state.event_rx.try_iter());
+                    events.extend(state.event_rx.try_iter().take(limit.saturating_sub(1)));
                 }
             }
             events
