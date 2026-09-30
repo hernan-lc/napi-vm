@@ -16,6 +16,29 @@ pub(super) struct ExportSlots {
     free: Vec<usize>,
 }
 impl ExportSlots {
+    #[cfg(test)]
+    pub(super) fn assert_empty(&self) {
+        assert!(
+            self.slots
+                .iter()
+                .all(|slot| slot.value.is_none() && slot.pin.is_none())
+        );
+        assert_eq!(crate::heap::pin_count(), 0);
+    }
+    #[cfg(test)]
+    pub(super) fn assert_reuse_safe(&mut self) {
+        assert_eq!(self.slots.len(), 1);
+        let stale = ExportId {
+            slot: 0,
+            generation: self.slots[0].generation,
+        };
+        let new = self.insert(Value::Number(42.));
+        assert_ne!(stale, new);
+        self.release(stale);
+        assert!(matches!(self.get(new), Some(Value::Number(42.))));
+        self.release(new);
+        self.assert_empty();
+    }
     pub(super) fn insert(&mut self, value: Value) -> ExportId {
         let pin = heap::add_root(value.clone());
         let slot = self.free.pop().unwrap_or_else(|| {

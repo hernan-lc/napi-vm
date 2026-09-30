@@ -1757,3 +1757,62 @@ NAPI_MODULE(NODE_GYP_MODULE_NAME, init)
     drop(_sparse_bridge);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn sidecar_retained_guest_graphs_survive_collection() {
+    let sidecar = Rc::new(NodeAddonSidecar::new("node").unwrap());
+    let mut vm = Interpreter::with_builtins();
+    vm.set_host_bridge(sidecar.clone());
+    vm.eval_source("var retainedObject={x:41};var retainedCallback=()=>retainedObject.x+1;")
+        .unwrap();
+    let object = vm.global.borrow().get("retainedObject").unwrap();
+    // Capture a private lexical object, so removing the globals really does
+    // leave the callback's environment reachable only through the bridge.
+    let callback = vm
+        .eval_source("(()=>{let privateObject={x:42};return ()=>privateObject.x;})()")
+        .unwrap();
+    let promise_value = vm.eval_source("var promiseSeen=0;var retainedPromise=new Promise(()=>{});retainedPromise.then(v=>promiseSeen=v);retainedPromise;").unwrap();
+    let Value::Promise(ref promise) = promise_value else {
+        panic!("promise")
+    };
+    let symbol = vm.eval_source("Symbol('retained')").unwrap();
+    {
+        let mut state = sidecar.state.borrow_mut();
+        state.object_proxies.insert(1, object);
+        state.guest_callbacks.insert(2, callback);
+        state
+            .guest_graph_nodes
+            .insert(3, Value::object(vec![("x".into(), Value::Number(43.))]));
+        state.native_promises.insert(4, promise.clone());
+        state.host_symbols.insert("symbol".into(), symbol);
+    }
+    drop(promise_value);
+    vm.eval_source(
+        "retainedObject=undefined;retainedCallback=undefined;retainedPromise=undefined;",
+    )
+    .unwrap();
+    assert_eq!(vm.collect_cycles().skipped, None);
+    let callback = sidecar.state.borrow().guest_callbacks[&2].clone();
+    assert!(matches!(
+        vm.call_this(&callback, Value::Undefined, vec![]).unwrap(),
+        Value::Number(42.)
+    ));
+    assert!(matches!(
+        sidecar.state.borrow().object_proxies[&1].get_prop("x"),
+        Some(Value::Number(41.))
+    ));
+    assert!(matches!(
+        sidecar.state.borrow().guest_graph_nodes[&3].get_prop("x"),
+        Some(Value::Number(43.))
+    ));
+    let promise = sidecar.state.borrow().native_promises[&4].clone();
+    assert_eq!(promise.borrow().state, PromiseState::Pending);
+    vm.resolve_promise(&promise, Value::Number(44.)).unwrap();
+    assert_eq!(promise.borrow().state, PromiseState::Fulfilled);
+    assert!(matches!(promise.borrow().value, Value::Number(44.)));
+    vm.drain_microtasks().unwrap();
+    assert!(matches!(
+        vm.global.borrow().get("promiseSeen"),
+        Some(Value::Number(44.))
+    ));
+}

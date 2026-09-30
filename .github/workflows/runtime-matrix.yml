@@ -53,3 +53,7 @@ jobs:
           components: miri
       - run: cargo miri setup
       - run: cargo miri test --no-default-features --lib shape::tests
+      - name: Production owner gate migration without Node FFI
+        run: cargo miri test --no-default-features --features napi --lib owner_migration
+      - name: Export failure rollback without Node FFI
+        run: cargo miri test --no-default-features --features napi --lib failed_export_setup

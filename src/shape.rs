@@ -61,9 +61,15 @@ pub(crate) struct ShapeContext {
 #[cfg(feature = "napi")]
 impl Default for ShapeContext {
     fn default() -> Self {
-        let root = Shape::fresh(Vec::new());
-        let next = root.id.checked_add(1).expect("shape IDs exhausted");
-        Self { root, next }
+        // Constructing a detached owner must not consume the active owner's
+        // shape IDs. Its counter starts independently when it is leased.
+        let root = Rc::new(Shape {
+            id: 1,
+            keys: Vec::new(),
+            index: HashMap::new(),
+            transitions: RefCell::new(HashMap::new()),
+        });
+        Self { root, next: 2 }
     }
 }
 #[cfg(feature = "napi")]

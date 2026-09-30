@@ -1279,7 +1279,11 @@ fn super_call(
 ) -> Result<Value, VmErr> {
     let current = current_scope(interp, frame);
     let scope = current.borrow();
-    let this_val = frame.this_value.clone();
+    let this_val = if frame.function.is_arrow {
+        scope.get("this").unwrap_or(Value::Undefined)
+    } else {
+        frame.this_value.clone()
+    };
     let super_ctor = scope
         .get("__super_ctor")
         .ok_or_else(|| VmErr::Msg("super used outside a derived class".to_string()))?;

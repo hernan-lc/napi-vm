@@ -121,3 +121,80 @@ fn host_panic_restores_bytecode_scope_and_allows_reuse() {
         Value::Number(42.)
     ));
 }
+
+fn pending_checkpoint(max_jobs: usize) -> Interpreter {
+    use napi_vm::interpreter::{ExecutionBudget, Job};
+    let mut vm = Interpreter::with_builtins();
+    let callback = vm
+        .eval_source("var checkpointSeen=0;()=>checkpointSeen++;")
+        .unwrap();
+    vm.set_execution_budget(ExecutionBudget {
+        max_jobs,
+        ..Default::default()
+    });
+    for _ in 0..2 {
+        vm.jobs.borrow_mut().push_microtask(Job::Callback {
+            callback: callback.clone(),
+            args: vec![],
+        });
+    }
+    assert!(
+        vm.poll_event_loop(napi_vm::TurnBudget::jobs(1))
+            .unwrap()
+            .checkpoint_pending
+    );
+    vm
+}
+
+#[test]
+fn checkpoint_resumes_before_valid_source_or_parse_error() {
+    let options = EvaluationOptions {
+        resume_pending_checkpoint: true,
+        ..Default::default()
+    };
+    let mut vm = pending_checkpoint(10);
+    assert!(matches!(
+        vm.eval_source_with_options("checkpointSeen;", options)
+            .unwrap(),
+        Value::Number(2.)
+    ));
+    let mut vm = pending_checkpoint(10);
+    assert!(vm.eval_source_with_options("const = ;", options).is_err());
+    assert!(matches!(
+        vm.global.borrow().get("checkpointSeen"),
+        Some(Value::Number(2.))
+    ));
+    assert!(vm.ensure_can_evaluate().is_ok());
+}
+
+#[test]
+fn checkpoint_admission_and_old_budget_take_precedence_over_syntax() {
+    let mut vm = pending_checkpoint(10);
+    let before = vm.prepared_cache_stats();
+    assert!(
+        vm.eval_source("const = ;")
+            .unwrap_err()
+            .to_string()
+            .contains("checkpoint")
+    );
+    assert_eq!(before, vm.prepared_cache_stats());
+    for source in ["checkpointSeen;", "const = ;"] {
+        let mut vm = pending_checkpoint(1);
+        let error = vm
+            .eval_source_with_options(
+                source,
+                EvaluationOptions {
+                    resume_pending_checkpoint: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("job"), "{error}");
+        assert!(matches!(
+            vm.global.borrow().get("checkpointSeen"),
+            Some(Value::Number(1.))
+        ));
+        assert!(vm.ensure_can_evaluate().is_err());
+        assert_eq!(vm.prepared_cache_stats().2, 1);
+    }
+}

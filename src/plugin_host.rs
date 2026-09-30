@@ -169,6 +169,9 @@ impl Default for RustPluginHostOptions {
 }
 
 /// A trusted Rust host callback exposed through one capability module.
+/// Guest values captured by a callback must be pinned with [`crate::heap::RootPin`]
+/// for the callback's lifetime, under the same owner context. Rust closure
+/// captures are opaque to the bridge's garbage collector.
 /// Receives the calling interpreter for value conversion and guest calls.
 pub type RustPluginFunction = Rc<dyn Fn(&mut Interpreter, Vec<Value>) -> Result<Value, VmErr>>;
 

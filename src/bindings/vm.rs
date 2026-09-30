@@ -85,7 +85,7 @@ pub(super) struct VmRuntime {
     modules: HashMap<String, Arc<str>>,
     /// VM functions handed to the host, indexed by the id their host-side
     /// wrapper carries. A slot is `None` once its wrapper is collected.
-    exports: super::export_slots::ExportSlots,
+    pub(super) exports: super::export_slots::ExportSlots,
     export_releases: std::sync::mpsc::Receiver<super::export_slots::ExportId>,
     /// Bridge globals generated per `registerHostModule` name, so they can be
     /// revoked when the module is replaced or removed.
@@ -190,6 +190,24 @@ impl VMState {
         self.runtime
             .with_mut(|runtime| runtime.exports.insert(value))
     }
+    #[cfg(test)]
+    pub(super) fn assert_no_queued_export_releases(&self) {
+        let _guard = self.runtime.gate.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: the production gate excludes every runtime access. Only
+        // integer release messages are inspected; no guest value leaves it.
+        let runtime = unsafe { &*self.runtime.runtime.get() }.as_ref().unwrap();
+        assert!(matches!(
+            runtime.export_releases.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    /// Failed export setup rolls back its pin before returning to the host.
+    pub(super) fn rollback_export(&self, index: super::export_slots::ExportId) {
+        self.runtime
+            .with_mut(|runtime| runtime.exports.release(index));
+    }
+
     /// Finalizers enqueue only an ID and never acquire the runtime gate.
     pub(super) fn release_export(&self, index: super::export_slots::ExportId) {
         let _ = self.release_tx.send(index);
@@ -269,7 +287,7 @@ impl Default for VM {
 }
 
 impl VM {
-    fn new_state() -> Arc<VMState> {
+    pub(super) fn new_state() -> Arc<VMState> {
         let (release_tx, export_releases) = std::sync::mpsc::channel();
         Arc::new(VMState {
             runtime: RuntimeCell::new(|| VmRuntime {
@@ -1202,4 +1220,184 @@ pub fn debug_parse(source: String) -> napi::Result<String> {
         ));
     }
     Ok(format!("{:?}", statements))
+}
+
+// Exercise the production gate and detached arena without creating a Node
+// environment or calling any N-API function. The same suite runs under Miri.
+#[cfg(test)]
+mod owner_migration_tests {
+    use super::*;
+    use std::rc::Rc;
+
+    fn shape_identity() -> usize {
+        Rc::as_ptr(&crate::shape::Shape::root()) as usize
+    }
+    fn arena_identity(runtime: &mut VmRuntime) -> (usize, usize, usize, usize) {
+        let symbol = runtime
+            .interp
+            .eval_source("Symbol.for('owner-probe')")
+            .unwrap();
+        let Value::Symbol(ref symbol) = symbol else {
+            panic!("symbol")
+        };
+        let proto = runtime
+            .interp
+            .eval_source("Object.getPrototypeOf(new Map())")
+            .unwrap();
+        let Value::Object { ref props } = proto else {
+            panic!("prototype")
+        };
+        (
+            shape_identity(),
+            Rc::as_ptr(symbol) as usize,
+            Rc::as_ptr(props) as usize,
+            crate::heap::pin_count(),
+        )
+    }
+    #[test]
+    fn owner_migration_thread_handoffs_and_drop() {
+        let outer_shape = shape_identity();
+        let outer_heap = crate::heap::counters();
+        let state = VM::new_state();
+        let (expected, pinned) = state.with_runtime(|runtime| {
+            let object = runtime
+                .interp
+                .eval_source("var rooted={answer:42};rooted.self=rooted;rooted;")
+                .unwrap();
+            let pinned = runtime.exports.insert(object);
+            runtime.interp.eval_source("rooted=undefined;").unwrap();
+            (arena_identity(runtime), pinned)
+        });
+        assert_eq!(shape_identity(), outer_shape);
+        assert_eq!(crate::heap::counters(), outer_heap);
+        for _ in 0..8 {
+            let transferred = state.clone();
+            std::thread::spawn(move || {
+                let outer = shape_identity();
+                transferred.with_runtime(|runtime| {
+                    assert_eq!(arena_identity(runtime), expected);
+                    assert_eq!(runtime.interp.collect_cycles().skipped, None);
+                    assert!(matches!(
+                        runtime.export(pinned).unwrap().get_prop("answer"),
+                        Some(Value::Number(42.))
+                    ));
+                });
+                assert_eq!(shape_identity(), outer);
+            })
+            .join()
+            .unwrap();
+            assert_eq!(state.with_runtime(arena_identity), expected);
+            let transferred = state.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            state
+                .dispatch_async(Box::new(move || {
+                    tx.send(transferred.with_runtime(arena_identity)).unwrap();
+                }))
+                .unwrap();
+            assert_eq!(rx.recv().unwrap(), expected);
+        }
+        // No bridge exists: destruction here exercises only Rust state.
+        std::thread::spawn(move || drop(state)).join().unwrap();
+        assert_eq!(shape_identity(), outer_shape);
+        assert_eq!(crate::heap::counters(), outer_heap);
+    }
+    #[test]
+    fn owner_migration_panic_nested_contexts_restore_tls() {
+        let mut ambient = crate::runtime::OwnerContext::default();
+        let _ambient = ambient.enter();
+        let first = VM::new_state();
+        let second = VM::new_state();
+        let first_identity = first.with_runtime(arena_identity);
+        let second_identity = second.with_runtime(arena_identity);
+        assert_ne!(first_identity.0, second_identity.0);
+        assert_ne!(first_identity.1, second_identity.1);
+        assert_ne!(first_identity.2, second_identity.2);
+        let ambient_shape = shape_identity();
+        let ambient_heap = crate::heap::counters();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            first.with_runtime(|runtime| {
+                assert_eq!(arena_identity(runtime), first_identity);
+                second.with_runtime(|runtime| {
+                    assert_eq!(arena_identity(runtime), second_identity);
+                    panic!("lease probe");
+                });
+            });
+        }));
+        assert!(panic.is_err());
+        assert_eq!(shape_identity(), ambient_shape);
+        assert_eq!(crate::heap::counters(), ambient_heap);
+        assert_eq!(first.with_runtime(arena_identity), first_identity);
+        assert_eq!(second.with_runtime(arena_identity), second_identity);
+    }
+}
+
+#[cfg(test)]
+mod runtime_profile {
+    use super::*;
+    #[test]
+    #[ignore = "serialized diagnostic profile; run with --ignored --nocapture"]
+    fn runtime_phase_profile() {
+        for (name, source) in [
+            ("tiny", "function f(x,y){return x+y;}f(20,22);"),
+            ("arithmetic", "var n=0;for(var i=0;i<1000;i++)n+=i;n;"),
+        ] {
+            let mut nanos = [0_u128; 6];
+            for iteration in 0..1050 {
+                let started = std::time::Instant::now();
+                let mut context = crate::runtime::OwnerContext::default();
+                let lease = context.enter();
+                let owner = started.elapsed().as_nanos();
+                let started = std::time::Instant::now();
+                let mut interp = Interpreter::with_builtins();
+                let builtins = started.elapsed().as_nanos();
+                let started = std::time::Instant::now();
+                let value = execute_source(&mut interp, source).unwrap();
+                let execution = started.elapsed().as_nanos();
+                let started = std::time::Instant::now();
+                std::hint::black_box(try_to_string(&value).unwrap());
+                drop(value);
+                drop(interp);
+                let teardown = started.elapsed().as_nanos();
+                let started = std::time::Instant::now();
+                crate::heap::collect_after_interpreter_drop();
+                let collection = started.elapsed().as_nanos();
+                let started = std::time::Instant::now();
+                drop(lease);
+                drop(context);
+                let detach = started.elapsed().as_nanos();
+                if iteration >= 50 {
+                    for (total, sample) in nanos
+                        .iter_mut()
+                        .zip([owner, builtins, execution, teardown, collection, detach])
+                    {
+                        *total += sample;
+                    }
+                }
+            }
+            println!(
+                "{}",
+                serde_json::json!({"profile": "runCode", "workload":name,"operations":1000,"phase_ns":nanos})
+            );
+        }
+        let state = VM::new_state();
+        let started = std::time::Instant::now();
+        for _ in 0..100_000 {
+            state.with_runtime(|runtime| {
+                std::hint::black_box(runtime.interp.prepared_cache_stats())
+            });
+        }
+        println!(
+            "{}",
+            serde_json::json!({"profile":"runtime_lease", "operations":100000,"elapsed_ns":started.elapsed().as_nanos()})
+        );
+        let program = Interpreter::compile("var n=0;for(var i=0;i<1000;i++)n+=i;n;").unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..100_000 {
+            std::hint::black_box(program.clone());
+        }
+        println!(
+            "{}",
+            serde_json::json!({"profile":"prepared_clone", "operations":100000,"elapsed_ns":started.elapsed().as_nanos()})
+        );
+    }
 }

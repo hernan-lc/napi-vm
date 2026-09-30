@@ -2,7 +2,7 @@
 //! every interpreter in the process.
 //!
 //! Entries compare exact source contents, retain at most 1024 programs and
-//! 8 MiB of source, and evict least-recently-used entries. Failures are not
+//! 8 MiB of source, and evict least-recently-used entries with bounded periodic recency cleanup. Failures are not
 //! cached. A poisoned lock fails open to a fresh parse.
 
 use std::collections::HashMap;
@@ -40,21 +40,31 @@ const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 struct ParseCacheEntry {
     source: Arc<str>,
     statements: Arc<Vec<Statement>>,
+    generation: u64,
 }
 /// Exact-source LRU. Hash collisions are resolved by HashMap's equality check.
 #[derive(Default)]
 struct ParseCache<S = std::collections::hash_map::RandomState> {
     entries: HashMap<Arc<str>, ParseCacheEntry, S>,
-    order: std::collections::VecDeque<Arc<str>>,
+    order: std::collections::VecDeque<(Arc<str>, u64)>,
     source_bytes: usize,
 }
 impl<S: std::hash::BuildHasher> ParseCache<S> {
     fn get(&mut self, source: &str) -> Option<Arc<Vec<Statement>>> {
-        let entry = self.entries.get(source)?;
+        let entry = self.entries.get_mut(source)?;
         let result = entry.statements.clone();
-        let key = entry.source.clone();
-        self.order.retain(|s| s.as_ref() != source);
-        self.order.push_back(key);
+        entry.generation = entry.generation.wrapping_add(1);
+        self.order
+            .push_back((entry.source.clone(), entry.generation));
+        // Hits are O(1); compact only after a bounded batch of accesses.
+        // At most two records per permitted entry survive between cleanups.
+        if self.order.len() > 2 * MAX_CACHED_PROGRAMS {
+            self.order.retain(|(key, generation)| {
+                self.entries
+                    .get(key)
+                    .is_some_and(|entry| entry.generation == *generation)
+            });
+        }
         Some(result)
     }
     fn insert(&mut self, source: &str, statements: Arc<Vec<Statement>>) {
@@ -64,18 +74,29 @@ impl<S: std::hash::BuildHasher> ParseCache<S> {
         while self.entries.len() >= MAX_CACHED_PROGRAMS
             || self.source_bytes + source.len() > MAX_SOURCE_BYTES
         {
-            let Some(key) = self.order.pop_front() else {
+            let Some((key, generation)) = self.order.pop_front() else {
                 break;
             };
-            if self.entries.remove(&key).is_some() {
+            if self
+                .entries
+                .get(&key)
+                .is_some_and(|entry| entry.generation == generation)
+            {
+                self.entries.remove(&key);
                 self.source_bytes -= key.len();
             }
         }
         let source: Arc<str> = source.into();
         self.source_bytes += source.len();
-        self.order.push_back(source.clone());
-        self.entries
-            .insert(source.clone(), ParseCacheEntry { source, statements });
+        self.order.push_back((source.clone(), 0));
+        self.entries.insert(
+            source.clone(),
+            ParseCacheEntry {
+                source,
+                statements,
+                generation: 0,
+            },
+        );
     }
 }
 static PARSE_CACHE: OnceLock<Mutex<ParseCache>> = OnceLock::new();
@@ -153,6 +174,23 @@ mod tests {
         assert_eq!(cache.entries.len(), MAX_CACHED_PROGRAMS);
         cache.insert(&" ".repeat(MAX_SOURCE_BYTES + 1), ast);
         assert!(cache.source_bytes <= MAX_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn hot_hits_keep_recency_storage_bounded() {
+        let mut cache = ParseCache::<std::collections::hash_map::RandomState>::default();
+        let ast = Arc::new(Vec::new());
+        for i in 0..MAX_CACHED_PROGRAMS {
+            cache.insert(&format!("{i};"), ast.clone());
+        }
+        for _ in 0..10_000 {
+            assert!(Arc::ptr_eq(&cache.get("0;").unwrap(), &ast));
+            assert!(cache.order.len() <= 2 * MAX_CACHED_PROGRAMS);
+        }
+        cache.insert("overflow;", ast);
+        assert!(cache.get("0;").is_some());
+        assert!(cache.get("1;").is_none());
+        assert_eq!(cache.entries.len(), MAX_CACHED_PROGRAMS);
     }
 
     #[test]

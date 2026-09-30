@@ -717,15 +717,11 @@ export default { createRequire, isBuiltin, builtinModules };
         program: &PreparedProgram,
         options: EvaluationOptions,
     ) -> Result<Value, VmErr> {
-        if options.resume_pending_checkpoint && self.jobs.borrow().checkpoint_pending {
-            self.drain_microtasks()?;
-        }
-        self.ensure_can_evaluate()?;
+        self.resume_before_evaluation(options)?;
         self.begin_execution();
-        self.last_evaluation_tier = Some(if program.stats().is_some() {
-            "bytecode"
-        } else {
-            "ast"
+        self.last_evaluation_tier = Some(match program.tier() {
+            ExecutionTier::Bytecode => "bytecode",
+            ExecutionTier::Ast => "ast",
         });
         self.source_lines = SourceContext::new(program.source.clone());
         let result = self.execute_prepared_raw(program);
@@ -749,8 +745,16 @@ export default { createRequire, isBuiltin, builtinModules };
         source: &str,
         options: EvaluationOptions,
     ) -> Result<Value, VmErr> {
+        self.resume_before_evaluation(options)?;
         let program = self.prepare_source(source, SourceKind::Script)?;
         self.execute_with_options(&program, options)
+    }
+
+    fn resume_before_evaluation(&mut self, options: EvaluationOptions) -> Result<(), VmErr> {
+        if options.resume_pending_checkpoint && self.jobs.borrow().checkpoint_pending {
+            self.drain_microtasks()?;
+        }
+        self.ensure_can_evaluate()
     }
 
     fn prepare_source(&mut self, source: &str, kind: SourceKind) -> Result<PreparedProgram, VmErr> {
@@ -768,6 +772,7 @@ export default { createRequire, isBuiltin, builtinModules };
         source: &str,
         options: EvaluationOptions,
     ) -> Result<Value, VmErr> {
+        self.resume_before_evaluation(options)?;
         let program = self.prepare_source(source, SourceKind::Module)?;
         self.execute_with_options(&program, options)
     }
@@ -991,7 +996,22 @@ pub struct PreparedProgram {
     kind: SourceKind,
 }
 
+/// The execution tier selected when a program was prepared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionTier {
+    Ast,
+    Bytecode,
+}
+
 impl PreparedProgram {
+    /// Return the selected tier without walking the function tree.
+    pub fn tier(&self) -> ExecutionTier {
+        match &self.executable {
+            Executable::Bytecode(_) => ExecutionTier::Bytecode,
+            Executable::Ast => ExecutionTier::Ast,
+        }
+    }
+
     /// Snapshot this program's tier-up and inline-cache counters: `None`
     /// when the AST tier was selected (it has no counters to report),
     /// otherwise the whole function tree's totals.

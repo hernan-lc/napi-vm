@@ -1219,3 +1219,17 @@ fn raw_tagged_templates_and_export_mutation_remain_equivalent() {
         )],
     );
 }
+
+#[test]
+fn arrow_super_uses_lexical_receiver() {
+    for source in [
+        "class A { constructor(){ this.x=1; } } class B extends A { constructor(){ (()=>super())(); } } new B().x;",
+        "class A { constructor(){ this.x=1; } } class B extends A { constructor(){ (()=>(()=>super())())(); } } new B().x;",
+        "class A { method(){ return this.x; } } class B extends A { constructor(){super();this.x=7;} method(){return (()=>super.method())();} } new B().method();",
+        "class A { method(){ return this.x; } } class B extends A { constructor(){super();this.x=7;} method(){return (()=>(()=>super.method())())();} } new B().method();",
+        "class A { constructor(){this.x=1;} } class B extends A { constructor(){super();function inner(){return this;}this.y=inner();} } new B().y;",
+        "class A { method(){return this.x;} } class B extends A { constructor(){super();this.x=7;} method(){function inner(){return super.method();}return inner.call({x:9});} } new B().method();",
+    ] {
+        check(source, true);
+    }
+}

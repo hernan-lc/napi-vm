@@ -484,6 +484,11 @@ pub fn add_root(value: Value) -> RootId {
     })
 }
 
+#[cfg(test)]
+pub(crate) fn pin_count() -> usize {
+    HEAP.with(|heap| heap.borrow().pins.len())
+}
+
 pub fn remove_root(id: RootId) {
     HEAP.with(|heap| {
         heap.borrow_mut().pins.remove(&id);
@@ -671,15 +676,22 @@ pub fn counters() -> HeapCounters {
 }
 
 /// RAII pin for guest values retained by an embedding host on this owner.
-pub struct RootPin(RootId);
+/// Pins must be created and dropped under the same owner context.
+pub struct RootPin {
+    id: RootId,
+    _owner: std::marker::PhantomData<std::rc::Rc<()>>,
+}
 impl RootPin {
     pub fn new(value: Value) -> Self {
-        Self(add_root(value))
+        Self {
+            id: add_root(value),
+            _owner: std::marker::PhantomData,
+        }
     }
 }
 impl Drop for RootPin {
     fn drop(&mut self) {
-        remove_root(self.0);
+        remove_root(self.id);
     }
 }
 pub(crate) fn allocation_debt() -> usize {
@@ -698,6 +710,8 @@ pub(crate) fn collect_after_interpreter_drop() -> HeapStats {
 mod tests {
     use super::*;
     use crate::interpreter::Interpreter;
+
+    static_assertions::assert_not_impl_any!(RootPin: Send, Sync);
 
     /// A fresh interpreter with the registry drained, so each test counts
     /// only the garbage its own script leaves behind. The registry is
