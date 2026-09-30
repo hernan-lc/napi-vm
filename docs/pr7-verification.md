@@ -49,6 +49,8 @@ Builds, addon replacement, tests and final benchmark timing are serialized. Earl
 
 GitHub Actions was disabled (`GET /repos/nglmercer/napi-vm/actions/permissions` returned `enabled: false`). It was enabled before the final push so the pull-request workflow can run. The CI workflow also accepts manual dispatch and pushes to the PR branch, allowing an explicit final-head run when a synchronize event does not schedule one. Check [the PR's current checks](https://github.com/nglmercer/napi-vm/pull/7/checks) for the final documentation descendant of the implementation revision; local checks do not establish remote CI success.
 
+CI was explicitly triggered for `4e0c271f8843ddf51a414329637217f76595efec` through both push and manual dispatch. [Manual run 36674668473](https://github.com/nglmercer/napi-vm/actions/runs/36674668473) failed before any job step ran. Quality and Linux check annotations both state: “The job was not started because your account is locked due to a billing issue.” Remote CI is **unavailable**, not a passing validation. Resolve the account billing lock and rerun the workflow on the final PR head before merging. The final documentation push also triggers that workflow.
+
 ## Remaining limitations / checks not run locally
 
 - macOS, Windows, ARM native execution, cross-platform addon ABI behavior and Node-version matrices require CI; they were not run locally.
