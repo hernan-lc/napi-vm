@@ -1453,7 +1453,10 @@ mod runtime_profile {
                 let mut interp = Interpreter::with_builtins();
                 let builtins = started.elapsed().as_nanos();
                 let started = std::time::Instant::now();
-                let value = execute_source(&mut interp, source).unwrap();
+                let program = FRESH_PROGRAMS
+                    .with(|cache| cache.borrow_mut().prepare(source))
+                    .unwrap();
+                let value = interp.execute(&program).unwrap();
                 let execution = started.elapsed().as_nanos();
                 let started = std::time::Instant::now();
                 std::hint::black_box(try_to_string(&value).unwrap());
