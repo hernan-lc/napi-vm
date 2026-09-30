@@ -497,7 +497,19 @@ impl Interpreter {
     /// Wait only when no work was executed, with real-time waits capped at
     /// the next deadline. Virtual clocks never advance implicitly. WASM never waits.
     pub fn run_event_loop_once(&mut self, timeout: Duration) -> Result<bool, VmErr> {
-        if self.drain_queued_jobs(false)? > 0 {
+        self.run_event_loop_turn(timeout, TurnBudget::jobs(usize::MAX))
+    }
+
+    pub(crate) fn run_await_event(&mut self, timeout: Duration) -> Result<bool, VmErr> {
+        self.run_event_loop_turn(timeout, TurnBudget::jobs(1))
+    }
+
+    fn run_event_loop_turn(
+        &mut self,
+        timeout: Duration,
+        budget: TurnBudget,
+    ) -> Result<bool, VmErr> {
+        if self.poll_event_loop(budget)?.executed_jobs > 0 {
             return Ok(true);
         }
         #[cfg(target_arch = "wasm32")]
@@ -529,7 +541,7 @@ impl Interpreter {
                 self.execution.wake.wait(Some(wait));
             }
             self.check_execution_interrupt()?;
-            if self.drain_queued_jobs(false)? > 0 {
+            if self.poll_event_loop(budget)?.executed_jobs > 0 {
                 return Ok(true);
             }
         }

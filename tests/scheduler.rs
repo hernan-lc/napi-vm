@@ -530,3 +530,27 @@ fn cancellation_between_readiness_check_and_wait_is_latched() {
     release_tx.send(()).unwrap();
     assert!(worker.join().unwrap().contains("cancelled"));
 }
+
+#[test]
+fn future_await_resumes_before_another_due_timer() {
+    // A controllable real-time clock makes both timers become due during
+    // await, without relying on matching wall-clock registration timestamps.
+    struct StepClock(Cell<usize>);
+    impl Clock for StepClock {
+        fn now_ms(&self) -> f64 {
+            let call = self.0.get();
+            self.0.set(call + 1);
+            if call < 3 { 0.0 } else { 50.0 }
+        }
+    }
+    let mut vm = Interpreter::with_builtins();
+    vm.jobs
+        .borrow_mut()
+        .set_clock(ClockMode::RealTime(Rc::new(StepClock(Cell::new(0)))))
+        .unwrap();
+    let result = vm.eval_source("var seen=[];var p=new Promise(r=>setTimeout(()=>{seen.push('first');r(42);},50));setTimeout(()=>seen.push('second'),50);await p;seen.push('after');seen.join(',');").unwrap();
+    assert!(matches!(result, Value::String(ref s) if s == "first,after"));
+    assert!(
+        matches!(vm.eval_source("seen.join(',');").unwrap(), Value::String(ref s) if s == "first,after,second")
+    );
+}

@@ -108,7 +108,7 @@ impl Interpreter {
             let timer_wait = self.jobs.borrow().timer_wait();
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(wait) = timer_wait {
-                self.run_event_loop_once(wait)?;
+                self.run_await_event(wait)?;
                 continue;
             }
             if self.jobs.borrow().next_deadline().is_some() {
@@ -119,7 +119,7 @@ impl Interpreter {
                 .as_ref()
                 .is_some_and(|bridge| bridge.has_pending_host_work(&promise));
             if has_pending_host_work {
-                self.run_event_loop_once(std::time::Duration::from_millis(10))?;
+                self.run_await_event(std::time::Duration::from_millis(10))?;
                 continue;
             }
             break;
