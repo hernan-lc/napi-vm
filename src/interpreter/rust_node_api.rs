@@ -1200,6 +1200,10 @@ impl HostBridge for RustNodeApiHost {
         Ok(events)
     }
 
+    fn event_wait_mode(&self) -> crate::host::HostWaitMode {
+        crate::host::HostWaitMode::Notifications
+    }
+
     fn set_wake_notifier(&self, notifier: WakeNotifier) {
         if self.is_shutdown() {
             return;

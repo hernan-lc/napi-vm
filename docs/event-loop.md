@@ -174,3 +174,25 @@ results: completed and unresolved unawaited results remain available to later
 Settlement/rejection releases its dependency once; cancellation, abandonment,
 and disposal retain the existing result and Node-reference cleanup paths.
 Admission protection is local to the session.
+
+### Host bridge wait compatibility
+
+Rust bridges expose `event_wait_mode()` (`HostWaitMode`). `Notifications` is the
+preferred mode: ingress fires `set_wake_notifier` and the scheduler performs
+nonblocking polls followed by a latched cancellation-aware wait. Built-in Node
+bridges declare this mode; composite bridges forward their native capability.
+Notifications arriving between readiness checks and sleeping remain latched.
+
+The default maps an existing `supports_blocking_event_wait() == true` bridge to
+`BlockingPoll`. Such bridges receive blocking `poll_host_events_bounded` calls
+in slices of at most **10 ms**, further capped by caller timeout, next eligible
+timer, and remaining execution deadline. This delivers events through the
+bridge's existing channel rather than waiting for an unrelated private wake.
+Cancellation and shutdown are rechecked after each slice. A legacy bridge that
+cannot interrupt a receive therefore has up to one slice of cancellation
+latency, plus scheduling overhead; it must honor the supplied timeout. Early
+empty returns sleep for the remainder of the slice, avoiding busy spinning.
+`Nonblocking` bridges use VM waits and may also fire notifications, but should
+declare `Notifications` when threaded ingress is present. Every wake is followed
+by readiness and interrupt checks. Browser/WASM execution performs only
+nonblocking polling, regardless of the bridge capability.

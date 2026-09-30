@@ -129,6 +129,17 @@ pub enum HostEvent {
     },
 }
 
+/// How a host bridge makes external events available to the scheduler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostWaitMode {
+    /// Function-only or nonblocking bridge; use the VM notification signal.
+    Nonblocking,
+    /// Legacy blocking polls without a notifier; use bounded timeout slices.
+    BlockingPoll,
+    /// Ingress fires the registered, latched wake notifier.
+    Notifications,
+}
+
 /// Bridge that lets the VM call functions owned by its host runtime.
 ///
 /// The interpreter is single-threaded (`Rc`/`RefCell`, not `Send`/`Sync`), so
@@ -154,6 +165,15 @@ pub trait HostBridge {
     /// Function-only bridges keep the default; real-time timers use VM waits.
     fn supports_blocking_event_wait(&self) -> bool {
         false
+    }
+
+    /// Explicit wait capability. Older blocking bridges remain compatible.
+    fn event_wait_mode(&self) -> HostWaitMode {
+        if self.supports_blocking_event_wait() {
+            HostWaitMode::BlockingPoll
+        } else {
+            HostWaitMode::Nonblocking
+        }
     }
 
     /// Bounded ingress contract. Implementations should return at most `limit`

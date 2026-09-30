@@ -487,6 +487,7 @@ fn future_timer_wait_is_capped_by_execution_deadline() {
     vm.set_execution_timeout(Some(Duration::ZERO));
     assert!(
         vm.run_event_loop_once(Duration::from_secs(60))
+            .map_err(|e| e.to_string())
             .unwrap_err()
             .to_string()
             .contains("deadline")
@@ -522,6 +523,7 @@ fn cancellation_between_readiness_check_and_wait_is_latched() {
             release: RefCell::new(release_rx),
         }));
         vm.run_event_loop_once(Duration::from_secs(60))
+            .map_err(|e| e.to_string())
             .unwrap_err()
             .to_string()
     });
@@ -553,4 +555,201 @@ fn future_await_resumes_before_another_due_timer() {
     assert!(
         matches!(vm.eval_source("seen.join(',');").unwrap(), Value::String(ref s) if s == "first,after,second")
     );
+}
+
+#[test]
+fn blocking_only_bridge_is_polled_before_the_full_timeout() {
+    struct BlockingBridge {
+        entered: std::sync::mpsc::Sender<Duration>,
+        input: std::sync::mpsc::Receiver<()>,
+        promise: Rc<RefCell<napi_vm::value::PromiseInner>>,
+    }
+    impl HostBridge for BlockingBridge {
+        fn call_host(&self, _: usize, _: Vec<Value>) -> Result<Value, VmErr> {
+            unreachable!()
+        }
+        fn supports_blocking_event_wait(&self) -> bool {
+            true
+        }
+        fn poll_host_events(&self, timeout: Duration) -> Result<Vec<HostEvent>, VmErr> {
+            if timeout.is_zero() {
+                return Ok(vec![]);
+            }
+            self.entered.send(timeout).unwrap();
+            match self.input.recv_timeout(timeout) {
+                Ok(()) => Ok(vec![HostEvent::PromiseSettled {
+                    promise: self.promise.clone(),
+                    state: napi_vm::value::PromiseState::Fulfilled,
+                    value: Value::Number(42.0),
+                }]),
+                Err(_) => Ok(vec![]),
+            }
+        }
+    }
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (input_tx, input_rx) = std::sync::mpsc::channel();
+    let token = CancellationToken::default();
+    let cancel = token.clone();
+    let worker = std::thread::spawn(move || {
+        let mut vm = Interpreter::with_builtins();
+        vm.set_cancellation_token(token);
+        vm.set_host_bridge(Rc::new(BlockingBridge {
+            entered: entered_tx,
+            input: input_rx,
+            promise: Value::pending_promise(),
+        }));
+        vm.run_event_loop_once(Duration::from_secs(60))
+            .map_err(|e| e.to_string())
+    });
+    let entered = entered_rx.recv_timeout(Duration::from_secs(1));
+    // Cleanly interrupt the old private wait before reporting the failed barrier.
+    if entered.is_err() {
+        cancel.cancel();
+    } else {
+        input_tx.send(()).unwrap();
+    }
+    let result = worker.join().unwrap();
+    assert!(
+        entered.is_ok(),
+        "blocking-only bridge was never given a blocking poll"
+    );
+    assert!(result.unwrap());
+    assert!(entered.unwrap() <= Duration::from_millis(10));
+}
+
+#[test]
+fn blocking_only_waits_bound_cancellation_deadlines_timeouts_and_shutdown() {
+    struct Bridge {
+        entered: std::sync::mpsc::Sender<Duration>,
+        input: std::sync::mpsc::Receiver<()>,
+    }
+    impl HostBridge for Bridge {
+        fn call_host(&self, _: usize, _: Vec<Value>) -> Result<Value, VmErr> {
+            unreachable!()
+        }
+        fn supports_blocking_event_wait(&self) -> bool {
+            true
+        }
+        fn poll_host_events(&self, timeout: Duration) -> Result<Vec<HostEvent>, VmErr> {
+            if timeout.is_zero() {
+                return Ok(vec![]);
+            }
+            self.entered.send(timeout).unwrap();
+            match self.input.recv_timeout(timeout) {
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    Err(VmErr::Msg("bridge shutdown".into()))
+                }
+                _ => Ok(vec![]),
+            }
+        }
+    }
+    for mode in ["cancel", "deadline", "timeout", "shutdown"] {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (input_tx, input_rx) = std::sync::mpsc::channel();
+        let token = CancellationToken::default();
+        let cancel = token.clone();
+        let worker = std::thread::spawn(move || {
+            let mut vm = Interpreter::with_builtins();
+            vm.set_host_bridge(Rc::new(Bridge {
+                entered: entered_tx,
+                input: input_rx,
+            }));
+            vm.set_cancellation_token(token);
+            if mode == "deadline" {
+                vm.set_execution_timeout(Some(Duration::from_millis(25)));
+            }
+            vm.run_event_loop_once(if mode == "timeout" {
+                Duration::from_millis(25)
+            } else {
+                Duration::from_secs(60)
+            })
+            .map_err(|e| e.to_string())
+        });
+        let slice = entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("blocking poll barrier");
+        assert!(slice <= Duration::from_millis(10));
+        if mode == "cancel" {
+            cancel.cancel();
+        }
+        let input = if mode == "shutdown" {
+            drop(input_tx);
+            None
+        } else {
+            Some(input_tx)
+        };
+        let result = worker.join().unwrap();
+        match mode {
+            "cancel" => assert!(result.unwrap_err().contains("cancelled")),
+            "deadline" => assert!(result.unwrap_err().contains("deadline")),
+            "shutdown" => assert!(result.unwrap_err().contains("shutdown")),
+            _ => assert!(!result.unwrap()),
+        }
+        // The bounded blocking path sleeps rather than repeatedly polling.
+        assert!(entered_rx.try_iter().count() < 10);
+        drop(input);
+    }
+}
+
+#[test]
+fn notifier_delivery_between_poll_and_sleep_is_latched() {
+    struct Bridge {
+        ready: std::sync::mpsc::Sender<napi_vm::host::WakeNotifier>,
+        release: RefCell<std::sync::mpsc::Receiver<()>>,
+        wake: RefCell<Option<napi_vm::host::WakeNotifier>>,
+        first: Cell<bool>,
+        emitted: Cell<bool>,
+        promise: Rc<RefCell<napi_vm::value::PromiseInner>>,
+    }
+    impl HostBridge for Bridge {
+        fn call_host(&self, _: usize, _: Vec<Value>) -> Result<Value, VmErr> {
+            unreachable!()
+        }
+        fn event_wait_mode(&self) -> napi_vm::host::HostWaitMode {
+            napi_vm::host::HostWaitMode::Notifications
+        }
+        fn set_wake_notifier(&self, wake: napi_vm::host::WakeNotifier) {
+            *self.wake.borrow_mut() = Some(wake);
+        }
+        fn poll_host_events(&self, timeout: Duration) -> Result<Vec<HostEvent>, VmErr> {
+            assert!(
+                timeout.is_zero(),
+                "notifier bridges must use nonblocking ingress"
+            );
+            if self.first.replace(false) {
+                self.ready
+                    .send(self.wake.borrow().as_ref().unwrap().clone())
+                    .unwrap();
+                self.release.borrow().recv().unwrap();
+                Ok(vec![])
+            } else if !self.emitted.replace(true) {
+                Ok(vec![HostEvent::PromiseSettled {
+                    promise: self.promise.clone(),
+                    state: napi_vm::value::PromiseState::Fulfilled,
+                    value: Value::Number(42.),
+                }])
+            } else {
+                Ok(vec![])
+            }
+        }
+    }
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut vm = Interpreter::with_builtins();
+        vm.set_host_bridge(Rc::new(Bridge {
+            ready: ready_tx,
+            release: RefCell::new(release_rx),
+            wake: RefCell::new(None),
+            first: Cell::new(true),
+            emitted: Cell::new(false),
+            promise: Value::pending_promise(),
+        }));
+        vm.run_event_loop_once(Duration::from_secs(60))
+            .map_err(|e| e.to_string())
+    });
+    let wake = ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    wake(); // Notification arrives before the owner can enter its wait.
+    release_tx.send(()).unwrap();
+    assert!(worker.join().unwrap().unwrap());
 }

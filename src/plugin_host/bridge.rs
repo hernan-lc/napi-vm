@@ -120,6 +120,10 @@ impl HostBridge for CompositeHostBridge {
         self.native.set_execution_context(token, timeout);
     }
 
+    fn event_wait_mode(&self) -> crate::host::HostWaitMode {
+        self.native.event_wait_mode()
+    }
+
     fn supports_blocking_event_wait(&self) -> bool {
         self.native.supports_blocking_event_wait()
     }

@@ -546,7 +546,25 @@ impl Interpreter {
                     .cancellation
                     .borrow()
                     .register_wake(&self.execution.wake);
-                self.execution.wake.wait(Some(wait));
+                if self
+                    .host
+                    .as_ref()
+                    .is_some_and(|h| h.event_wait_mode() == crate::host::HostWaitMode::BlockingPoll)
+                {
+                    // Legacy polls cannot be interrupted by our signal. Bound
+                    // cancellation latency, and avoid spinning on early returns.
+                    let slice = wait.min(Duration::from_millis(10));
+                    let started = std::time::Instant::now();
+                    let count = self.enqueue_host_events(slice)?;
+                    self.check_execution_interrupt()?;
+                    if count == 0 {
+                        self.execution
+                            .wake
+                            .wait(Some(slice.saturating_sub(started.elapsed())));
+                    }
+                } else {
+                    self.execution.wake.wait(Some(wait));
+                }
             }
             self.check_execution_interrupt()?;
             if self.poll_event_loop(budget)?.executed_jobs > 0 {

@@ -729,6 +729,10 @@ impl NapiHostBridge {
 }
 
 impl HostBridge for NapiHostBridge {
+    fn event_wait_mode(&self) -> crate::host::HostWaitMode {
+        crate::host::HostWaitMode::Notifications
+    }
+
     fn set_wake_notifier(&self, notifier: crate::host::WakeNotifier) {
         self.state.wake.set(notifier);
     }
