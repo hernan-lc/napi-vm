@@ -62,3 +62,102 @@ CI was explicitly triggered for `4e0c271f8843ddf51a414329637217f76595efec` throu
 - Benchmark Node allocations/retained bytes and browser/other-platform idle CPU were not measured. Rust records allocation/reallocation counts for entire batches, not retained memory or bytes. Single-host samples are not production guarantees.
 
 See [event-loop behavior](event-loop.md) and [benchmarks](scheduler-benchmarks.md).
+
+## Follow-up: remaining lifecycle and bridge issues (2026-09-30)
+
+This section supersedes the earlier admission/lifecycle claims for the remaining
+issues. Inspected PR head and reproduction baseline:
+`e1467c1707a981c999b1489f66eb115c8b190b3c`. Implementation commits:
+`7c6731d` (execution-scoped Node dependencies and deadlines) and `2fe37ba`
+(explicit bridge wait capabilities and blocking-poll compatibility).
+No workflow, account, billing, or permission changes were made. Remote CI was
+not queried or run, as requested.
+
+### Reproductions before fixes
+
+- `node --test --test-name-pattern='dispatched host dependency|completed deadlines' tests/node/async-session.test.js`
+  failed both added tests on the original addon. The dispatch barrier admitted
+  reentry before guest await; cancellation used to release the would-be cycle
+  produced `Guest execution cancelled` instead of an admission error. Idle
+  metadata after a completed 50 ms execution failed with `Guest execution
+  deadline exceeded`.
+- `cargo test --no-default-features --test scheduler blocking_only_bridge`
+  failed the added bridge regression: `blocking-only bridge was never given a
+  blocking poll`. The barrier timed out and cancellation woke the old private
+  wait, so the reproduction did not leave a hanging owner.
+
+The final tests additionally cover delayed callback continuations, immediate
+await (existing reentry tests), unrelated sessions, unawaited completed and
+unresolved results, later awaiting saved results, rejection, cancellation and
+disposal. Injectable execution clocks verify retirement and preservation of
+original deadlines for future timers, unfinished checkpoints and rooted async
+continuations. Channel barriers cover blocking-only event delivery,
+cancellation, deadline expiry, no-event timeout, shutdown and notifications
+latched between readiness checking and sleep. Existing hard-budget, GC-root,
+legacy ordering and native-addon tests remain enabled.
+
+### Final local validation
+
+Linux x86_64; Rust 1.97.1, Node 26.10.0, Bun 1.4.0 (canary executable). These
+checks cover the final implementation; the subsequent Rustdoc correction and
+this verification record have no runtime changes.
+
+| Exact command | Result |
+| --- | --- |
+| `npm run lint:rust` | Formatting and Clippy, all targets/all features, warnings denied: passed |
+| `npm run lint:ts` | Passed |
+| `cargo test --release --all-features` | 460 passed, 1 ignored; 371 unit tests and 24 scheduler integration tests; Linux native-addon fixtures included |
+| `cargo test --no-default-features` | 427 passed, 0 ignored |
+| `npm run build:all` | Release ESM and CommonJS native addons built successfully |
+| `git diff --exit-code -- index.js index.mjs index.d.ts` | Passed; regenerated public N-API surfaces unchanged |
+| `npm run test:node` | 40 passed, 0 failed |
+| `npm test` | Bun: 1,481 passed across 64 files, 0 failed, 2,423 assertions |
+| `npm run test:wasm` | Release wasm-pack build, playground TypeScript and 9 Node-hosted WASM tests passed |
+| `cargo fmt --all -- --check` | Passed again after the Rustdoc correction |
+| `git diff --check` | Passed |
+
+Local logs are `/tmp/pr7-followup-{release,core-final,lint-rust,ts,build,node-final,bun,wasm}.log`.
+WASM reports the existing unused native-addon digest helper warning; the build
+and tests succeed. The ignored test is
+`tokio_loop_delivers_real_rdev_node_events_on_both_backends`, requiring a built
+`dist/rdev-node`, isolated X display and `RDEV_NODE_TEST_LOOPBACK=1`.
+
+### Idle waiting smoke check and limitations
+
+With the final release addon, ten AsyncSessions first completed `run('42;')`;
+then a Node `setTimeout` held the process for one second while `process.cpuUsage`
+and each session's `wakeups()` were sampled. Measured wall time **1000.488 ms**,
+process CPU **1.203 ms**, and **zero additional wakeups in all ten owners**.
+This is a single local smoke measurement, not a comparative benchmark or a
+speedup claim. The notifier and legacy-poll tests also verify that notifier
+polls remain nonblocking and legacy no-event polls are bounded rather than
+busy-spinning.
+
+Reproduce the idle measurement after building the addon:
+
+```sh
+node <<'JS'
+const {AsyncSession}=require('./index.js');
+(async()=>{
+  const sessions=Array.from({length:10},()=>new AsyncSession());
+  try {
+    await Promise.all(sessions.map(s=>s.run('42;')));
+    const before=sessions.map(s=>s.wakeups());
+    const cpu=process.cpuUsage(), start=performance.now();
+    await new Promise(r=>setTimeout(r,1000));
+    const elapsedMs=performance.now()-start, used=process.cpuUsage(cpu);
+    console.log({elapsedMs,cpuMs:(used.user+used.system)/1000,
+      wakeups:sessions.map((s,i)=>s.wakeups()-before[i])});
+  } finally { sessions.forEach(s=>s.dispose()); }
+})().catch(e=>{console.error(e);process.exitCode=1;});
+JS
+```
+
+Blocking-only bridges must honor timeout arguments. Their cancellation latency
+can include one 10 ms poll slice plus scheduling overhead; a bridge that ignores
+its timeout cannot be forcibly interrupted safely. Admission conservatively
+rejects commands while an active execution has unsettled Node dependencies;
+stored unawaited results alone do not lock an idle session. Actual background
+failures remain terminal. macOS/Windows native execution, real browser GUI
+execution and the isolated X-display test were not run. Remote CI remains
+explicitly outside this follow-up's scope.
