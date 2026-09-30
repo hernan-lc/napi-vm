@@ -540,7 +540,7 @@ fn future_await_resumes_before_another_due_timer() {
         fn now_ms(&self) -> f64 {
             let call = self.0.get();
             self.0.set(call + 1);
-            if call < 3 { 0.0 } else { 50.0 }
+            if call < 4 { 0.0 } else { 50.0 }
         }
     }
     let mut vm = Interpreter::with_builtins();
