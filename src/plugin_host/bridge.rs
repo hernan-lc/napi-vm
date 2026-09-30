@@ -115,8 +115,29 @@ impl HostBridge for CompositeHostBridge {
         }
     }
 
+    fn set_execution_context(&self, token: crate::CancellationToken, timeout: Option<Duration>) {
+        self.plugin.set_execution_context(token.clone(), timeout);
+        self.native.set_execution_context(token, timeout);
+    }
+
+    fn event_wait_mode(&self) -> crate::host::HostWaitMode {
+        self.native.event_wait_mode()
+    }
+
+    fn supports_blocking_event_wait(&self) -> bool {
+        self.native.supports_blocking_event_wait()
+    }
+
     fn poll_host_events(&self, timeout: Duration) -> Result<Vec<HostEvent>, VmErr> {
         self.native.poll_host_events(timeout)
+    }
+
+    fn poll_host_events_bounded(
+        &self,
+        timeout: Duration,
+        limit: usize,
+    ) -> Result<Vec<HostEvent>, VmErr> {
+        self.native.poll_host_events_bounded(timeout, limit)
     }
 
     fn set_wake_notifier(&self, notifier: WakeNotifier) {

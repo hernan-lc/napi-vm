@@ -367,6 +367,7 @@ fn make_out_closure(
 #[wasm_bindgen]
 pub struct WasmVm {
     interp: Interpreter,
+    virtual_clock: Option<crate::VirtualClock>,
     bridge: Rc<WasmBridge>,
     /// Functions exposed via [`WasmVm::expose_function`]; feeds completion and
     /// hover context.
@@ -411,6 +412,7 @@ impl WasmVm {
 
         Self {
             interp,
+            virtual_clock: None,
             bridge,
             exposed_functions: Vec::new(),
             module_infos: Vec::new(),
@@ -419,6 +421,65 @@ impl WasmVm {
             out_fn,
             _out_closure: out_closure,
         }
+    }
+
+    /// Opt into absolute virtual or real-time deadlines; legacy remains default.
+    pub fn set_clock(&mut self, mode: &str) -> Result<(), JsValue> {
+        let (clock, virtual_clock) = match mode {
+            "legacy" => (crate::ClockMode::Legacy, None),
+            "virtual" => {
+                let c = crate::VirtualClock::default();
+                (crate::ClockMode::Virtual(c.clone()), Some(c))
+            }
+            "real-time" => (
+                crate::ClockMode::RealTime(Rc::new(crate::RealTimeClock::default())),
+                None,
+            ),
+            _ => {
+                return Err(JsValue::from_str(
+                    "clock must be legacy, virtual, or real-time",
+                ));
+            }
+        };
+        self.interp
+            .jobs
+            .borrow_mut()
+            .set_clock(clock)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        self.virtual_clock = virtual_clock;
+        Ok(())
+    }
+    pub fn advance_clock(&mut self, milliseconds: f64) -> Result<(), JsValue> {
+        self.virtual_clock
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("virtual clock is not enabled"))?
+            .advance(milliseconds)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    /// Never waits. Browser adapters use runnable/nextDeadline to request a
+    /// subsequent animation frame or host timeout; checkpoints survive yields.
+    pub fn poll_event_loop(&mut self, max_jobs: u32) -> Result<JsValue, JsValue> {
+        let o = self
+            .interp
+            .poll_event_loop(crate::TurnBudget::jobs(max_jobs as usize))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        value_to_js(&Value::object(vec![
+            ("executedJobs".into(), Value::Number(o.executed_jobs as f64)),
+            ("runnable".into(), Value::Bool(o.runnable)),
+            (
+                "nextDeadline".into(),
+                o.next_deadline.map_or(Value::Null, Value::Number),
+            ),
+            (
+                "checkpointPending".into(),
+                Value::Bool(o.checkpoint_pending),
+            ),
+            (
+                "yieldReason".into(),
+                Value::String(format!("{:?}", o.yield_reason)),
+            ),
+        ]))
+        .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Execute a script. Returns `{ ok, value, error, logs }`. `value` is the
@@ -435,6 +496,9 @@ impl WasmVm {
     }
 
     fn run_source(&mut self, module_name: Option<&str>, source: &str) -> JsValue {
+        if let Err(e) = self.interp.ensure_can_evaluate() {
+            return self.build_run_result(Err(e));
+        }
         self.logs.borrow_mut().clear();
         self.interp.cur_mod = module_name.map(ToString::to_string);
         self.interp.set_source(source);
@@ -505,6 +569,9 @@ impl WasmVm {
     /// Register an importable module. Its `export`s are recorded so that
     /// `import * as ns from 'name'` completions can offer them.
     pub fn register_module(&mut self, name: &str, source: &str) -> Result<(), JsValue> {
+        self.interp
+            .ensure_can_evaluate()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
         self.interp.cur_mod = Some(name.to_string());
         self.interp.begin_execution();
         let toks = Lexer::new(source).tokenize_with_spans();

@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use napi::sys;
 
+use crate::Interpreter;
 use crate::error::VmErr;
 use crate::format::to_string;
 use crate::host::HostBridge;
@@ -39,7 +40,10 @@ pub(super) struct BridgeState {
     tsfn: AtomicUsize,
     shutting_down: AtomicBool,
     released: AtomicBool,
+    wake: Arc<crate::host::WakeSlot>,
     refs: Mutex<HashMap<usize, RefEntry>>,
+    promises: Mutex<HashMap<usize, (usize, std::sync::Weak<Settlement>)>>,
+    next_promise: AtomicUsize,
 }
 
 struct RefEntry {
@@ -55,8 +59,59 @@ impl BridgeState {
             tsfn: AtomicUsize::new(0),
             shutting_down: AtomicBool::new(false),
             released: AtomicBool::new(false),
+            wake: Arc::new(crate::host::WakeSlot::new()),
             refs: Mutex::new(HashMap::new()),
+            promises: Mutex::new(HashMap::new()),
+            next_promise: AtomicUsize::new(0),
         }
+    }
+
+    fn release_promise_on_main(&self, id: usize) {
+        let entry = self
+            .promises
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        if let Some((reference, _)) = entry {
+            self.delete_reference(reference);
+        }
+    }
+    pub(super) fn prune_abandoned_on_main(&self) {
+        let abandoned: Vec<_> = self
+            .promises
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(|(&id, (_, weak))| {
+                weak.upgrade()
+                    .filter(|s| !s.result_alive.load(Ordering::Acquire))
+                    .map(|s| (id, s))
+            })
+            .collect();
+        for (id, settlement) in abandoned {
+            settlement.reject("async host result abandoned".into());
+            self.release_promise_on_main(id);
+        }
+    }
+    pub(super) fn cancel_pending_on_main(&self) {
+        let entries: Vec<_> = self
+            .promises
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+            .map(|(_, v)| v)
+            .collect();
+        for (reference, settlement) in entries {
+            if let Some(settlement) = settlement.upgrade() {
+                settlement.reject("async host call cancelled or disposed".into());
+            }
+            self.delete_reference(reference);
+        }
+        self.wake.fire();
+    }
+
+    pub(super) fn wake_owner(&self) {
+        self.wake.fire();
     }
 
     fn lock_refs(&self) -> std::sync::MutexGuard<'_, HashMap<usize, RefEntry>> {
@@ -207,6 +262,8 @@ impl BridgeState {
             return;
         }
         self.shutting_down.store(true, Ordering::Release);
+        self.cancel_pending_on_main();
+        self.wake.fire();
 
         let immediate = {
             let mut refs = self.lock_refs();
@@ -242,25 +299,67 @@ impl BridgeState {
     }
 }
 
+/// Session-lifetime Node dependencies; execution retirement only changes activity.
+struct NodeDependencies {
+    active: AtomicBool,
+    calls: AtomicUsize,
+}
+struct DependencyLease(Arc<NodeDependencies>);
+impl Drop for DependencyLease {
+    fn drop(&mut self) {
+        self.0.calls.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Message sent from the VM worker to the Node main thread. It contains only
 /// owned wire values and integer N-API handles; no `Rc<RefCell<Value>>` crosses
 /// the thread boundary.
 struct AsyncCallMsg {
+    dependency: DependencyLease,
     state: Arc<BridgeState>,
     func_id: usize,
     func_ref: usize,
     args: Vec<WireValue>,
     reply_tx: mpsc::Sender<Result<WireValue, String>>,
+    cancellation: crate::CancellationToken,
+    result_alive: Arc<AtomicBool>,
+    reply_signal: Arc<crate::host::WakeSignal>,
 }
 
 /// Shared async state used by the interpreter while it waits for host calls.
-struct AsyncState {
+pub(super) struct AsyncState {
     state: Arc<BridgeState>,
     next_pending: AtomicUsize,
-    pending: Mutex<HashMap<usize, mpsc::Receiver<Result<WireValue, String>>>>,
+    waiting_for_node: AtomicUsize,
+    dependencies: Arc<NodeDependencies>,
+    pending: Mutex<HashMap<usize, PendingResult>>,
+    cancellation: Mutex<crate::CancellationToken>,
+    deadline: Mutex<Option<std::time::Instant>>,
+    reply_wake: Mutex<Option<Arc<crate::host::WakeSignal>>>,
+}
+
+struct PendingResult {
+    receiver: Option<mpsc::Receiver<Result<WireValue, String>>>,
+    alive: Arc<AtomicBool>,
+}
+impl Drop for PendingResult {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Release);
+    }
+}
+
+struct NodeWaitGuard<'a>(&'a AsyncState);
+impl Drop for NodeWaitGuard<'_> {
+    fn drop(&mut self) {
+        self.0.waiting_for_node.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl AsyncState {
+    fn wait_guard(&self) -> NodeWaitGuard<'_> {
+        self.waiting_for_node.fetch_add(1, Ordering::AcqRel);
+        NodeWaitGuard(self)
+    }
     fn pending_len(&self) -> usize {
         self.pending
             .lock()
@@ -344,7 +443,15 @@ impl NapiHostBridge {
         let state = Arc::new(AsyncState {
             state: self.state.clone(),
             next_pending: AtomicUsize::new(0),
+            waiting_for_node: AtomicUsize::new(0),
+            dependencies: Arc::new(NodeDependencies {
+                active: AtomicBool::new(false),
+                calls: AtomicUsize::new(0),
+            }),
             pending: Mutex::new(HashMap::new()),
+            cancellation: Mutex::new(crate::CancellationToken::default()),
+            deadline: Mutex::new(None),
+            reply_wake: Mutex::new(Some(Arc::new(crate::host::WakeSignal::default()))),
         });
         *guard = Some(state.clone());
         Ok(state)
@@ -353,6 +460,65 @@ impl NapiHostBridge {
     pub(super) fn prepare_for_async(&self) -> Result<(), VmErr> {
         let state = self.ensure_dispatcher()?;
         state.state.acquire_worker()
+    }
+
+    /// Prepare Node-owned handles once, then construct a separate bridge on
+    /// the persistent owner. No Rc, guest value, or coroutine crosses threads.
+    pub(super) fn prune_owner_results(&self, vm: &Interpreter) {
+        if let Some(state) = self.get_async_state() {
+            if state.pending_len() == 0 {
+                return;
+            }
+            if let Some(live) = crate::heap::reachable_host_calls(vm.gc_roots()) {
+                state
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .retain(|id, _| live.contains(id));
+            }
+        }
+    }
+    pub(super) fn owner_waiting_for_node(&self, guest_admitted: bool) -> bool {
+        self.get_async_state().is_some_and(|s| {
+            let execution = &s.dependencies;
+            s.waiting_for_node.load(Ordering::Acquire) > 0
+                || ((guest_admitted || execution.active.load(Ordering::Acquire))
+                    && execution.calls.load(Ordering::Acquire) > 0)
+        })
+    }
+    pub(super) fn set_owner_execution_active(&self, active: bool) {
+        if let Some(state) = self.get_async_state() {
+            // Unsettled calls can be awaited by later executions. Retirement
+            // changes activity, not the identity/lifetime of their leases.
+            state.dependencies.active.store(active, Ordering::Release);
+        }
+    }
+    pub(super) fn owner_seed(&self) -> Result<Arc<AsyncState>, VmErr> {
+        self.prepare_for_async()?;
+        self.get_async_state()
+            .ok_or_else(|| VmErr::Msg("owner dispatcher is unavailable".into()))
+    }
+    pub(super) fn release_owner_seed(seed: &AsyncState) {
+        seed.state.release_worker();
+    }
+
+    pub(super) fn from_owner_seed(seed: Arc<AsyncState>) -> Self {
+        Self {
+            env: seed.state.env as sys::napi_env,
+            state: seed.state.clone(),
+            funcs: RefCell::new(HashMap::new()),
+            async_funcs: RefCell::new(HashSet::new()),
+            next_id: Cell::new(0),
+            async_state: Mutex::new(Some(seed)),
+            on_vm_thread: AtomicUsize::new(1),
+        }
+    }
+    pub(super) fn mark_owner_function(&self, id: usize, is_async: bool) {
+        if is_async {
+            self.async_funcs.borrow_mut().insert(id);
+        } else {
+            self.async_funcs.borrow_mut().remove(&id);
+        }
     }
 
     pub(super) fn finish_async_worker(&self) {
@@ -402,6 +568,74 @@ impl NapiHostBridge {
             .clone()
     }
 
+    pub(super) fn set_owner_cancellation(&self, token: crate::CancellationToken) {
+        if let Some(state) = self.get_async_state() {
+            *state.cancellation.lock().unwrap_or_else(|e| e.into_inner()) = token;
+        }
+    }
+    pub(super) fn set_owner_timeout(&self, timeout: Option<std::time::Duration>) {
+        if let Some(state) = self.get_async_state() {
+            *state.deadline.lock().unwrap_or_else(|e| e.into_inner()) =
+                timeout.and_then(|d| std::time::Instant::now().checked_add(d));
+        }
+    }
+    pub(super) fn set_owner_wake(&self, signal: Arc<crate::host::WakeSignal>) {
+        if let Some(state) = self.get_async_state() {
+            *state.reply_wake.lock().unwrap_or_else(|e| e.into_inner()) = Some(signal.clone());
+        }
+        self.state.wake.set(Arc::new(move || signal.fire()));
+    }
+    fn receive_reply(
+        state: &AsyncState,
+        receiver: mpsc::Receiver<Result<WireValue, String>>,
+    ) -> Result<Value, VmErr> {
+        loop {
+            if state.state.shutting_down.load(Ordering::Acquire)
+                || state
+                    .cancellation
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_cancelled()
+            {
+                return Err(VmErr::Msg(
+                    "Error: async host call cancelled or disposed".into(),
+                ));
+            }
+            let deadline = *state.deadline.lock().unwrap_or_else(|e| e.into_inner());
+            if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                return Err(VmErr::Msg(
+                    "RangeError: Guest execution deadline exceeded".into(),
+                ));
+            }
+            let signal = state
+                .reply_wake
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let signal = signal.expect("dispatcher reply signal");
+            state
+                .cancellation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .register_wake(&signal);
+            let reply = match receiver.try_recv() {
+                Err(mpsc::TryRecvError::Empty) => {
+                    signal.wait(
+                        deadline.map(|d| d.saturating_duration_since(std::time::Instant::now())),
+                    );
+                    continue;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(VmErr::Msg("async host call channel closed".into()));
+                }
+                Ok(reply) => reply,
+            };
+            return reply
+                .map(|v| v.into_value())
+                .map_err(|m| VmErr::Msg(format!("Error: {}", m)));
+        }
+    }
+
     fn wire_args(args: &[Value]) -> Result<Vec<WireValue>, VmErr> {
         args.iter().map(WireValue::from_value).collect()
     }
@@ -412,17 +646,36 @@ impl NapiHostBridge {
         id: usize,
         args: Vec<WireValue>,
         reply_tx: mpsc::Sender<Result<WireValue, String>>,
+        result_alive: Arc<AtomicBool>,
     ) -> Result<(), VmErr> {
         if state.state.shutting_down.load(Ordering::Acquire) {
             return Err(VmErr::Msg("async bridge is shutting down".into()));
         }
         let func_ref = state.state.begin_call(id)?;
+        let dependency = {
+            let execution = state.dependencies.clone();
+            execution.calls.fetch_add(1, Ordering::AcqRel);
+            DependencyLease(execution)
+        };
         let msg = Box::new(AsyncCallMsg {
+            dependency,
             state: state.state.clone(),
             func_id: id,
             func_ref,
             args,
             reply_tx,
+            reply_signal: state
+                .reply_wake
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .expect("reply signal"),
+            result_alive,
+            cancellation: state
+                .cancellation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         });
         let raw = Box::into_raw(msg) as *mut std::ffi::c_void;
         let tsfn = state.state.ensure_tsfn()?;
@@ -452,18 +705,29 @@ impl NapiHostBridge {
         id: usize,
         args: Vec<Value>,
     ) -> Result<Value, VmErr> {
+        let _waiting = state.wait_guard();
         let args = Self::wire_args(&args)?;
         let (reply_tx, reply_rx) = mpsc::channel::<Result<WireValue, String>>();
-        self.dispatch(state, id, args, reply_tx)?;
-        match reply_rx.recv() {
-            Ok(Ok(value)) => Ok(value.into_value()),
-            Ok(Err(message)) => Err(VmErr::Msg(format!("Error: {}", message))),
-            Err(_) => Err(VmErr::Msg("host call channel closed".to_string())),
-        }
+        self.dispatch(
+            state.clone(),
+            id,
+            args,
+            reply_tx,
+            Arc::new(AtomicBool::new(true)),
+        )?;
+        Self::receive_reply(&state, reply_rx)
     }
 }
 
 impl HostBridge for NapiHostBridge {
+    fn event_wait_mode(&self) -> crate::host::HostWaitMode {
+        crate::host::HostWaitMode::Notifications
+    }
+
+    fn set_wake_notifier(&self, notifier: crate::host::WakeNotifier) {
+        self.state.wake.set(notifier);
+    }
+
     fn call_host(&self, id: usize, args: Vec<Value>) -> Result<Value, VmErr> {
         if self.on_vm_thread.load(Ordering::Acquire) != 0 {
             let state = self
@@ -572,14 +836,21 @@ impl HostBridge for NapiHostBridge {
 
         let args = Self::wire_args(&args)?;
         let (reply_tx, reply_rx) = mpsc::channel::<Result<WireValue, String>>();
+        let alive = Arc::new(AtomicBool::new(true));
         let pending_id = state.next_pending.fetch_add(1, Ordering::Relaxed);
         state
             .pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(pending_id, reply_rx);
+            .insert(
+                pending_id,
+                PendingResult {
+                    receiver: Some(reply_rx),
+                    alive: alive.clone(),
+                },
+            );
 
-        if let Err(error) = self.dispatch(state.clone(), id, args, reply_tx) {
+        if let Err(error) = self.dispatch(state.clone(), id, args, reply_tx, alive) {
             state
                 .pending
                 .lock()
@@ -594,17 +865,14 @@ impl HostBridge for NapiHostBridge {
         let state = self
             .get_async_state()
             .ok_or_else(|| VmErr::Msg("async bridge not initialized".to_string()))?;
-        let receiver = state
+        let _waiting = state.wait_guard();
+        let mut pending = state
             .pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&pending_id)
             .ok_or_else(|| VmErr::Msg(format!("no pending async call #{}", pending_id)))?;
-        match receiver.recv() {
-            Ok(Ok(value)) => Ok(value.into_value()),
-            Ok(Err(message)) => Err(VmErr::Msg(format!("Error: {}", message))),
-            Err(_) => Err(VmErr::Msg("async host call channel closed".to_string())),
-        }
+        Self::receive_reply(&state, pending.receiver.take().expect("owned receiver"))
     }
 }
 
@@ -616,15 +884,19 @@ struct MainCallLease {
     state: Arc<BridgeState>,
     id: usize,
     env_available: bool,
+    reply_signal: Arc<crate::host::WakeSignal>,
 }
 
 impl Drop for MainCallLease {
     fn drop(&mut self) {
         if self.env_available {
             self.state.finish_call_on_main(self.id);
+            self.state.prune_abandoned_on_main();
         } else {
             self.state.finish_call_on_teardown(self.id);
         }
+        self.state.wake.fire();
+        self.reply_signal.fire();
     }
 }
 
@@ -645,11 +917,19 @@ extern "C" fn tsfn_callback(
         state: msg.state.clone(),
         id: msg.func_id,
         env_available: !env.is_null(),
+        reply_signal: msg.reply_signal.clone(),
     };
     if env.is_null() {
         let _ = msg
             .reply_tx
             .send(Err("Node environment is tearing down".into()));
+        return;
+    }
+
+    if msg.state.shutting_down.load(Ordering::Acquire) || msg.cancellation.is_cancelled() {
+        let _ = msg
+            .reply_tx
+            .send(Err("async host call cancelled or disposed".into()));
         return;
     }
 
@@ -751,9 +1031,30 @@ extern "C" fn tsfn_callback(
         return;
     }
 
+    let mut promise_ref = ptr::null_mut();
+    if let Err(error) = chk(unsafe { sys::napi_create_reference(env, result, 1, &mut promise_ref) })
+    {
+        let _ = msg.reply_tx.send(Err(error.to_string()));
+        return;
+    }
+    let promise_id = msg.state.next_promise.fetch_add(1, Ordering::Relaxed);
     let settlement = Arc::new(Settlement {
+        dependency: Mutex::new(Some(msg.dependency)),
         reply_tx: Mutex::new(Some(msg.reply_tx)),
+        wake: msg.state.wake.clone(),
+        state: msg.state.clone(),
+        promise_id,
+        result_alive: msg.result_alive,
+        reply_signal: msg.reply_signal,
     });
+    msg.state
+        .promises
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            promise_id,
+            (promise_ref as usize, Arc::downgrade(&settlement)),
+        );
     let resolve = match create_settlement_callback(env, settlement.clone(), false) {
         Ok(value) => value,
         Err(error) => {
@@ -786,6 +1087,12 @@ extern "C" fn tsfn_callback(
 }
 
 struct Settlement {
+    dependency: Mutex<Option<DependencyLease>>,
+    reply_signal: Arc<crate::host::WakeSignal>,
+    result_alive: Arc<AtomicBool>,
+    state: Arc<BridgeState>,
+    promise_id: usize,
+    wake: Arc<crate::host::WakeSlot>,
     reply_tx: Mutex<Option<mpsc::Sender<Result<WireValue, String>>>>,
 }
 
@@ -797,7 +1104,14 @@ impl Settlement {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         if let Some(sender) = sender {
+            self.dependency
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
             let _ = sender.send(value);
+            self.state.release_promise_on_main(self.promise_id);
+            self.wake.fire();
+            self.reply_signal.fire();
         }
     }
 
@@ -1029,5 +1343,43 @@ fn reject_deferred_with_message(env: sys::napi_env, deferred: sys::napi_deferred
     let reject_status = unsafe { sys::napi_reject_deferred(env, deferred, js_error) };
     if reject_status != sys::Status::napi_ok {
         // The environment may be closing; there is no safe follow-up action.
+    }
+}
+
+#[cfg(test)]
+mod dependency_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_call_survives_retirement_and_protects_the_next_execution() {
+        // No Node handles are created: directly exercise the same admission
+        // state used by the owner, with explicit execution transition barriers.
+        let bridge = NapiHostBridge::new(ptr::null_mut());
+        let state = Arc::new(AsyncState {
+            state: bridge.shared_state(),
+            next_pending: AtomicUsize::new(0),
+            waiting_for_node: AtomicUsize::new(0),
+            dependencies: Arc::new(NodeDependencies {
+                active: AtomicBool::new(false),
+                calls: AtomicUsize::new(0),
+            }),
+            pending: Mutex::new(HashMap::new()),
+            cancellation: Mutex::new(crate::CancellationToken::default()),
+            deadline: Mutex::new(None),
+            reply_wake: Mutex::new(None),
+        });
+        *bridge.async_state.lock().unwrap() = Some(state.clone());
+        bridge.set_owner_execution_active(true); // A starts.
+        let execution = state.dependencies.clone();
+        execution.calls.fetch_add(1, Ordering::AcqRel);
+        let dispatched = DependencyLease(execution);
+        bridge.set_owner_execution_active(false); // A returns saved, unawaited.
+        assert!(!bridge.owner_waiting_for_node(false)); // Idle reentry stays usable.
+        assert!(bridge.owner_waiting_for_node(true)); // B admitted, not started.
+        bridge.set_owner_execution_active(true); // B starts before callback A.
+        assert!(bridge.owner_waiting_for_node(false)); // B may later await saved.
+        drop(dispatched); // Callback A settles exactly once.
+        assert!(!bridge.owner_waiting_for_node(false));
+        assert!(!bridge.owner_waiting_for_node(true)); // Stored settled results do not lock admission.
     }
 }

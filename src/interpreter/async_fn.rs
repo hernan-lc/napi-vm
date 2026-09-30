@@ -27,6 +27,8 @@ use crate::value::{PromiseState, Value};
 /// The suspended body of one in-flight async call.
 #[cfg(stackful_coroutines)]
 pub struct AsyncTask {
+    execution: Rc<super::scheduler::ExecutionState>,
+    counted: bool,
     coroutine: Option<crate::value::GenCoroutine>,
     /// The promise the call returned, settled when the body finishes.
     result: Rc<RefCell<PromiseInner>>,
@@ -106,39 +108,25 @@ impl Interpreter {
             }
             // Microtasks are exhausted and it is still pending; run the next
             // timer before checking whether its own host bridge has work.
-            let timer = self.jobs.borrow_mut().take_timer();
-            if let Some(timer) = timer {
-                match timer {
-                    crate::interpreter::Job::Callback { callback, args } => {
-                        self.call_this(&callback, Value::Undefined, args)?;
-                    }
-                    crate::interpreter::Job::HostCallback { callback } => {
-                        self.run_host_callback(callback)?;
-                    }
-                    crate::interpreter::Job::HostPromiseSettled {
-                        promise,
-                        state,
-                        value,
-                    } => self.settle_host_promise(promise, state, value)?,
-                    crate::interpreter::Job::AtomicsWaitTimeout { key, waiter_id } => {
-                        crate::interpreter::jobs::settle_atomics_wait_timeout(
-                            &self.jobs, key, waiter_id,
-                        );
-                    }
-                    crate::interpreter::Job::Reaction { .. }
-                    | crate::interpreter::Job::PromiseResolveThenable { .. }
-                    | crate::interpreter::Job::HostUncaughtException { .. } => {
-                        unreachable!("only callback jobs are stored in the timer queue")
-                    }
-                }
+            if self.run_await_timer()? {
                 continue;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let timer_wait = self.jobs.borrow().timer_wait();
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(wait) = timer_wait {
+                self.run_await_event(wait)?;
+                continue;
+            }
+            if self.jobs.borrow().next_deadline().is_some() {
+                return Err(VmErr::Msg("pending Promise requires host-driven timer progress; advance the virtual clock or poll from the browser host before awaiting again".into()));
             }
             let has_pending_host_work = self
                 .host
                 .as_ref()
                 .is_some_and(|bridge| bridge.has_pending_host_work(&promise));
             if has_pending_host_work {
-                self.run_event_loop_once(std::time::Duration::from_millis(10))?;
+                self.run_await_event(std::time::Duration::from_millis(10))?;
                 continue;
             }
             break;
@@ -223,7 +211,13 @@ pub(crate) fn spawn_async(
         }
     });
 
+    interp
+        .execution
+        .continuations
+        .set(interp.execution.continuations.get() + 1);
     let task = crate::heap::tracked(Rc::new(RefCell::new(AsyncTask {
+        execution: interp.execution.clone(),
+        counted: true,
         coroutine: Some(coroutine),
         result: result.clone(),
     })));
@@ -244,6 +238,13 @@ fn step(
         return Ok(());
     };
     let outcome = coroutine.resume(resume);
+    if matches!(&outcome, corosensei::CoroutineResult::Return(_)) {
+        let mut task = task.borrow_mut();
+        task.execution
+            .continuations
+            .set(task.execution.continuations.get() - 1);
+        task.counted = false;
+    }
     let result = task.borrow().result.clone();
     match outcome {
         // Suspended at an `await`: continue when the awaited value settles.
@@ -301,6 +302,11 @@ impl Drop for AsyncTask {
     /// [`crate::value::force_abandon`]). Dropping the coroutine directly
     /// would force-unwind across stacks, which faults on Windows.
     fn drop(&mut self) {
+        if self.counted {
+            self.execution
+                .continuations
+                .set(self.execution.continuations.get() - 1);
+        }
         if let Some(coroutine) = self.coroutine.take()
             && !coroutine.done()
         {

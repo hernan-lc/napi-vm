@@ -43,6 +43,7 @@ fn id_of<T>(rc: &Rc<T>) -> HeapId {
 pub(crate) struct GcRoots {
     pub envs: Vec<Env>,
     pub values: Vec<Value>,
+    pub jobs: Vec<crate::interpreter::Jobs>,
 }
 
 /// Per-collection statistics.
@@ -209,6 +210,8 @@ enum MarkItem {
 struct Marker {
     marked: HashSet<HeapId>,
     work: Vec<MarkItem>,
+    host_calls: HashSet<usize>,
+    opaque: bool,
 }
 
 impl Marker {
@@ -216,6 +219,8 @@ impl Marker {
         Self {
             marked: HashSet::new(),
             work: Vec::new(),
+            host_calls: HashSet::new(),
+            opaque: false,
         }
     }
 
@@ -227,6 +232,9 @@ impl Marker {
 
     fn mark_value(&mut self, value: &Value) {
         match value {
+            Value::HostPending { id } => {
+                self.host_calls.insert(*id);
+            }
             Value::Object { props } => {
                 if self.marked.insert(id_of(props)) {
                     self.work.push(MarkItem::Object(props.clone()));
@@ -356,6 +364,7 @@ impl Marker {
                     for value in borrowed.buffered.iter() {
                         self.mark_value(value);
                     }
+                    self.opaque |= borrowed.suspends_values();
                     // A suspended coroutine's stack is opaque by design;
                     // collection refuses to run while one is suspended.
                 }
@@ -373,10 +382,38 @@ impl Marker {
                 MarkItem::AsyncTask(inner) => {
                     // The result promise is tracked in its own right; the
                     // coroutine stack is opaque, hence the suspend barrier.
-                    let _ = inner;
+                    self.opaque |= inner
+                        .try_borrow()
+                        .map_or(true, |task| task.suspends_values());
                 }
             }
         }
+    }
+}
+
+/// Trace result handles at a quiescent owner boundary. Opaque coroutine stacks
+/// require conservative retention, just as they do for cycle collection.
+#[cfg(feature = "napi")]
+pub(crate) fn reachable_host_calls(roots: GcRoots) -> Option<HashSet<usize>> {
+    let mut marker = Marker::new();
+    for env in roots.envs {
+        marker.mark_env(&env);
+    }
+    for value in roots.values {
+        marker.mark_value(&value);
+    }
+    for queue in roots.jobs {
+        let mut values = Vec::new();
+        queue.borrow().trace_roots(&mut values);
+        for value in values {
+            marker.mark_value(&value);
+        }
+    }
+    marker.drain();
+    if marker.opaque {
+        None
+    } else {
+        Some(marker.host_calls)
     }
 }
 
@@ -492,10 +529,13 @@ pub(crate) fn collect() -> HeapStats {
         };
     }
     let executing = HEAP.with(|heap| {
-        heap.borrow()
-            .interps
-            .values()
-            .any(|(_, depth)| depth.get() > 0)
+        heap.borrow().interps.values().any(|(roots, depth)| {
+            depth.get() > 0
+                || roots
+                    .jobs
+                    .iter()
+                    .any(|q| q.try_borrow().map_or(true, |q| q.dispatch_depth > 0))
+        })
     });
     if executing {
         return HeapStats {
@@ -505,6 +545,8 @@ pub(crate) fn collect() -> HeapStats {
     }
 
     let mut marker = Marker::new();
+    let mut queued_roots = Vec::new();
+    let mut seen_queues = HashSet::new();
     HEAP.with(|heap| {
         let heap = heap.borrow();
         for (roots, _) in heap.interps.values() {
@@ -514,11 +556,21 @@ pub(crate) fn collect() -> HeapStats {
             for value in &roots.values {
                 marker.mark_value(value);
             }
+            for queue in &roots.jobs {
+                if seen_queues.insert(Rc::as_ptr(queue)) {
+                    // Borrowability was checked above at this quiescent point.
+                    queue.borrow().trace_roots(&mut queued_roots);
+                }
+            }
         }
         for pinned in heap.pins.values() {
             marker.mark_value(pinned);
         }
     });
+    for value in &queued_roots {
+        marker.mark_value(value);
+    }
+    drop(queued_roots);
     marker.drain();
 
     let mut stats = HeapStats {

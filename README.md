@@ -35,6 +35,8 @@ console.log(vm.run("answer;")); // 42
 - [Plugins](docs/plugins.md) — manifests, filesystem permissions, `node:fs` / `node:path`, and the plugin lifecycle
 - [Vendored rdev-node probe](docs/rdev-node-vendor.md) — build a real napi-rs input addon and verify native listener callbacks
 - [Sandbox safety](docs/safety.md) — containment guards and operational limits
+- [Event-loop scheduling](docs/event-loop.md) — clocks, bounded turns, persistent async ownership, and migration
+- [Scheduler benchmarks](docs/scheduler-benchmarks.md) — reproducible baseline comparison and verification
 - [Development](docs/development.md) — quality gate, scripts, benchmarks, and project structure
 - [Roadmap](docs/roadmap.md) — implemented features and known boundaries
 - [Native addon loader plan](docs/native-addon-loader-plan.md) — roadmap for Node-API and `.node` compatibility in Rust desktop hosts

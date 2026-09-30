@@ -12,6 +12,11 @@ mod native_addon_binary;
 pub mod node_addon;
 mod ops;
 mod promise;
+pub mod scheduler;
+pub use scheduler::{
+    CancellationToken, Clock, ClockMode, EventLoopOptions, Fairness, RealTimeClock, TurnBudget,
+    TurnOutcome, VirtualClock, YieldReason,
+};
 mod resolve;
 #[cfg(all(
     feature = "node-api-host",
@@ -61,6 +66,9 @@ pub struct Realm {
     commonjs_loader: Option<Rc<dyn CommonJsModuleLoader>>,
     commonjs_cache: Rc<RefCell<HashMap<String, commonjs::CommonJsCacheEntry>>>,
     commonjs_entry: Option<String>,
+    execution: Rc<scheduler::ExecutionState>,
+    limits: (u64, u64, usize, usize),
+    event_loop_options: EventLoopOptions,
 }
 
 impl Realm {
@@ -75,10 +83,26 @@ impl Realm {
             commonjs_loader: interp.commonjs_loader.clone(),
             commonjs_cache: interp.commonjs_cache.clone(),
             commonjs_entry: interp.commonjs_entry.clone(),
+            execution: interp.execution.clone(),
+            event_loop_options: interp.event_loop_options,
+            limits: (
+                interp.loop_budget,
+                interp.fuel_budget,
+                interp.max_call_depth,
+                interp.max_jobs_per_drain,
+            ),
         }
     }
 
     pub fn install(self, interp: &mut Interpreter) {
+        interp.execution = self.execution;
+        interp.event_loop_options = self.event_loop_options;
+        (
+            interp.loop_budget,
+            interp.fuel_budget,
+            interp.max_call_depth,
+            interp.max_jobs_per_drain,
+        ) = self.limits;
         interp.jobs = self.jobs;
         interp.modules = self.modules;
         interp.module_sources = self.module_sources;
@@ -242,12 +266,13 @@ pub struct Interpreter {
     /// Remaining loop iterations in the current execution. Refilled by
     /// `begin_execution()` at each NAPI entry point; decremented by
     /// `consume_loop()` on every loop iteration.
-    loops_remaining: u64,
+    execution: Rc<scheduler::ExecutionState>,
+    event_loop_options: EventLoopOptions,
     /// Configured per-execution instruction-fuel cap (bytecode tier).
     fuel_budget: u64,
     /// Remaining instruction fuel in the current execution. Refilled by
     /// `begin_execution()`; decremented by `consume_fuel()` per instruction.
-    fuel_remaining: u64,
+
     /// Maximum guest call-stack depth. Default [`MAX_CALL_DEPTH`].
     max_call_depth: usize,
     /// Maximum jobs drained per drain call. Default [`MAX_JOBS_PER_DRAIN`].
@@ -382,9 +407,10 @@ impl Interpreter {
             source_lines: Vec::new(),
             gen_depth: 0,
             loop_budget: DEFAULT_LOOP_BUDGET,
-            loops_remaining: DEFAULT_LOOP_BUDGET,
+            execution: Rc::new(scheduler::ExecutionState::new()),
+            event_loop_options: EventLoopOptions::default(),
             fuel_budget: DEFAULT_FUEL_BUDGET,
-            fuel_remaining: DEFAULT_FUEL_BUDGET,
+
             max_call_depth: MAX_CALL_DEPTH,
             max_jobs_per_drain: jobs::MAX_JOBS_PER_DRAIN,
             guest_execution_depth: Rc::new(Cell::new(0)),
@@ -414,6 +440,14 @@ impl Interpreter {
 
     /// Attach a host bridge for values such as native addon exports.
     pub fn set_host_bridge(&mut self, bridge: Rc<dyn HostBridge>) {
+        let remaining = self.execution.deadline.get().map(|d| {
+            std::time::Duration::from_secs_f64(
+                (d - self.execution.clock.now_ms()).max(0.0) / 1000.0,
+            )
+        });
+        bridge.set_execution_context(self.execution.cancellation.borrow().clone(), remaining);
+        let wake = self.execution.wake.clone();
+        bridge.set_wake_notifier(std::sync::Arc::new(move || wake.fire()));
         self.host = Some(bridge);
     }
 
@@ -423,7 +457,11 @@ impl Interpreter {
     /// [`HostBridge::set_wake_notifier`](crate::host::HostBridge::set_wake_notifier).
     pub fn set_host_wake_notifier(&self, notifier: crate::host::WakeNotifier) {
         if let Some(host) = &self.host {
-            host.set_wake_notifier(notifier);
+            let wake = self.execution.wake.clone();
+            host.set_wake_notifier(std::sync::Arc::new(move || {
+                wake.fire();
+                notifier();
+            }));
         }
     }
 
@@ -650,6 +688,7 @@ export default { createRequire, isBuiltin, builtinModules };
     /// budget, full job drain, same as [`Self::eval_source`] but with no
     /// lexer or parser work.
     pub fn execute(&mut self, program: &PreparedProgram) -> Result<Value, VmErr> {
+        self.ensure_can_evaluate()?;
         self.begin_execution();
         self.set_source(&program.source);
         let result = match &program.executable {
@@ -683,6 +722,7 @@ export default { createRequire, isBuiltin, builtinModules };
         let mut roots = crate::heap::GcRoots {
             envs: vec![self.global.clone(), self.persistent_global.clone()],
             values: self.new_target_stack.clone(),
+            jobs: vec![self.jobs.clone()],
         };
         if let Ok(modules) = self.modules.try_borrow() {
             for module in modules.values() {
@@ -696,9 +736,6 @@ export default { createRequire, isBuiltin, builtinModules };
                 roots.values.push(entry.exports.clone());
                 roots.values.extend(entry.module.clone());
             }
-        }
-        if let Ok(jobs) = self.jobs.try_borrow() {
-            roots.values.extend(jobs.trace_roots());
         }
         #[cfg(not(stackful_coroutines))]
         if let Some(sink) = &self.yield_sink
@@ -1484,14 +1521,97 @@ impl Interpreter {
     /// full budget. Not called from `run` itself: block bodies and loop
     /// bodies re-enter it recursively and must not refill mid-execution.
     pub fn begin_execution(&mut self) {
-        self.loops_remaining = self.loop_budget;
-        self.fuel_remaining = self.fuel_budget;
+        if (self.execution.active.get()
+            && (self.jobs.borrow().has_outstanding_work()
+                || self.execution.continuations.get() > 0))
+            || self.execution.drain_depth.get() != 0
+            || self.jobs.borrow().checkpoint_pending
+            || self.guest_execution_depth.get() != 0
+        {
+            return;
+        }
+        self.execution.active.set(true);
+        self.execution.loops.set(self.loop_budget);
+        self.execution.fuel.set(self.fuel_budget);
+        self.execution.jobs.set(self.max_jobs_per_drain);
+    }
+
+    pub(crate) fn retire_completed_execution(&mut self) {
+        if self.execution.active.get()
+            && !self.jobs.borrow().has_outstanding_work()
+            && self.execution.continuations.get() == 0
+            && self.guest_execution_depth.get() == 0
+            && self.jobs.borrow().dispatch_depth == 0
+        {
+            self.execution.active.set(false);
+            self.execution.deadline.set(None);
+            *self.execution.cancellation.borrow_mut() = CancellationToken::default();
+            if let Some(host) = &self.host {
+                host.set_execution_context(CancellationToken::default(), None);
+            }
+        }
+    }
+
+    #[cfg(any(feature = "napi", test))]
+    pub(crate) fn has_active_execution(&self) -> bool {
+        self.execution.active.get()
+    }
+    #[cfg(feature = "napi")]
+    pub(crate) fn execution_wait_remaining(&self) -> Option<std::time::Duration> {
+        self.execution.deadline.get().map(|d| {
+            std::time::Duration::from_secs_f64(
+                (d - self.execution.clock.now_ms()).max(0.0) / 1000.0,
+            )
+        })
+    }
+
+    /// New evaluations cannot overtake an unfinished checkpoint from a soft yield.
+    pub fn ensure_can_evaluate(&self) -> Result<(), VmErr> {
+        if self.jobs.borrow().checkpoint_pending {
+            Err(VmErr::Msg(
+                "resume the pending microtask checkpoint before evaluating new guest code".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    pub fn set_event_loop_options(&mut self, options: EventLoopOptions) -> Result<(), VmErr> {
+        if options.host_batch_size == 0 || options.external_capacity == 0 {
+            return Err(VmErr::Msg(
+                "event loop batch size and capacity must be positive".into(),
+            ));
+        }
+        self.event_loop_options = options;
+        Ok(())
+    }
+    pub fn set_cancellation_token(&mut self, token: CancellationToken) {
+        if let Some(host) = &self.host {
+            let remaining = self.execution.deadline.get().map(|d| {
+                std::time::Duration::from_secs_f64(
+                    (d - self.execution.clock.now_ms()).max(0.0) / 1000.0,
+                )
+            });
+            host.set_execution_context(token.clone(), remaining);
+        }
+        token.register_wake(&self.execution.wake);
+        *self.execution.cancellation.borrow_mut() = token;
+    }
+    pub fn set_execution_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        if let Some(host) = &self.host {
+            host.set_execution_context(self.execution.cancellation.borrow().clone(), timeout);
+        }
+        self.execution
+            .deadline
+            .set(timeout.map(|d| self.execution.clock.now_ms() + d.as_secs_f64() * 1000.0));
+    }
+    pub(crate) fn check_execution_interrupt(&self) -> Result<(), VmErr> {
+        self.execution.check()
     }
 
     /// The current execution budget: remaining fuel plus the live caps.
     pub fn execution_budget(&self) -> ExecutionBudget {
         ExecutionBudget {
-            fuel: self.fuel_remaining,
+            fuel: self.execution.fuel.get(),
             max_call_depth: self.max_call_depth,
             max_jobs: self.max_jobs_per_drain,
         }
@@ -1500,7 +1620,8 @@ impl Interpreter {
     /// Replace the execution budget wholesale (budgets and remaining fuel).
     pub fn set_execution_budget(&mut self, budget: ExecutionBudget) {
         self.fuel_budget = budget.fuel;
-        self.fuel_remaining = budget.fuel;
+        self.execution.fuel.set(budget.fuel);
+        self.execution.jobs.set(budget.max_jobs);
         self.max_call_depth = budget.max_call_depth;
         self.max_jobs_per_drain = budget.max_jobs;
     }
@@ -1508,14 +1629,15 @@ impl Interpreter {
     /// Change the instruction-fuel cap (and refill to it).
     pub fn set_fuel_budget(&mut self, n: u64) {
         self.fuel_budget = n;
-        self.fuel_remaining = n;
+        self.execution.fuel.set(n);
     }
 
     /// Account one bytecode instruction against the fuel budget.
     pub(crate) fn consume_fuel(&mut self, cost: u64) -> Result<(), VmErr> {
-        match self.fuel_remaining.checked_sub(cost) {
+        self.execution.check()?;
+        match self.execution.fuel.get().checked_sub(cost) {
             Some(remaining) => {
-                self.fuel_remaining = remaining;
+                self.execution.fuel.set(remaining);
                 Ok(())
             }
             None => Err(crate::value::limit_err("Maximum instruction fuel exceeded")),
@@ -1525,7 +1647,7 @@ impl Interpreter {
     /// Change the loop-iteration cap (exposed to Node as `setLoopLimit`).
     pub fn set_loop_budget(&mut self, n: u64) {
         self.loop_budget = n;
-        self.loops_remaining = n;
+        self.execution.loops.set(n);
     }
 
     /// Register a native-code backend for the JIT seam. Hot bytecode
@@ -1573,12 +1695,13 @@ impl Interpreter {
     /// Account one loop iteration against the budget. Every loop construct
     /// calls this per iteration, so guest code can never spin forever.
     pub(crate) fn consume_loop(&mut self) -> Result<(), VmErr> {
-        if self.loops_remaining == 0 {
+        self.execution.check()?;
+        if self.execution.loops.get() == 0 {
             return Err(VmErr::Msg(
                 "RangeError: Maximum loop iterations exceeded".to_string(),
             ));
         }
-        self.loops_remaining -= 1;
+        self.execution.loops.set(self.execution.loops.get() - 1);
         Ok(())
     }
 

@@ -564,9 +564,18 @@ pub(super) fn shutdown_threadsafe_functions(
 
 pub(super) fn take_threadsafe_function_queue(
     shared: &Arc<NapiThreadsafeFunctionShared>,
+    limit: usize,
 ) -> Result<Vec<usize>, i32> {
     let mut state = shared.state.lock().map_err(|_| NAPI_GENERIC_FAILURE)?;
-    let values = state.values.drain(..).collect::<Vec<_>>();
+    let count = state.values.len().min(limit);
+    let values = state.values.drain(..count).collect::<Vec<_>>();
+    if !state.values.is_empty() {
+        shared
+            .notifications
+            .send(HostRuntimeNotification::ThreadsafeFunction(shared.id))
+            .map_err(|_| NAPI_GENERIC_FAILURE)?;
+        shared.wake.fire();
+    }
     state.in_flight = state
         .in_flight
         .checked_add(values.len())
@@ -575,7 +584,10 @@ pub(super) fn take_threadsafe_function_queue(
     Ok(values)
 }
 
-pub(super) fn thread_safe_function_events(function_id: usize) -> Result<Vec<HostEvent>, VmErr> {
+pub(super) fn thread_safe_function_events(
+    function_id: usize,
+    limit: usize,
+) -> Result<Vec<HostEvent>, VmErr> {
     let Some(shared) = threadsafe_function_registry()
         .lock()
         .map_err(|_| VmErr::Msg("Node-API thread-safe function registry is poisoned".into()))?
@@ -586,7 +598,7 @@ pub(super) fn thread_safe_function_events(function_id: usize) -> Result<Vec<Host
     };
     let environment = environment(shared.environment as NapiEnv)
         .map_err(|status| napi_error("reading thread-safe function environment", status))?;
-    let values = take_threadsafe_function_queue(&shared)
+    let values = take_threadsafe_function_queue(&shared, limit)
         .map_err(|status| napi_error("draining thread-safe function queue", status))?;
     let (js_callback, call_js, context) = environment
         .threadsafe_functions

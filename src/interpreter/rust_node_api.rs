@@ -1026,6 +1026,10 @@ impl NativeAddonLoader for RustNodeApiHost {
 }
 
 impl HostBridge for RustNodeApiHost {
+    fn supports_blocking_event_wait(&self) -> bool {
+        true
+    }
+
     fn call_host(&self, id: usize, args: Vec<Value>) -> Result<Value, VmErr> {
         self.ensure_running()?;
         self.invoke_native(id, Value::Undefined, args, None, &mut reject_guest_callback)
@@ -1087,38 +1091,40 @@ impl HostBridge for RustNodeApiHost {
     }
 
     fn poll_host_events(&self, timeout: Duration) -> Result<Vec<HostEvent>, VmErr> {
-        if self.is_shutdown() {
+        self.poll_host_events_bounded(timeout, usize::MAX)
+    }
+
+    fn poll_host_events_bounded(
+        &self,
+        timeout: Duration,
+        limit: usize,
+    ) -> Result<Vec<HostEvent>, VmErr> {
+        if limit == 0 || self.is_shutdown() {
             return Ok(Vec::new());
         }
-        let mut events = {
+        let mut events = Vec::new();
+        {
             let state = self.state.borrow();
-            state
-                .environments
-                .iter()
-                .flat_map(|environment| {
-                    environment
-                        .fatal_exceptions
-                        .borrow_mut()
-                        .drain(..)
-                        .map(HostEvent::UncaughtException)
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>()
-        };
-        let notifications = {
-            let state = self.state.borrow();
-            let first = if timeout.is_zero() || !events.is_empty() {
-                state.runtime_notifications.try_recv().ok()
-            } else {
-                state.runtime_notifications.recv_timeout(timeout).ok()
+            for environment in &state.environments {
+                let mut exceptions = environment.fatal_exceptions.borrow_mut();
+                let count = exceptions.len().min(limit.saturating_sub(events.len()));
+                events.extend(exceptions.drain(..count).map(HostEvent::UncaughtException));
+            }
+        }
+        let mut polled = 0;
+        while events.len() < limit && polled < limit {
+            let notification = {
+                let state = self.state.borrow();
+                if polled == 0 && events.is_empty() && !timeout.is_zero() {
+                    state.runtime_notifications.recv_timeout(timeout).ok()
+                } else {
+                    state.runtime_notifications.try_recv().ok()
+                }
             };
-            first
-                .into_iter()
-                .chain(state.runtime_notifications.try_iter())
-                .collect::<Vec<_>>()
-        };
-        events.reserve(notifications.len());
-        for notification in notifications {
+            let Some(notification) = notification else {
+                break;
+            };
+            polled += 1;
             match notification {
                 HostRuntimeNotification::AsyncWorkCompletion(completion) => {
                     let work = {
@@ -1153,7 +1159,10 @@ impl HostBridge for RustNodeApiHost {
                     }));
                 }
                 HostRuntimeNotification::ThreadsafeFunction(function_id) => {
-                    events.extend(thread_safe_function_events(function_id)?);
+                    events.extend(thread_safe_function_events(
+                        function_id,
+                        limit - events.len(),
+                    )?);
                 }
                 HostRuntimeNotification::PostedFinalizer(finalizer) => {
                     let environment = {
@@ -1184,6 +1193,10 @@ impl HostBridge for RustNodeApiHost {
             }
         }
         Ok(events)
+    }
+
+    fn event_wait_mode(&self) -> crate::host::HostWaitMode {
+        crate::host::HostWaitMode::Notifications
     }
 
     fn set_wake_notifier(&self, notifier: WakeNotifier) {

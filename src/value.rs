@@ -2946,3 +2946,29 @@ mod drop_tests {
         drop(proxy);
     }
 }
+
+#[cfg(test)]
+mod weak_registry_drop_tests {
+    use super::Value;
+    #[test]
+    fn weak_registrations_do_not_disable_iterative_teardown() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                for array in [true, false] {
+                    let mut value = Value::Undefined;
+                    for _ in 0..20_000 {
+                        value = if array {
+                            Value::array(vec![value])
+                        } else {
+                            Value::object(vec![("child".into(), value)])
+                        };
+                    }
+                    drop(value);
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+}

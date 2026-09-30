@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
@@ -328,6 +328,9 @@ pub struct NodeAddonSidecar {
     allowed_roots: Vec<PathBuf>,
     allowed_addons: HashMap<PathBuf, [u8; 32]>,
     wake: Arc<WakeSlot>,
+    response_wake: Arc<crate::host::WakeSignal>,
+    cancellation: RefCell<crate::CancellationToken>,
+    execution_deadline: Cell<Option<Instant>>,
 }
 
 /// Runtime versions reported by the Node process hosting native addons.
@@ -511,6 +514,8 @@ impl NodeAddonSidecar {
         let (event_tx, event_rx) = mpsc::channel();
         let wake = Arc::new(WakeSlot::new());
         let reader_wake = wake.clone();
+        let response_wake = Arc::new(crate::host::WakeSignal::default());
+        let reader_response_wake = response_wake.clone();
         let reader = std::thread::Builder::new()
             .name("napi-vm-node-events".into())
             .spawn(move || {
@@ -523,6 +528,7 @@ impl NodeAddonSidecar {
                     if sender.send(frame).is_err() {
                         break;
                     }
+                    reader_response_wake.fire();
                     // Responses complete a synchronous host call already
                     // waiting on the owner thread; only sidecar events need
                     // to wake an idle owner.
@@ -530,6 +536,12 @@ impl NodeAddonSidecar {
                         reader_wake.fire();
                     }
                 }
+                // Publish disconnection before notifying: the owner must not
+                // observe an empty live channel and lose the EOF wake.
+                drop(response_tx);
+                drop(event_tx);
+                reader_response_wake.fire();
+                reader_wake.fire();
             })
             .map_err(|e| VmErr::Msg(format!("cannot start Node bridge reader: {e}")))?;
         Ok(Self {
@@ -561,6 +573,9 @@ impl NodeAddonSidecar {
             runtime_info,
             allowed_roots,
             allowed_addons,
+            response_wake,
+            cancellation: RefCell::new(crate::CancellationToken::default()),
+            execution_deadline: Cell::new(None),
             wake,
         })
     }
@@ -773,13 +788,36 @@ impl NodeAddonSidecar {
             id
         };
 
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = self
+            .execution_deadline
+            .get()
+            .map_or(Instant::now() + Duration::from_secs(60), |d| {
+                d.min(Instant::now() + Duration::from_secs(60))
+            });
+        self.cancellation
+            .borrow()
+            .register_wake(&self.response_wake);
         loop {
+            if self
+                .execution_deadline
+                .get()
+                .is_some_and(|d| Instant::now() >= d)
+            {
+                fail_state(&mut self.state.borrow_mut());
+                return Err(VmErr::Msg(
+                    "RangeError: Guest execution deadline exceeded".into(),
+                ));
+            }
+            if self.cancellation.borrow().is_cancelled() {
+                fail_state(&mut self.state.borrow_mut());
+                return Err(VmErr::Msg("Error: Guest execution cancelled".into()));
+            }
             let event = {
                 let mut state = self.state.borrow_mut();
-                state
-                    .pending_events
-                    .pop_front()
+                let sync = state.pending_events.iter().position(|event| {
+                    event.get("event").and_then(JsonValue::as_str) == Some("syncGuestCallback")
+                });
+                sync.and_then(|i| state.pending_events.remove(i))
                     .or_else(|| state.event_rx.try_recv().ok())
             };
             if let Some(event) = event {
@@ -787,6 +825,8 @@ impl NodeAddonSidecar {
                     self.answer_sync_guest_callback(&event, callback_handler)?;
                 } else {
                     self.state.borrow_mut().pending_events.push_back(event);
+                    // Drain ingress before sleeping: wake notifications may coalesce.
+                    continue;
                 }
             }
 
@@ -835,43 +875,7 @@ impl NodeAddonSidecar {
                     "Node sidecar did not respond before timeout".into(),
                 ));
             }
-            let wait = (deadline - now).min(Duration::from_millis(2));
-            let receive = {
-                let state = self.state.borrow();
-                state.response_rx.recv_timeout(wait)
-            };
-            match receive {
-                Ok(response) => {
-                    if response.get("requestId").and_then(JsonValue::as_u64) != Some(id) {
-                        return Err(VmErr::Msg("Node response id mismatch".into()));
-                    }
-                    if response.get("ok").and_then(JsonValue::as_bool) == Some(true) {
-                        return response
-                            .get("value")
-                            .cloned()
-                            .ok_or_else(|| VmErr::Msg("Node response has no value".into()));
-                    }
-                    let error = response.get("error").unwrap_or(&JsonValue::Null);
-                    let name = error
-                        .get("name")
-                        .and_then(JsonValue::as_str)
-                        .unwrap_or("Error");
-                    let message = error
-                        .get("message")
-                        .and_then(JsonValue::as_str)
-                        .unwrap_or("native addon failed");
-                    let code = error.get("code").and_then(JsonValue::as_str);
-                    let error = Value::Error(match code {
-                        Some(code) => crate::value::ErrorData::with_code(name, message, code),
-                        None => crate::value::ErrorData::new(name, message),
-                    });
-                    return Err(VmErr::Throw(error));
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(VmErr::Msg("Node sidecar disconnected".into()));
-                }
-            }
+            self.response_wake.wait(Some(deadline - now));
         }
     }
 
@@ -1149,14 +1153,34 @@ impl NativeAddonLoader for NodeAddonSidecar {
 }
 
 impl HostBridge for NodeAddonSidecar {
+    fn set_execution_context(&self, token: crate::CancellationToken, timeout: Option<Duration>) {
+        token.register_wake(&self.response_wake);
+        *self.cancellation.borrow_mut() = token;
+        self.execution_deadline
+            .set(timeout.and_then(|d| Instant::now().checked_add(d)));
+    }
+
+    fn supports_blocking_event_wait(&self) -> bool {
+        true
+    }
+
     fn poll_host_events(&self, timeout: Duration) -> Result<Vec<HostEvent>, VmErr> {
-        if self.is_shutdown() {
+        self.poll_host_events_bounded(timeout, usize::MAX)
+    }
+
+    fn poll_host_events_bounded(
+        &self,
+        timeout: Duration,
+        limit: usize,
+    ) -> Result<Vec<HostEvent>, VmErr> {
+        if limit == 0 || self.is_shutdown() {
             return Ok(Vec::new());
         }
         let events = {
             let mut state = self.state.borrow_mut();
             let mut events = Vec::new();
-            events.extend(state.pending_events.drain(..));
+            let count = limit.min(state.pending_events.len());
+            events.extend(state.pending_events.drain(..count));
             if events.is_empty() {
                 let first = if timeout.is_zero() {
                     state.event_rx.try_recv().ok()
@@ -1165,7 +1189,7 @@ impl HostBridge for NodeAddonSidecar {
                 };
                 if let Some(event) = first {
                     events.push(event);
-                    events.extend(state.event_rx.try_iter());
+                    events.extend(state.event_rx.try_iter().take(limit.saturating_sub(1)));
                 }
             }
             events
@@ -1236,6 +1260,10 @@ impl HostBridge for NodeAddonSidecar {
             host_events.push(HostEvent::Callback(self.guest_callback_from_event(&event)?));
         }
         Ok(host_events)
+    }
+
+    fn event_wait_mode(&self) -> crate::host::HostWaitMode {
+        crate::host::HostWaitMode::Notifications
     }
 
     fn set_wake_notifier(&self, notifier: WakeNotifier) {
