@@ -117,8 +117,10 @@ pub struct JobQueue {
     timer_keys: HashMap<(u64, u128), u64>,
     next_timer_id: u64,
     next_sequence: u128,
+    peak_depth: usize,
     clock: super::scheduler::ClockMode,
     pub(crate) checkpoint_pending: bool,
+    pub(crate) dispatch_depth: usize,
     pub(crate) prefer_timer: bool,
     atomics_waiters: HashMap<(usize, usize), VecDeque<AtomicsWaiter>>,
     next_atomics_waiter_id: u64,
@@ -148,6 +150,7 @@ impl JobQueue {
 
     pub fn push_microtask(&mut self, job: Job) {
         self.microtasks.push_back(job);
+        self.observe_depth();
     }
 
     pub fn take_microtask(&mut self) -> Option<Job> {
@@ -156,6 +159,7 @@ impl JobQueue {
 
     pub fn push_external_event(&mut self, job: Job) {
         self.external_events.push_back(job);
+        self.observe_depth();
     }
 
     pub fn take_external_event(&mut self) -> Option<Job> {
@@ -195,6 +199,7 @@ impl JobQueue {
         self.timers.insert(key, job);
         self.timer_ids.insert(id, key);
         self.timer_keys.insert(key, id);
+        self.observe_depth();
         id
     }
 
@@ -326,6 +331,22 @@ impl JobQueue {
             std::time::Duration::try_from_secs_f64(((d - self.clock.now_ms()).max(0.0)) / 1000.0)
                 .unwrap_or(std::time::Duration::MAX)
         })
+    }
+    pub fn len(&self) -> usize {
+        self.microtasks.len()
+            + self.external_events.len()
+            + self.timers.len()
+            + self.host_overflow.len()
+    }
+    pub fn peak_depth(&self) -> usize {
+        self.peak_depth
+    }
+    fn observe_depth(&mut self) {
+        self.peak_depth = self.peak_depth.max(self.len());
+    }
+    pub(crate) fn push_overflow(&mut self, job: Job) {
+        self.host_overflow.push_back(job);
+        self.observe_depth();
     }
     pub fn is_empty(&self) -> bool {
         self.microtasks.is_empty()

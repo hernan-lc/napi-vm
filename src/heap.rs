@@ -494,7 +494,11 @@ pub(crate) fn collect() -> HeapStats {
     }
     let executing = HEAP.with(|heap| {
         heap.borrow().interps.values().any(|(roots, depth)| {
-            depth.get() > 0 || roots.jobs.iter().any(|q| q.try_borrow().is_err())
+            depth.get() > 0
+                || roots
+                    .jobs
+                    .iter()
+                    .any(|q| q.try_borrow().map_or(true, |q| q.dispatch_depth > 0))
         })
     });
     if executing {

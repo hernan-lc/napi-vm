@@ -340,6 +340,14 @@ impl Interpreter {
     }
 
     fn dispatch_job(&mut self, job: Job) -> Result<(), VmErr> {
+        struct DispatchGuard(super::Jobs);
+        impl Drop for DispatchGuard {
+            fn drop(&mut self) {
+                self.0.borrow_mut().dispatch_depth -= 1;
+            }
+        }
+        self.jobs.borrow_mut().dispatch_depth += 1;
+        let _guard = DispatchGuard(self.jobs.clone());
         match job {
             Job::Reaction {
                 state,
@@ -386,7 +394,12 @@ impl Interpreter {
         if !queue.host_overflow.is_empty() {
             yield_reason = YieldReason::Backpressure;
         }
-        if yield_reason == YieldReason::Idle && queue.is_empty() {
+        if yield_reason == YieldReason::Idle
+            && queue.is_empty()
+            && self.execution.drain_depth.get() == 1
+            && self.guest_execution_depth.get() == 0
+            && queue.dispatch_depth == 0
+        {
             self.execution.active.set(false);
         }
         TurnOutcome {
@@ -417,6 +430,7 @@ impl Interpreter {
             .set(self.execution.drain_depth.get() + 1);
         let _guard = DrainGuard(self.execution.clone());
         let clock = RealTimeClock::default();
+        let initial_remaining = self.execution.jobs.get();
         let mut executed = 0;
         loop {
             self.check_execution_interrupt()?;
@@ -473,8 +487,8 @@ impl Interpreter {
                 return Ok(self.outcome(executed, YieldReason::Idle));
             };
             self.execution.jobs.set(self.execution.jobs.get() - 1);
-            executed += 1;
             self.dispatch_job(job)?;
+            executed = initial_remaining.saturating_sub(self.execution.jobs.get());
         }
     }
 
@@ -491,8 +505,20 @@ impl Interpreter {
         };
         let timer_wait = self.jobs.borrow().timer_wait();
         let wait = timer_wait.map_or(timeout, |d| d.min(timeout));
+        let host_waits = self
+            .host
+            .as_ref()
+            .is_some_and(|h| h.supports_blocking_event_wait());
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.host.is_some() && !host_waits && timer_wait.is_some() && !wait.is_zero() {
+            std::thread::sleep(wait);
+        }
         if self.host.is_some() {
-            self.enqueue_host_events(wait)?;
+            self.enqueue_host_events(if host_waits || timer_wait.is_none() {
+                wait
+            } else {
+                Duration::ZERO
+            })?;
         }
         #[cfg(not(target_arch = "wasm32"))]
         if self.host.is_none() && timer_wait.is_some() && !wait.is_zero() {
@@ -547,7 +573,7 @@ impl Interpreter {
             if let Err(job) =
                 queue.try_push_external_event(job, self.event_loop_options.external_capacity)
             {
-                queue.host_overflow.push_back(job);
+                queue.push_overflow(job);
             }
         }
     }

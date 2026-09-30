@@ -374,3 +374,57 @@ fn published_gc_roots_do_not_retain_a_cancelled_timer() {
         "published snapshots must not pin removed callbacks"
     );
 }
+
+#[test]
+fn nested_await_checkpoints_share_the_hard_job_budget() {
+    let mut vm = Interpreter::with_builtins();
+    vm.set_execution_budget(ExecutionBudget {
+        max_jobs: 2,
+        ..ExecutionBudget::default()
+    });
+    assert!(vm.eval_source("var hits=0;queueMicrotask(()=>hits++);await 0;queueMicrotask(()=>hits++);queueMicrotask(()=>hits++);").unwrap_err().to_string().contains("job count"));
+    assert!(matches!(
+        vm.global.borrow().get("hits"),
+        Some(Value::Number(2.0))
+    ));
+    assert!(vm.jobs.borrow().has_microtasks());
+}
+#[test]
+fn soft_yields_do_not_refill_guest_fuel() {
+    let mut vm = Interpreter::with_builtins();
+    let cb = callback(&mut vm, "()=>1+1");
+    vm.set_fuel_budget(100);
+    for _ in 0..3 {
+        vm.jobs.borrow_mut().push_microtask(Job::Callback {
+            callback: cb.clone(),
+            args: vec![],
+        });
+    }
+    let mut previous = vm.execution_budget().fuel;
+    for _ in 0..3 {
+        vm.poll_event_loop(TurnBudget::jobs(1)).unwrap();
+        let fuel = vm.execution_budget().fuel;
+        assert!(fuel < previous);
+        previous = fuel;
+    }
+}
+#[test]
+fn collection_refuses_while_dequeued_native_job_values_are_on_the_stack() {
+    fn probe(vm: &mut Interpreter, _: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+        assert_eq!(
+            vm.collect_cycles().skipped,
+            Some(napi_vm::heap::SkipReason::Executing)
+        );
+        Ok(Value::Undefined)
+    }
+    let mut vm = Interpreter::with_builtins();
+    vm.jobs.borrow_mut().push_microtask(Job::Callback {
+        callback: Value::NativeFunction {
+            name: "gc_probe".into(),
+            callable: probe,
+        },
+        args: vec![Value::object(vec![])],
+    });
+    vm.drain_jobs().unwrap();
+    assert_eq!(vm.collect_cycles().skipped, None);
+}
