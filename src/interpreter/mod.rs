@@ -698,7 +698,7 @@ export default { createRequire, isBuiltin, builtinModules };
             }
         }
         if let Ok(jobs) = self.jobs.try_borrow() {
-            roots.values.extend(jobs.trace_roots());
+            jobs.trace_roots(&mut roots.values);
         }
         #[cfg(not(stackful_coroutines))]
         if let Some(sink) = &self.yield_sink

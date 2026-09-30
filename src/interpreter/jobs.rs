@@ -7,7 +7,7 @@
 //! `Rc` to the same queue is what keeps a single event loop across them.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::Rc;
 
 use crate::value::{PromiseInner, PromiseState, Reaction, Value};
@@ -59,42 +59,40 @@ pub enum Job {
 
 impl Job {
     /// Values this queued job keeps alive, for the cycle collector.
-    pub(crate) fn trace_values(&self) -> Vec<Value> {
+    pub(crate) fn trace_values(&self, out: &mut Vec<Value>) {
         match self {
             Job::Reaction {
                 value, reaction, ..
-            } => vec![
+            } => out.extend([
                 value.clone(),
                 reaction.on_fulfilled.clone(),
                 reaction.on_rejected.clone(),
                 Value::Promise(reaction.derived.clone()),
-            ],
+            ]),
             Job::PromiseResolveThenable {
                 target,
                 thenable,
                 then,
                 resolution_guard,
-            } => vec![
+            } => out.extend([
                 Value::Promise(target.clone()),
                 thenable.clone(),
                 then.clone(),
                 resolution_guard.clone(),
-            ],
+            ]),
             Job::Callback { callback, args } => {
-                let mut out = vec![callback.clone()];
+                out.push(callback.clone());
                 out.extend(args.iter().cloned());
-                out
             }
             Job::HostCallback { callback } => {
-                let mut out = vec![callback.callback.clone(), callback.this_value.clone()];
+                out.extend([callback.callback.clone(), callback.this_value.clone()]);
                 out.extend(callback.args.iter().cloned());
-                out
             }
             Job::HostPromiseSettled { promise, value, .. } => {
-                vec![Value::Promise(promise.clone()), value.clone()]
+                out.extend([Value::Promise(promise.clone()), value.clone()]);
             }
-            Job::HostUncaughtException { exception } => vec![exception.clone()],
-            Job::AtomicsWaitTimeout { .. } => Vec::new(),
+            Job::HostUncaughtException { exception } => out.push(exception.clone()),
+            Job::AtomicsWaitTimeout { .. } => {}
         }
     }
 }
@@ -111,9 +109,12 @@ pub struct JobQueue {
     /// Timer callbacks, ordered by delay then by insertion. There is no real
     /// clock here: a timer runs after every microtask has, which preserves the
     /// ordering guarantees guest code depends on without a wall clock.
-    timers: Vec<(f64, u64, Job)>,
+    // Nonnegative finite f64 bit patterns have the same order as their values.
+    timers: BTreeMap<(u64, u128), Job>,
+    timer_ids: HashMap<u64, (u64, u128)>,
+    timer_keys: HashMap<(u64, u128), u64>,
     next_timer_id: u64,
-    cancelled: Vec<u64>,
+    next_sequence: u128,
     atomics_waiters: HashMap<(usize, usize), VecDeque<AtomicsWaiter>>,
     next_atomics_waiter_id: u64,
 }
@@ -121,20 +122,18 @@ pub struct JobQueue {
 impl JobQueue {
     /// Every value the queued jobs and waiters keep alive, for the cycle
     /// collector's root set.
-    pub(crate) fn trace_roots(&self) -> Vec<Value> {
-        let mut out = Vec::new();
+    pub(crate) fn trace_roots(&self, out: &mut Vec<Value>) {
         for job in self.microtasks.iter().chain(self.external_events.iter()) {
-            out.extend(job.trace_values());
+            job.trace_values(out);
         }
-        for (_, _, job) in &self.timers {
-            out.extend(job.trace_values());
+        for job in self.timers.values() {
+            job.trace_values(out);
         }
         for waiters in self.atomics_waiters.values() {
             for waiter in waiters {
                 out.push(Value::Promise(waiter.promise.clone()));
             }
         }
-        out
     }
 
     pub fn push_microtask(&mut self, job: Job) {
@@ -162,14 +161,29 @@ impl JobQueue {
     /// timers. Returns a timer sequence id, which is deliberately not exposed
     /// to guest code for runtime-owned jobs.
     pub fn push_timer_job(&mut self, delay: f64, job: Job) -> u64 {
-        let id = self.next_timer_id + 1;
-        self.next_timer_id = id;
-        let delay = if delay.is_finite() && delay > 0.0 {
-            delay
-        } else {
-            0.0
-        };
-        self.timers.push((delay, id, job));
+        // IDs are exactly representable in guest JS and never alias live timers,
+        // even after wraparound. The independent sequence preserves FIFO ties.
+        const MAX_ID: u64 = (1 << 53) - 1;
+        loop {
+            self.next_timer_id = if self.next_timer_id >= MAX_ID {
+                1
+            } else {
+                self.next_timer_id + 1
+            };
+            if !self.timer_ids.contains_key(&self.next_timer_id) {
+                break;
+            }
+        }
+        let id = self.next_timer_id;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .expect("timer sequence exhausted");
+        let delay = normalize_delay(delay);
+        let key = (delay.to_bits(), self.next_sequence);
+        self.timers.insert(key, job);
+        self.timer_ids.insert(id, key);
+        self.timer_keys.insert(key, id);
         id
     }
 
@@ -233,24 +247,23 @@ impl JobQueue {
     }
 
     pub fn cancel_timer(&mut self, id: u64) {
-        self.cancelled.push(id);
-        self.timers.retain(|(_, timer_id, _)| *timer_id != id);
+        if let Some(key) = self.timer_ids.remove(&id) {
+            self.timer_keys.remove(&key);
+            self.timers.remove(&key);
+        }
     }
 
-    /// Remove the timer that should fire next: the smallest delay, breaking
-    /// ties by scheduling order.
+    /// Remove the smallest deadline, breaking ties by scheduling order.
     pub fn take_timer(&mut self) -> Option<Job> {
-        let index = self
-            .timers
-            .iter()
-            .enumerate()
-            .min_by(|(_, (da, ia, _)), (_, (db, ib, _))| {
-                da.partial_cmp(db)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(ia.cmp(ib))
-            })
-            .map(|(index, _)| index)?;
-        Some(self.timers.remove(index).2)
+        let (key, job) = self.timers.pop_first()?;
+        if let Some(id) = self.timer_keys.remove(&key) {
+            self.timer_ids.remove(&id);
+        }
+        Some(job)
+    }
+
+    pub fn has_microtasks(&self) -> bool {
+        !self.microtasks.is_empty()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -298,5 +311,74 @@ pub fn settle_atomics_wait_timeout(jobs: &Jobs, key: (usize, usize), waiter_id: 
             PromiseState::Fulfilled,
             Value::String("timed-out".into()),
         );
+    }
+}
+
+fn normalize_delay(delay: f64) -> f64 {
+    if delay.is_finite() && delay > 0.0 {
+        delay
+    } else {
+        0.0
+    }
+}
+
+#[cfg(test)]
+mod scheduler_tests {
+    use super::*;
+    fn job(n: f64) -> Job {
+        Job::Callback {
+            callback: Value::Number(n),
+            args: vec![],
+        }
+    }
+    fn take(q: &mut JobQueue) -> f64 {
+        match q.take_timer().unwrap() {
+            Job::Callback {
+                callback: Value::Number(n),
+                ..
+            } => n,
+            _ => panic!(),
+        }
+    }
+    #[test]
+    fn timers_normalize_and_keep_fifo_ties() {
+        let mut q = JobQueue::default();
+        for (n, d) in [4.0, 0.0, f64::NAN, -1.0, f64::INFINITY, -0.0, 4.0]
+            .into_iter()
+            .enumerate()
+        {
+            q.push_timer_job(d, job(n as f64));
+        }
+        assert_eq!(
+            (0..7).map(|_| take(&mut q)).collect::<Vec<_>>(),
+            vec![1., 2., 3., 4., 5., 0., 6.]
+        );
+        assert!(q.timer_ids.is_empty());
+        assert!(q.timer_keys.is_empty());
+    }
+    #[test]
+    fn timer_ids_wrap_without_collisions_or_reordering() {
+        let mut q = JobQueue::default();
+        assert_eq!(q.push_timer_job(1., job(1.)), 1);
+        q.next_timer_id = (1 << 53) - 1;
+        assert_eq!(q.push_timer_job(1., job(2.)), 2);
+        assert_eq!(take(&mut q), 1.);
+        assert_eq!(take(&mut q), 2.);
+    }
+    #[test]
+    fn cancellation_releases_roots_immediately() {
+        let mut q = JobQueue::default();
+        let object = Value::object(vec![]);
+        let id = q.push_timer(1., object.clone(), vec![object.clone()]);
+        let mut roots = vec![];
+        q.trace_roots(&mut roots);
+        assert_eq!(roots.len(), 2);
+        roots.clear();
+        q.cancel_timer(id);
+        q.cancel_timer(id);
+        q.trace_roots(&mut roots);
+        assert!(roots.is_empty());
+        assert!(q.is_empty());
+        assert!(q.timer_ids.is_empty());
     }
 }

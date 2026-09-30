@@ -336,85 +336,88 @@ impl Interpreter {
     /// Bounded by [`MAX_JOBS_PER_DRAIN`] so a self-rescheduling chain raises a
     /// catchable `RangeError` instead of hanging the host.
     pub fn drain_jobs(&mut self) -> Result<(), VmErr> {
-        let mut executed = 0usize;
-        loop {
-            self.enqueue_host_events(Duration::ZERO)?;
-            let job = {
-                let mut queue = self.jobs.borrow_mut();
-                match queue.take_microtask() {
-                    Some(job) => Some(job),
-                    // External events and timers are macrotasks. Run one
-                    // between microtask checkpoints.
-                    None => match queue.take_external_event() {
-                        Some(job) => Some(job),
-                        None => queue.take_timer(),
-                    },
-                }
-            };
-            let Some(job) = job else { return Ok(()) };
-            executed += 1;
-            if executed > self.max_jobs_per_drain {
-                return Err(crate::value::limit_err("Maximum job count exceeded"));
-            }
-            match job {
-                Job::Reaction {
-                    state,
-                    value,
-                    reaction,
-                } => self.run_reaction(state, value, reaction)?,
-                Job::PromiseResolveThenable {
-                    target,
-                    thenable,
-                    then,
-                    resolution_guard,
-                } => self.run_thenable_job(target, &thenable, &then, resolution_guard)?,
-                Job::Callback { callback, args } => {
-                    match self.call_this(&callback, Value::Undefined, args) {
-                        Ok(_) => {}
-                        // An uncaught error in a queued callback is reported
-                        // like an uncaught exception on the event loop: it
-                        // stops the drain rather than being swallowed.
-                        Err(error) => return Err(error),
-                    }
-                }
-                Job::HostCallback { callback } => {
-                    self.run_host_callback(callback)?;
-                }
-                Job::HostPromiseSettled {
-                    promise,
-                    state,
-                    value,
-                } => self.settle_host_promise(promise, state, value)?,
-                Job::HostUncaughtException { exception } => {
-                    self.run_host_uncaught_exception(exception)?;
-                }
-                Job::AtomicsWaitTimeout { key, waiter_id } => {
-                    super::jobs::settle_atomics_wait_timeout(&self.jobs, key, waiter_id);
-                }
+        self.drain_queued_jobs(false).map(|_| ())
+    }
+
+    fn dispatch_job(&mut self, job: Job) -> Result<(), VmErr> {
+        match job {
+            Job::Reaction {
+                state,
+                value,
+                reaction,
+            } => self.run_reaction(state, value, reaction),
+            Job::PromiseResolveThenable {
+                target,
+                thenable,
+                then,
+                resolution_guard,
+            } => self.run_thenable_job(target, &thenable, &then, resolution_guard),
+            Job::Callback { callback, args } => self
+                .call_this(&callback, Value::Undefined, args)
+                .map(|_| ()),
+            Job::HostCallback { callback } => self.run_host_callback(callback).map(|_| ()),
+            Job::HostPromiseSettled {
+                promise,
+                state,
+                value,
+            } => self.settle_host_promise(promise, state, value),
+            Job::HostUncaughtException { exception } => self.run_host_uncaught_exception(exception),
+            Job::AtomicsWaitTimeout { key, waiter_id } => {
+                super::jobs::settle_atomics_wait_timeout(&self.jobs, key, waiter_id);
+                Ok(())
             }
         }
     }
 
-    /// Wait for one host-originated event, then run it on the interpreter
-    /// thread and drain its microtasks. Desktop runtimes can call this from
-    /// their own event loop; guest callbacks are never invoked by the
-    /// sidecar/network thread.
+    fn drain_queued_jobs(&mut self, microtasks_only: bool) -> Result<usize, VmErr> {
+        let mut executed = 0;
+        loop {
+            // A checkpoint drains recursively queued microtasks before sampling
+            // ingress or admitting another macrotask. FIFO is never interrupted.
+            if !microtasks_only && !self.jobs.borrow().has_microtasks() {
+                self.enqueue_host_events(Duration::ZERO)?;
+            }
+            let ready = if microtasks_only {
+                self.jobs.borrow().has_microtasks()
+            } else {
+                !self.jobs.borrow().is_empty()
+            };
+            if !ready {
+                return Ok(executed);
+            }
+            // Check before removing the next job: exhaustion retains its roots.
+            if executed >= self.max_jobs_per_drain {
+                return Err(crate::value::limit_err("Maximum job count exceeded"));
+            }
+            let job = {
+                let mut queue = self.jobs.borrow_mut();
+                queue.take_microtask().or_else(|| {
+                    if microtasks_only {
+                        None
+                    } else {
+                        queue.take_external_event().or_else(|| queue.take_timer())
+                    }
+                })
+            };
+            let Some(job) = job else {
+                return Ok(executed);
+            };
+            executed += 1;
+            self.dispatch_job(job)?;
+        }
+    }
+
+    /// Wait only when no queued work was executed. The return value describes
+    /// dispatched work, including timers and microtasks, rather than ingress.
     pub fn run_event_loop_once(&mut self, timeout: Duration) -> Result<bool, VmErr> {
-        let ready = self.enqueue_host_events(Duration::ZERO)?;
-        self.drain_jobs()?;
-        if ready > 0 {
+        if self.drain_queued_jobs(false)? > 0 {
             return Ok(true);
         }
-        let Some(bridge) = self.host.clone() else {
-            return Ok(false);
-        };
-        let events = bridge.poll_host_events(timeout)?;
-        if events.is_empty() {
+        if self.host.is_none() {
             return Ok(false);
         }
-        self.push_host_events(events);
-        self.drain_jobs()?;
-        Ok(true)
+        self.enqueue_host_events(timeout)?;
+        Ok(self.drain_queued_jobs(false)? > 0)
     }
 
     fn enqueue_host_events(&mut self, timeout: Duration) -> Result<usize, VmErr> {
@@ -506,46 +509,7 @@ impl Interpreter {
     /// this so a promise chain settles without letting a `setTimeout`
     /// callback jump ahead of the code that is still running.
     pub(crate) fn drain_microtasks(&mut self) -> Result<(), VmErr> {
-        let mut executed = 0usize;
-        loop {
-            let Some(job) = self.jobs.borrow_mut().take_microtask() else {
-                return Ok(());
-            };
-            executed += 1;
-            if executed > self.max_jobs_per_drain {
-                return Err(crate::value::limit_err("Maximum job count exceeded"));
-            }
-            match job {
-                Job::Reaction {
-                    state,
-                    value,
-                    reaction,
-                } => self.run_reaction(state, value, reaction)?,
-                Job::PromiseResolveThenable {
-                    target,
-                    thenable,
-                    then,
-                    resolution_guard,
-                } => self.run_thenable_job(target, &thenable, &then, resolution_guard)?,
-                Job::Callback { callback, args } => {
-                    self.call_this(&callback, Value::Undefined, args)?;
-                }
-                Job::HostCallback { callback } => {
-                    self.run_host_callback(callback)?;
-                }
-                Job::HostPromiseSettled {
-                    promise,
-                    state,
-                    value,
-                } => self.settle_host_promise(promise, state, value)?,
-                Job::HostUncaughtException { exception } => {
-                    self.run_host_uncaught_exception(exception)?;
-                }
-                Job::AtomicsWaitTimeout { key, waiter_id } => {
-                    super::jobs::settle_atomics_wait_timeout(&self.jobs, key, waiter_id);
-                }
-            }
-        }
+        self.drain_queued_jobs(true).map(|_| ())
     }
 }
 
