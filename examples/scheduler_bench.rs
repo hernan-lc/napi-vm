@@ -110,7 +110,7 @@ fn main() {
             0
         });
     }
-    measure("vm/mixed", 2000, || {
+    measure("vm/mixed", 4000, || {
         let mut vm = Interpreter::with_builtins();
         let callback = vm
             .eval_source("var hits=0; ()=>{hits++; queueMicrotask(()=>hits++);}")
