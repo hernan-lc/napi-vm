@@ -26,7 +26,7 @@
     "lint:ts": "tsc --noEmit",
     "lint:playground": "tsc --noEmit -p playground/tsconfig.json",
     "check:generated": "bun run build:all && git diff --exit-code -- index.js index.mjs index.d.ts",
-    "test": "bun test",
+    "test": "bun test ./tests",
     "test:node": "node --test tests/node/*.test.js",
     "test:rust": "cargo test --release",
     "test:wasm": "npm run playground:build && npm run lint:playground && node --test tests/wasm/*.test.mjs",
