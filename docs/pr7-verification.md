@@ -235,3 +235,31 @@ The ignored X-display/native-input test and unrun macOS/Windows and real-browser
 GUI checks retain the limitations documented above. No remote CI was queried,
 no workflows/account/billing/permission settings changed, and no merge was
 performed. No performance speedup is claimed.
+
+## Integration with current main before merging PR #7
+
+Integrated base `0fa987d8860d620cd1008a84f2a17c9b67c495cd` into PR head
+`0c8f3a8b97902c69ba24504174dc667bb4ac10e8` to resolve merge conflicts.
+Kept main's broader iterative Value teardown helpers and deep array/object/proxy
+test, together with the PR's small-stack weak-registry regression. Retained the
+native-only plugin file-URL guard and the working `bun test ./tests` package
+command. Workflow files match current main exactly; no workflow/account/billing
+or permission changes were introduced relative to the merge base.
+
+Post-resolution local validation:
+
+| Command | Result |
+| --- | --- |
+| `cargo test --all-features` | 462 passed, 1 ignored; includes native-addon fixtures and both teardown regressions |
+| `npm run lint:rust` | Formatting and Clippy all targets/all features: passed |
+| `npm run lint:ts` | Passed |
+| `npm run build:all` | Release ESM/CommonJS addons built; generated bindings unchanged |
+| `npm run test:node` | 41 passed |
+| `npm test` | Release addon: 1,482 passed across 64 files, 0 failed |
+| `npm run test:wasm` | Release WASM build, playground types, 9 Node-hosted WASM tests passed |
+| `git diff --cached --check` and `git diff --check` | Passed |
+| `git diff origin/main -- .github/workflows` | Empty: workflows unchanged from current main |
+
+Logs are `/tmp/pr7-merge-{rust,lint,ts,build,node,bun,wasm}.log`. Remote CI was not
+inspected. The ignored isolated-X-display test and unrun macOS/Windows and
+real-browser GUI checks retain the limitations listed above.

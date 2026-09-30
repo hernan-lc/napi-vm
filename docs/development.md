@@ -69,7 +69,7 @@ to miss locally:
 
 ### Prerequisites
 
-Rust 1.96+, Node.js 18+, and [Bun](https://bun.sh) for the main test suite.
+Rust 1.96+, Node.js 22+, and [Bun](https://bun.sh) for the main test suite.
 
 ## Sanitizers
 

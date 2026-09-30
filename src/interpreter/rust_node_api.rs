@@ -6,8 +6,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
-#[cfg(target_os = "windows")]
-use std::ffi::OsStr;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fs;
 use std::io::Write;
@@ -22,10 +20,7 @@ use std::time::Duration;
 #[cfg(unix)]
 use libloading::os::unix::Library;
 #[cfg(target_os = "windows")]
-use libloading::os::windows::{
-    LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
-    LOAD_LIBRARY_SEARCH_USER_DIRS, Library,
-};
+use libloading::os::windows::Library;
 
 #[cfg(target_os = "windows")]
 #[link(name = "kernel32")]

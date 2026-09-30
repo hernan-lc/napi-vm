@@ -48,6 +48,11 @@ impl AsyncTask {
     pub(crate) fn suspends_values(&self) -> bool {
         self.coroutine.is_some()
     }
+
+    /// The promise the call returned, for the iterative `Drop` of `Value`.
+    pub(crate) fn result_promise(&self) -> Rc<RefCell<PromiseInner>> {
+        self.result.clone()
+    }
 }
 
 impl Interpreter {

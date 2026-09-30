@@ -155,13 +155,13 @@ pub(super) fn host_dirname(path: &str) -> String {
         {
             return format!("{trimmed}\\");
         }
-        return Path::new(trimmed)
+        Path::new(trimmed)
             .parent()
             .map(|parent| {
                 let value = parent.to_string_lossy().into_owned();
                 if value.is_empty() { ".".into() } else { value }
             })
-            .unwrap_or_else(|| "\\".into());
+            .unwrap_or_else(|| "\\".into())
     }
     #[cfg(not(windows))]
     {

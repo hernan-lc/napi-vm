@@ -35,6 +35,12 @@ pub(super) struct NodeApiShim {
     pub(super) path: PathBuf,
     #[cfg(target_os = "windows")]
     pub(super) dll_directory_cookie: usize,
+    /// Second mapping of the same image as `node.dll` (Windows only). MSVC
+    /// napi-rs addons resolve Node-API dynamically by probing the loaded
+    /// `node` module, which never matches the `node.exe` import provider
+    /// above; both mappings forward to the same Rust API table.
+    #[cfg(target_os = "windows")]
+    pub(super) _dynamic_lookup_library: Option<Library>,
 }
 
 impl NodeApiShim {
@@ -105,6 +111,21 @@ impl NodeApiShim {
         }
 
         #[cfg(target_os = "windows")]
+        let dynamic_lookup_path = root.join("node.dll");
+        // MSVC napi-rs addons never import `node.exe` statically: napi-sys
+        // resolves every symbol at registration time from the already-loaded
+        // `node` module (`GetModuleHandleW("node")`, which matches `node.dll`
+        // but not `node.exe`). Without this alias their registration panics
+        // inside `napi_register_module_v1` and aborts the process.
+        #[cfg(target_os = "windows")]
+        if let Err(error) = fs::copy(&path, &dynamic_lookup_path) {
+            let _ = fs::remove_dir_all(&root);
+            return Err(VmErr::Msg(format!(
+                "cannot materialize Node-API dynamic-lookup shim: {error}"
+            )));
+        }
+
+        #[cfg(target_os = "windows")]
         let dll_directory_cookie = {
             use std::os::windows::ffi::OsStrExt;
             let mut directory: Vec<u16> = root.as_os_str().encode_wide().collect();
@@ -149,6 +170,40 @@ impl NodeApiShim {
                 }
             };
         unsafe { install(&NAPI_VM_API_TABLE) };
+        #[cfg(target_os = "windows")]
+        let dynamic_lookup_library = {
+            let second = unsafe { Library::new(dynamic_lookup_path.as_os_str()) };
+            let second = match second {
+                Ok(library) => library,
+                Err(error) => {
+                    drop(library);
+                    unsafe {
+                        let _ = RemoveDllDirectory(dll_directory_cookie as *mut c_void);
+                    }
+                    let _ = fs::remove_dir_all(&root);
+                    return Err(VmErr::Msg(format!(
+                        "cannot load Node-API dynamic-lookup shim: {error}"
+                    )));
+                }
+            };
+            let install: unsafe extern "C" fn(*const NapiVmApiTable) =
+                match unsafe { second.get(b"napi_vm_install_node_api_table\0") } {
+                    Ok(symbol) => *symbol,
+                    Err(error) => {
+                        drop(second);
+                        drop(library);
+                        unsafe {
+                            let _ = RemoveDllDirectory(dll_directory_cookie as *mut c_void);
+                        }
+                        let _ = fs::remove_dir_all(&root);
+                        return Err(VmErr::Msg(format!(
+                            "invalid Node-API dynamic-lookup shim: {error}"
+                        )));
+                    }
+                };
+            unsafe { install(&NAPI_VM_API_TABLE) };
+            second
+        };
         #[cfg(unix)]
         {
             // The process singleton keeps the mapping live. Unix permits
@@ -167,6 +222,8 @@ impl NodeApiShim {
             path,
             #[cfg(target_os = "windows")]
             dll_directory_cookie,
+            #[cfg(target_os = "windows")]
+            _dynamic_lookup_library: Some(dynamic_lookup_library),
         })
     }
 
@@ -239,12 +296,16 @@ impl Drop for NodeApiShim {
             // Addon library handles are stored before the shim in HostState,
             // so they have closed before the Node-API import provider unloads.
             drop(self._library.take());
+            drop(self._dynamic_lookup_library.take());
             unsafe {
                 let _ = RemoveDllDirectory(self.dll_directory_cookie as *mut c_void);
             }
-            let mut module_name: Vec<u16> = OsStr::new("node.exe").encode_wide().collect();
-            module_name.push(0);
-            if unsafe { GetModuleHandleW(module_name.as_ptr()) }.is_null()
+            let mut node_exe: Vec<u16> = OsStr::new("node.exe").encode_wide().collect();
+            node_exe.push(0);
+            let mut node_dll: Vec<u16> = OsStr::new("node.dll").encode_wide().collect();
+            node_dll.push(0);
+            if unsafe { GetModuleHandleW(node_exe.as_ptr()) }.is_null()
+                && unsafe { GetModuleHandleW(node_dll.as_ptr()) }.is_null()
                 && let Some(directories) = WINDOWS_NODE_API_SHIM_DIRECTORIES.get()
             {
                 let mut directories = directories

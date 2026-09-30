@@ -30,7 +30,70 @@ fn normalize(path: &Path) -> String {
             other => normalized.push(other.as_os_str()),
         }
     }
-    normalized.to_string_lossy().into_owned()
+    // The virtual module ids below are opaque `/`-separated strings, not
+    // native paths, so keep the separator fixed on every platform. (`\` is
+    // not a valid Windows filename character, so no id can contain one.)
+    normalized.to_string_lossy().replace('\\', "/")
+}
+
+/// Render a guest-visible filename with `/` separators so suffix assertions
+/// can be written once. `FileCommonJsLoader` returns native paths (`C:\…` on
+/// Windows, like Node does); the expected suffixes below use `/`.
+fn slash_filename(filename: &str) -> String {
+    filename.replace('\\', "/")
+}
+
+/// Assert a guest-visible filename names the expected file. The filename is
+/// rendered the way Node reports it (no `\\?\` verbatim prefix on Windows),
+/// so both sides are canonicalized before comparing.
+fn assert_same_file(filename: &str, expected: &Path) {
+    assert_eq!(
+        Path::new(filename).canonicalize().unwrap(),
+        expected.canonicalize().unwrap()
+    );
+}
+
+/// Assert a guest filename names the same file Node resolved.
+///
+/// Node echoes the parent path it was given, while `FileCommonJsLoader`
+/// canonicalizes everything it resolves. On Windows runners those differ in
+/// spelling only (`C:\Users\RUNNER~1\…` 8.3 short names versus the long
+/// `C:\Users\runneradmin\…` form), so both sides are canonicalized before
+/// comparing.
+fn assert_same_resolved_file(vm_filename: &str, node_stdout: &[u8], context: &str) {
+    let node_stdout = String::from_utf8_lossy(node_stdout);
+    let node_filename = node_stdout.trim();
+    match (
+        Path::new(vm_filename).canonicalize(),
+        Path::new(node_filename).canonicalize(),
+    ) {
+        (Ok(vm), Ok(node)) => assert_eq!(vm, node, "{context}"),
+        _ => assert_eq!(vm_filename, node_filename, "{context}"),
+    }
+}
+
+/// Canonicalize every existing-file path stored as a string inside a JSON
+/// value, so Windows 8.3 short names (`RUNNER~1`) and long names compare
+/// equal. Non-path strings are left untouched.
+fn canonicalize_json_paths(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            if let Ok(canonical) = Path::new(text.as_str()).canonicalize() {
+                *text = canonical.to_string_lossy().into_owned();
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                canonicalize_json_paths(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for value in map.values_mut() {
+                canonicalize_json_paths(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl CommonJsModuleLoader for MemoryLoader {
@@ -74,11 +137,25 @@ fn interpreter(loader: MemoryLoader) -> crate::interpreter::Interpreter {
 
 #[test]
 fn node_module_create_require_resolves_from_esm_and_shares_commonjs_cache() {
+    // `createRequire` needs an absolute parent. `/virtual` is absolute on
+    // POSIX but drive-relative on Windows, so the Windows fixtures live
+    // under a drive-letter root instead.
+    let virtual_root = if cfg!(windows) {
+        "C:/virtual"
+    } else {
+        "/virtual"
+    };
+    let addon_id = format!("{virtual_root}/package/addon.cjs");
+    let parent_url = if cfg!(windows) {
+        "file:///C:/virtual/package/main.mjs"
+    } else {
+        "file:///virtual/package/main.mjs"
+    };
     let mut loader = MemoryLoader::default();
     loader.0.insert(
-        "/virtual/package/addon.cjs".into(),
+        addon_id.clone(),
         MemoryLoader::module(
-            "/virtual/package/addon.cjs",
+            &addon_id,
             CommonJsModuleFormat::JavaScript,
             Some("globalThis.addonLoads = (globalThis.addonLoads || 0) + 1; module.exports = { answer: 42 };"),
         ),
@@ -88,7 +165,7 @@ fn node_module_create_require_resolves_from_esm_and_shares_commonjs_cache() {
         "entry",
         r#"
 import module, { createRequire, isBuiltin, builtinModules } from 'node:module';
-const localRequire = createRequire('file:///virtual/package/main.mjs');
+const localRequire = createRequire('__PARENT_URL__');
 const addon = localRequire('./addon.cjs');
 export const result = {
   answer: addon.answer,
@@ -104,7 +181,7 @@ export const result = {
   noRegister: typeof module.register === 'undefined'
 };
 "#
-        .into(),
+        .replace("__PARENT_URL__", parent_url),
     );
     interp.ensure_module("entry").unwrap();
     let result = interp
@@ -120,7 +197,7 @@ export const result = {
     ));
     assert!(matches!(result.get_prop("cached"), Some(Value::Bool(true))));
     assert!(
-        matches!(result.get_prop("resolved"), Some(Value::String(ref path)) if path == "/virtual/package/addon.cjs")
+        matches!(result.get_prop("resolved"), Some(Value::String(ref path)) if path == &addon_id)
     );
     assert!(matches!(result.get_prop("loads"), Some(Value::Number(1.0))));
     for name in [
@@ -254,7 +331,8 @@ fn require_resolve_native_path_matches_node_and_bun() {
     let Value::String(vm_json) = &vm_value else {
         panic!("require.resolve fixture did not return JSON: {vm_value:?}");
     };
-    let vm_result: serde_json::Value = serde_json::from_str(vm_json).unwrap();
+    let mut vm_result: serde_json::Value = serde_json::from_str(vm_json).unwrap();
+    canonicalize_json_paths(&mut vm_result);
 
     let runner = "process.stdout.write(JSON.stringify(require('./probe.cjs')))";
     for runtime in ["node", "bun"] {
@@ -275,7 +353,8 @@ fn require_resolve_native_path_matches_node_and_bun() {
             "{runtime} require.resolve reference failed: {}",
             String::from_utf8_lossy(&reference.stderr)
         );
-        let reference: serde_json::Value = serde_json::from_slice(&reference.stdout).unwrap();
+        let mut reference: serde_json::Value = serde_json::from_slice(&reference.stdout).unwrap();
+        canonicalize_json_paths(&mut reference);
         assert_eq!(vm_result, reference, "{runtime} and napi-vm differ");
     }
 
@@ -590,24 +669,20 @@ fn node_api_prebuild_lookup_honors_prebuilds_only() {
     fs::write(&prebuild_addon, b"prebuild addon").unwrap();
 
     let loader = FileCommonJsLoader::new([&root]).unwrap();
-    assert_eq!(
-        PathBuf::from(
-            loader
-                .resolve_node_api_prebuild(&package_root)
-                .unwrap()
-                .filename
-        ),
-        release_addon.canonicalize().unwrap()
+    assert_same_file(
+        &loader
+            .resolve_node_api_prebuild(&package_root)
+            .unwrap()
+            .filename,
+        &release_addon,
     );
     let prebuilds_only = loader.with_node_gyp_build_prebuilds_only(true);
-    assert_eq!(
-        PathBuf::from(
-            prebuilds_only
-                .resolve_node_api_prebuild(&package_root)
-                .unwrap()
-                .filename
-        ),
-        prebuild_addon.canonicalize().unwrap()
+    assert_same_file(
+        &prebuilds_only
+            .resolve_node_api_prebuild(&package_root)
+            .unwrap()
+            .filename,
+        &prebuild_addon,
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -674,14 +749,12 @@ fn node_api_prebuild_lookup_uses_exec_path_neighbor_as_fallback() {
     let loader = FileCommonJsLoader::new([&root])
         .unwrap()
         .with_node_gyp_build_exec_path(executable_directory.join("desktop-app"));
-    assert_eq!(
-        PathBuf::from(
-            loader
-                .resolve_node_api_prebuild(&package_root)
-                .unwrap()
-                .filename
-        ),
-        addon.canonicalize().unwrap()
+    assert_same_file(
+        &loader
+            .resolve_node_api_prebuild(&package_root)
+            .unwrap()
+            .filename,
+        &addon,
     );
 
     fs::remove_dir_all(root).unwrap();
@@ -844,7 +917,7 @@ fn filesystem_loader_resolves_exports_and_requires_native_addon_allowlisting() {
     let loader = FileCommonJsLoader::new([&root]).unwrap();
     let package = loader.resolve("fixture", Some(&parent)).unwrap();
     assert_eq!(package.format, CommonJsModuleFormat::JavaScript);
-    assert!(package.filename.ends_with("dist/main.cjs"));
+    assert!(slash_filename(&package.filename).ends_with("dist/main.cjs"));
 
     let addon = loader.resolve("./addon.node", Some(&parent)).unwrap();
     let denied = loader.load_native_addon(&addon).unwrap_err();
@@ -940,7 +1013,7 @@ fn filesystem_loader_resolves_wildcard_exports_with_node_pattern_precedence() {
     for (specifier, expected_suffix) in resolved {
         let module = loader.resolve(specifier, Some(&entry_name)).unwrap();
         assert!(
-            module.filename.ends_with(expected_suffix),
+            slash_filename(&module.filename).ends_with(expected_suffix),
             "{specifier} resolved to {}",
             module.filename
         );
@@ -965,10 +1038,10 @@ fn filesystem_loader_resolves_wildcard_exports_with_node_pattern_precedence() {
                 "Node could not resolve {specifier}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert_eq!(
-                module.filename,
-                String::from_utf8_lossy(&output.stdout).trim(),
-                "Node and napi-vm resolved {specifier} differently"
+            assert_same_resolved_file(
+                &module.filename,
+                &output.stdout,
+                &format!("Node and napi-vm resolved {specifier} differently"),
             );
         }
     }
@@ -977,7 +1050,7 @@ fn filesystem_loader_resolves_wildcard_exports_with_node_pattern_precedence() {
     let fallback_module = addon_free_loader
         .resolve("fixture/native/fixture", Some(&entry_name))
         .unwrap();
-    assert!(fallback_module.filename.ends_with("fallback/fixture.js"));
+    assert!(slash_filename(&fallback_module.filename).ends_with("fallback/fixture.js"));
     assert_eq!(fallback_module.format, CommonJsModuleFormat::JavaScript);
     if Command::new("node")
         .arg("--no-addons")
@@ -996,10 +1069,10 @@ fn filesystem_loader_resolves_wildcard_exports_with_node_pattern_precedence() {
                 .arg(&root)
                 .output()
                 .unwrap();
-        assert_eq!(
-            fallback_module.filename,
-            String::from_utf8_lossy(&output.stdout),
-            "Node --no-addons and addon-free napi-vm resolved different exports"
+        assert_same_resolved_file(
+            &fallback_module.filename,
+            &output.stdout,
+            "Node --no-addons and addon-free napi-vm resolved different exports",
         );
     }
 
@@ -1052,11 +1125,11 @@ fn filesystem_loader_resolves_package_self_references_only_when_exported() {
     let loader = FileCommonJsLoader::new([&root]).unwrap();
     let parent_name = parent.to_string_lossy().into_owned();
     let root_module = loader.resolve("fixture", Some(&parent_name)).unwrap();
-    assert!(root_module.filename.ends_with("dist/index.cjs"));
+    assert!(slash_filename(&root_module.filename).ends_with("dist/index.cjs"));
     let subpath = loader
         .resolve("fixture/feature", Some(&parent_name))
         .unwrap();
-    assert!(subpath.filename.ends_with("dist/feature.cjs"));
+    assert!(slash_filename(&subpath.filename).ends_with("dist/feature.cjs"));
     assert!(
         loader
             .resolve("fixture/private", Some(&parent_name))
@@ -1095,7 +1168,11 @@ fn filesystem_loader_resolves_package_self_references_only_when_exported() {
                 String::from_utf8_lossy(&output.stderr)
             );
             if let Some(resolved) = resolved {
-                assert_eq!(String::from_utf8_lossy(&output.stdout), resolved);
+                assert_same_resolved_file(
+                    resolved,
+                    &output.stdout,
+                    &format!("Node and napi-vm resolved {specifier} differently"),
+                );
             }
         }
     }
@@ -1160,7 +1237,7 @@ fn filesystem_loader_resolves_package_import_maps() {
     for (specifier, expected_suffix) in resolved {
         let module = loader.resolve(specifier, Some(&parent_name)).unwrap();
         assert!(
-            module.filename.ends_with(expected_suffix),
+            slash_filename(&module.filename).ends_with(expected_suffix),
             "{specifier} resolved to {}",
             module.filename
         );
@@ -1186,10 +1263,10 @@ fn filesystem_loader_resolves_package_import_maps() {
                 "Node could not resolve {specifier}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert_eq!(
-                module.filename,
-                String::from_utf8_lossy(&output.stdout),
-                "Node and napi-vm resolved {specifier} differently"
+            assert_same_resolved_file(
+                &module.filename,
+                &output.stdout,
+                &format!("Node and napi-vm resolved {specifier} differently"),
             );
         }
     }
@@ -1198,7 +1275,7 @@ fn filesystem_loader_resolves_package_import_maps() {
     let fallback_module = addon_free_loader
         .resolve("#native/fixture", Some(&parent_name))
         .unwrap();
-    assert!(fallback_module.filename.ends_with("fallback/fixture.js"));
+    assert!(slash_filename(&fallback_module.filename).ends_with("fallback/fixture.js"));
     assert_eq!(fallback_module.format, CommonJsModuleFormat::JavaScript);
     let node_without_addons = Command::new("node")
             .arg("--no-addons")
@@ -1210,10 +1287,10 @@ fn filesystem_loader_resolves_package_import_maps() {
     if let Ok(output) = node_without_addons
         && output.status.success()
     {
-        assert_eq!(
-            fallback_module.filename,
-            String::from_utf8_lossy(&output.stdout),
-            "Node --no-addons and addon-free napi-vm resolved different imports"
+        assert_same_resolved_file(
+            &fallback_module.filename,
+            &output.stdout,
+            "Node --no-addons and addon-free napi-vm resolved different imports",
         );
     }
 
@@ -1315,10 +1392,10 @@ fn filesystem_loader_uses_export_array_fallbacks_only_for_invalid_targets() {
             );
             if should_fallback {
                 let module = loader.resolve(name, Some(&parent)).unwrap();
-                assert_eq!(
-                    module.filename,
-                    String::from_utf8_lossy(&output.stdout).trim(),
-                    "Node and napi-vm chose different fallback targets for {name}"
+                assert_same_resolved_file(
+                    &module.filename,
+                    &output.stdout,
+                    &format!("Node and napi-vm chose different fallback targets for {name}"),
                 );
             }
         }
