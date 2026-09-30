@@ -37,8 +37,8 @@ use crate::interpreter::{block_needs_lexical_scope, produces_completion_value};
 use crate::parser::{
     AssignOp, BinOp, ClassMember, Expr, ExprOrBlock, ForInit, LogicalAssignOp, MemberName,
     ObjectProp, Pattern, PatternKey, Statement, SwitchCase, UnOp, VarKind, arrow_body_references,
-    collect_var_names, expr_captures_identifier, expr_to_pattern, pattern_names,
-    statements_capture_identifier, stmts_reference,
+    collect_var_names, expr_captures_identifier, pattern_names, statements_capture_identifier,
+    stmts_reference,
 };
 
 use super::constants::{
@@ -123,11 +123,34 @@ enum PatchTarget {
     ClassMember { tmpl: u16, index: usize },
 }
 
+/// Source slices borrow the AST; synthesized slices live only through compilation.
+enum SharedSlice<'a, T> {
+    Borrowed(&'a [T]),
+    Owned(Rc<[T]>),
+}
+impl<T> Clone for SharedSlice<'_, T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Borrowed(v) => Self::Borrowed(v),
+            Self::Owned(v) => Self::Owned(v.clone()),
+        }
+    }
+}
+impl<T> std::ops::Deref for SharedSlice<'_, T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        match self {
+            Self::Borrowed(v) => v,
+            Self::Owned(v) => v,
+        }
+    }
+}
+
 /// A function definition to compile, borrowed from the parsed unit.
 #[derive(Clone)]
 struct FuncDef<'a> {
     name: Option<String>,
-    params: &'a [String],
+    params: SharedSlice<'a, String>,
     body: FuncBody<'a>,
     is_arrow: bool,
     is_async: bool,
@@ -137,7 +160,7 @@ struct FuncDef<'a> {
 
 #[derive(Clone)]
 enum FuncBody<'a> {
-    Stmts(&'a [Statement]),
+    Stmts(SharedSlice<'a, Statement>),
     /// Arrow expression bodies run as `return <expr>`, like the evaluator.
     Expr(&'a Expr),
 }
@@ -146,6 +169,93 @@ enum FuncBody<'a> {
 enum FuncOutcome {
     Bytecode(Rc<BytecodeFunction>),
     Ast(Rc<AstFunction>),
+}
+
+// Borrow expressions in converted assignment patterns from the original AST.
+// Defaults and nested functions never require a promoted or leaked lifetime.
+#[derive(Clone)]
+enum PatternKeyView<'a> {
+    Name(&'a str),
+    Computed(&'a Expr),
+}
+#[derive(Clone)]
+enum PatternView<'a> {
+    Ident(&'a str),
+    Member {
+        object: &'a Expr,
+        property: &'a Expr,
+    },
+    Array(Vec<PatternView<'a>>),
+    Object(Vec<(PatternKeyView<'a>, Option<PatternView<'a>>)>),
+    Rest(Box<PatternView<'a>>),
+    Default(Box<PatternView<'a>>, &'a Expr),
+}
+impl<'a> PatternView<'a> {
+    fn from_pattern(p: &'a Pattern) -> Self {
+        match p {
+            Pattern::Ident(n) => Self::Ident(n),
+            Pattern::Member { object, property } => Self::Member { object, property },
+            Pattern::Array(v) => Self::Array(v.iter().map(Self::from_pattern).collect()),
+            Pattern::Object(v) => Self::Object(
+                v.iter()
+                    .map(|(k, v)| {
+                        (
+                            match k {
+                                PatternKey::Name(n) => PatternKeyView::Name(n),
+                                PatternKey::Computed(e) => PatternKeyView::Computed(e),
+                            },
+                            v.as_ref().map(Self::from_pattern),
+                        )
+                    })
+                    .collect(),
+            ),
+            Pattern::Rest(v) => Self::Rest(Box::new(Self::from_pattern(v))),
+            Pattern::Default(v, e) => Self::Default(Box::new(Self::from_pattern(v)), e),
+        }
+    }
+    fn from_expr(e: &'a Expr) -> Option<Self> {
+        Some(match e {
+            Expr::Identifier(n) => Self::Ident(n),
+            Expr::Member {
+                object, property, ..
+            } => Self::Member { object, property },
+            Expr::Array(v) => Self::Array(
+                v.iter()
+                    .map(|e| match e {
+                        Expr::Spread(v) => Some(Self::Rest(Box::new(Self::from_expr(v)?))),
+                        Expr::Undefined => Some(Self::Ident("hole")),
+                        e => Self::from_expr(e),
+                    })
+                    .collect::<Option<_>>()?,
+            ),
+            Expr::Object(v) => Self::Object(
+                v.iter()
+                    .map(|p| {
+                        Some(match p {
+                            ObjectProp::Shorthand(n) => (PatternKeyView::Name(n), None),
+                            ObjectProp::KeyValue(n, v) => {
+                                (PatternKeyView::Name(n), Some(Self::from_expr(v)?))
+                            }
+                            ObjectProp::Computed(k, v) => {
+                                (PatternKeyView::Computed(k), Some(Self::from_expr(v)?))
+                            }
+                            ObjectProp::Spread(v) => (
+                                PatternKeyView::Name("..."),
+                                Some(Self::Rest(Box::new(Self::from_expr(v)?))),
+                            ),
+                            _ => return None,
+                        })
+                    })
+                    .collect::<Option<_>>()?,
+            ),
+            Expr::Assignment {
+                target,
+                op: AssignOp::Assign,
+                value,
+            } => Self::Default(Box::new(Self::from_expr(target)?), value),
+            _ => return None,
+        })
+    }
 }
 
 /// A written-out `constructor` method, borrowed until its deferred
@@ -821,8 +931,8 @@ impl<'a> Compiler<'a> {
         for decl in fns {
             let value = self.defer_function(FuncDef {
                 name: Some(decl.name.to_string()),
-                params: decl.params,
-                body: FuncBody::Stmts(decl.body),
+                params: SharedSlice::Borrowed(decl.params),
+                body: FuncBody::Stmts(SharedSlice::Borrowed(decl.body)),
                 is_arrow: false,
                 is_async: decl.is_async,
                 is_generator: decl.is_generator,
@@ -871,8 +981,8 @@ impl<'a> Compiler<'a> {
             let slot = self.declare_slot_if_absent(decl.name, SlotKind::Var)?;
             let value = self.defer_function(FuncDef {
                 name: Some(decl.name.to_string()),
-                params: decl.params,
-                body: FuncBody::Stmts(decl.body),
+                params: SharedSlice::Borrowed(decl.params),
+                body: FuncBody::Stmts(SharedSlice::Borrowed(decl.body)),
                 is_arrow: false,
                 is_async: decl.is_async,
                 is_generator: decl.is_generator,
@@ -926,8 +1036,8 @@ impl<'a> Compiler<'a> {
         for decl in fns {
             let value = self.defer_function(FuncDef {
                 name: Some(decl.name.to_string()),
-                params: decl.params,
-                body: FuncBody::Stmts(decl.body),
+                params: SharedSlice::Borrowed(decl.params),
+                body: FuncBody::Stmts(SharedSlice::Borrowed(decl.body)),
                 is_arrow: false,
                 is_async: decl.is_async,
                 is_generator: decl.is_generator,
@@ -960,8 +1070,25 @@ impl<'a> Compiler<'a> {
             u16::try_from(parameter_count).map_err(|_| Decline::Func("too many parameters"))?;
         let local_count =
             u16::try_from(self.slots.len()).map_err(|_| Decline::Func("too many locals"))?;
-        let code = std::mem::take(&mut self.code);
-        let caches = vec![crate::shape::PropCache::empty(); code.len()].into_boxed_slice();
+        let mut code = std::mem::take(&mut self.code);
+        let mut site_count = 0u32;
+        for instr in &mut code {
+            if let Instr::GetProp { cache, .. } | Instr::SetProp { cache, .. } = instr {
+                *cache = site_count;
+                site_count = site_count
+                    .checked_add(1)
+                    .ok_or(Decline::Func("too many property sites"))?;
+            }
+        }
+        let caches = vec![crate::shape::PropCache::empty(); site_count as usize].into_boxed_slice();
+        let needs_frame_environment = self.captures_arguments
+            || self.slots.iter().any(|s| s.captured)
+            || self.constants.iter().any(|c| {
+                matches!(
+                    c,
+                    Constant::Function(_) | Constant::AstFunction(_) | Constant::ClassTemplate(_)
+                )
+            });
         Ok(BytecodeFunction {
             name,
             code,
@@ -974,6 +1101,7 @@ impl<'a> Compiler<'a> {
             is_arrow,
             is_constructor,
             captures_arguments: self.captures_arguments,
+            needs_frame_environment,
             caches,
             tiers: crate::jit::TierCounters::default(),
         })
@@ -1087,7 +1215,7 @@ impl<'a> Compiler<'a> {
         self.build_function(None, 0, false, false)
     }
 
-    fn compile_unit_function(&mut self, def: FuncDef<'a>) -> Result<BytecodeFunction, Decline> {
+    fn compile_unit_function(&mut self, def: &'a FuncDef<'_>) -> Result<BytecodeFunction, Decline> {
         let FuncDef {
             name,
             params,
@@ -1098,19 +1226,19 @@ impl<'a> Compiler<'a> {
         } = def;
         // Box before hoisting: `resolve` and slot allocation both consult
         // this set while the body compiles.
-        self.captured = find_captured(params, &body);
+        self.captured = find_captured(params, body);
         let parameter_count = params.len();
         match body {
             FuncBody::Stmts(stmts) => {
                 self.hoist_function(params, stmts)?;
                 let checkpoint = self.checkpoint();
-                for stmt in stmts {
+                for stmt in stmts.iter() {
                     let _ = self.compile_stmt(stmt)?;
                     self.restore(checkpoint);
                 }
             }
             FuncBody::Expr(expr) => {
-                for param in params {
+                for param in params.iter() {
                     self.declare_slot(param, SlotKind::Var)?;
                 }
                 let value = self.compile_expr(expr)?;
@@ -1118,7 +1246,7 @@ impl<'a> Compiler<'a> {
             }
         }
         self.finish_functions()?;
-        self.build_function(name, parameter_count, is_arrow, is_constructor)
+        self.build_function(name.clone(), parameter_count, *is_arrow, *is_constructor)
     }
 
     // -- blocks and statements ---------------------------------------------
@@ -1190,8 +1318,8 @@ impl<'a> Compiler<'a> {
             } => {
                 let value = self.defer_function(FuncDef {
                     name: Some(name.clone()),
-                    params,
-                    body: FuncBody::Stmts(body),
+                    params: SharedSlice::Borrowed(params),
+                    body: FuncBody::Stmts(SharedSlice::Borrowed(body)),
                     is_arrow: false,
                     is_async: *is_async,
                     is_generator: *is_generator,
@@ -1487,23 +1615,37 @@ impl<'a> Compiler<'a> {
         val: Reg,
         mode: DestructureMode,
     ) -> Result<(), Decline> {
+        self.compile_pattern_view(PatternView::from_pattern(pat), val, mode)
+    }
+
+    fn compile_pattern_view(
+        &mut self,
+        pat: PatternView<'a>,
+        val: Reg,
+        mode: DestructureMode,
+    ) -> Result<(), Decline> {
         match pat {
-            Pattern::Ident(name) => self.compile_pattern_ident(name, val, mode),
-            Pattern::Member { object, property } => {
-                if matches!(object.as_ref(), Expr::Super) {
+            PatternView::Ident(name) => self.compile_pattern_ident(name, val, mode),
+            PatternView::Member { object, property } => {
+                if matches!(object, Expr::Super) {
                     // The reference fails before the property evaluates.
                     return self.raise_bare_super().map(|_| ());
                 }
                 let obj = self.compile_expr(object)?;
                 let key = self.compile_expr(property)?;
-                self.emit(Instr::SetProp { obj, key, val });
+                self.emit(Instr::SetProp {
+                    cache: 0,
+                    obj,
+                    key,
+                    val,
+                });
                 Ok(())
             }
-            Pattern::Array(elements) => {
+            PatternView::Array(elements) => {
                 let arr = self.alloc_reg()?;
                 self.emit(Instr::ToDestructArray { dst: arr, src: val });
                 for (index, elem) in elements.iter().enumerate() {
-                    if let Pattern::Rest(inner) = elem {
+                    if let PatternView::Rest(inner) = elem {
                         let from =
                             u16::try_from(index).map_err(|_| Decline::Func("code too large"))?;
                         let rest = self.alloc_reg()?;
@@ -1512,21 +1654,22 @@ impl<'a> Compiler<'a> {
                             src: arr,
                             from,
                         });
-                        return self.compile_destructure(inner, rest, mode);
+                        return self.compile_pattern_view((**inner).clone(), rest, mode);
                     }
                     let position = self.intern_number(index as f64)?;
                     let key = self.load_const(position)?;
                     let found = self.alloc_reg()?;
                     self.emit(Instr::GetProp {
+                        cache: 0,
                         dst: found,
                         obj: arr,
                         key,
                     });
-                    self.compile_destructure(elem, found, mode)?;
+                    self.compile_pattern_view(elem.clone(), found, mode)?;
                 }
                 Ok(())
             }
-            Pattern::Object(props) => {
+            PatternView::Object(props) => {
                 let keys = self.alloc_reg()?;
                 self.emit(Instr::CheckDestructObject {
                     dst: keys,
@@ -1534,9 +1677,9 @@ impl<'a> Compiler<'a> {
                 });
                 let mut taken = Vec::new();
                 for (key, sub) in props {
-                    if let PatternKey::Name(name) = key
+                    if let PatternKeyView::Name(name) = key
                         && name == "..."
-                        && let Some(Pattern::Rest(target)) = sub
+                        && let Some(PatternView::Rest(target)) = sub
                     {
                         let template = taken
                             .iter()
@@ -1558,30 +1701,31 @@ impl<'a> Compiler<'a> {
                             keys,
                             taken: taken_array,
                         });
-                        self.compile_destructure(target, rest, mode)?;
+                        self.compile_pattern_view(*target, rest, mode)?;
                         continue;
                     }
                     let key_reg = match key {
-                        PatternKey::Name(name) => {
+                        PatternKeyView::Name(name) => {
                             let index = self.intern_string(name)?;
                             self.load_const(index)?
                         }
-                        PatternKey::Computed(expr) => self.compile_expr(expr)?,
+                        PatternKeyView::Computed(expr) => self.compile_expr(expr)?,
                     };
                     taken.push(key_reg);
                     let found = self.alloc_reg()?;
                     self.emit(Instr::GetProp {
+                        cache: 0,
                         dst: found,
                         obj: val,
                         key: key_reg,
                     });
                     match sub {
-                        Some(next) => self.compile_destructure(next, found, mode)?,
+                        Some(next) => self.compile_pattern_view(next.clone(), found, mode)?,
                         None => match key {
-                            PatternKey::Name(name) => {
+                            PatternKeyView::Name(name) => {
                                 self.compile_pattern_ident(name, found, mode)?;
                             }
-                            PatternKey::Computed(_) => {
+                            PatternKeyView::Computed(_) => {
                                 return Err(Decline::Func("invalid destructuring target"));
                             }
                         },
@@ -1591,8 +1735,8 @@ impl<'a> Compiler<'a> {
             }
             // A rest element only binds at the top of an array pattern; a
             // bare one anywhere else falls through, like the evaluator.
-            Pattern::Rest(_) => Ok(()),
-            Pattern::Default(inner, default) => {
+            PatternView::Rest(_) => Ok(()),
+            PatternView::Default(inner, default) => {
                 let value = self.alloc_reg()?;
                 self.emit(Instr::Mov {
                     dst: value,
@@ -1605,7 +1749,7 @@ impl<'a> Compiler<'a> {
                     src: fallback,
                 });
                 self.patch_jump(has, self.here())?;
-                self.compile_destructure(inner, value, mode)
+                self.compile_pattern_view(*inner, value, mode)
             }
         }
     }
@@ -1688,8 +1832,8 @@ impl<'a> Compiler<'a> {
                         },
                         FuncDef {
                             name: display,
-                            params,
-                            body: FuncBody::Stmts(method_body),
+                            params: SharedSlice::Borrowed(params),
+                            body: FuncBody::Stmts(SharedSlice::Borrowed(method_body)),
                             is_arrow: false,
                             is_async: *is_async,
                             is_generator: *is_generator,
@@ -1751,8 +1895,8 @@ impl<'a> Compiler<'a> {
                         },
                         FuncDef {
                             name: display,
-                            params: &[],
-                            body: FuncBody::Stmts(getter_body),
+                            params: SharedSlice::Borrowed(&[]),
+                            body: FuncBody::Stmts(SharedSlice::Borrowed(getter_body)),
                             is_arrow: false,
                             is_async: false,
                             is_generator: false,
@@ -1785,8 +1929,8 @@ impl<'a> Compiler<'a> {
                         },
                         FuncDef {
                             name: display,
-                            params: std::slice::from_ref(param),
-                            body: FuncBody::Stmts(setter_body),
+                            params: SharedSlice::Borrowed(std::slice::from_ref(param)),
+                            body: FuncBody::Stmts(SharedSlice::Borrowed(setter_body)),
                             is_arrow: false,
                             is_async: false,
                             is_generator: false,
@@ -1811,8 +1955,8 @@ impl<'a> Compiler<'a> {
                     }
                     let ast = build_ast_function(&FuncDef {
                         name: None,
-                        params: &[],
-                        body: FuncBody::Stmts(block_body),
+                        params: SharedSlice::Borrowed(&[]),
+                        body: FuncBody::Stmts(SharedSlice::Borrowed(block_body)),
                         is_arrow: false,
                         is_async: false,
                         is_generator: false,
@@ -1894,19 +2038,20 @@ impl<'a> Compiler<'a> {
         is_derived: bool,
         ctor: Option<OwnedCtor<'a>>,
         instance_fields: &[(FieldKey, Option<&'a Expr>)],
-    ) -> (&'a [String], &'a [Statement]) {
-        let (params, body): (&'a [String], &'a [Statement]) = match ctor {
-            Some(own) => (own.params, own.body),
-            None if is_derived => {
-                let params: &'a [String] = Box::leak(Box::new(vec!["...args".to_string()]));
-                let body: &'a [Statement] =
-                    Box::leak(Box::new(vec![Statement::Expr(Expr::Call {
-                        callee: Box::new(Expr::Super),
-                        args: vec![Expr::Spread(Box::new(Expr::Identifier("args".to_string())))],
-                    })]));
-                (params, body)
-            }
-            None => (&[], &[]),
+    ) -> (SharedSlice<'a, String>, SharedSlice<'a, Statement>) {
+        let (params, body) = match ctor {
+            Some(own) => (
+                SharedSlice::Borrowed(own.params),
+                SharedSlice::Borrowed(own.body),
+            ),
+            None if is_derived => (
+                SharedSlice::Owned(Rc::from(vec!["...args".to_string()])),
+                SharedSlice::Owned(Rc::from(vec![Statement::Expr(Expr::Call {
+                    callee: Box::new(Expr::Super),
+                    args: vec![Expr::Spread(Box::new(Expr::Identifier("args".to_string())))],
+                })])),
+            ),
+            None => (SharedSlice::Borrowed(&[]), SharedSlice::Borrowed(&[])),
         };
         if instance_fields.is_empty() {
             return (params, body);
@@ -1930,7 +2075,7 @@ impl<'a> Compiler<'a> {
             }));
         }
         full.extend(body.iter().cloned());
-        (params, Box::leak(full.into_boxed_slice()))
+        (params, SharedSlice::Owned(Rc::from(full)))
     }
 
     fn compile_var_decl(
@@ -2304,6 +2449,7 @@ impl<'a> Compiler<'a> {
         let length_key = self.load_const(length_key)?;
         let len = self.alloc_reg()?;
         self.emit(Instr::GetProp {
+            cache: 0,
             dst: len,
             obj: keys,
             key: length_key,
@@ -2335,6 +2481,7 @@ impl<'a> Compiler<'a> {
         });
         let key = self.alloc_reg()?;
         self.emit(Instr::GetProp {
+            cache: 0,
             dst: key,
             obj: keys,
             key: idx,
@@ -2906,7 +3053,12 @@ impl<'a> Compiler<'a> {
                 let obj = self.compile_expr(object)?;
                 let key = self.compile_expr(property)?;
                 let dst = self.alloc_reg()?;
-                self.emit(Instr::GetProp { dst, obj, key });
+                self.emit(Instr::GetProp {
+                    cache: 0,
+                    dst,
+                    obj,
+                    key,
+                });
                 Ok(dst)
             }
             Expr::Assignment { target, op, value } => self.compile_assignment(target, *op, value),
@@ -2942,12 +3094,12 @@ impl<'a> Compiler<'a> {
                 is_async,
             } => {
                 let body = match body.as_ref() {
-                    ExprOrBlock::Block(stmts) => FuncBody::Stmts(stmts),
+                    ExprOrBlock::Block(stmts) => FuncBody::Stmts(SharedSlice::Borrowed(stmts)),
                     ExprOrBlock::Expr(expr) => FuncBody::Expr(expr),
                 };
                 self.defer_function(FuncDef {
                     name: None,
-                    params,
+                    params: SharedSlice::Borrowed(params),
                     body,
                     is_arrow: true,
                     is_async: *is_async,
@@ -2963,8 +3115,8 @@ impl<'a> Compiler<'a> {
                 is_generator,
             } => self.defer_function(FuncDef {
                 name: name.clone(),
-                params,
-                body: FuncBody::Stmts(body),
+                params: SharedSlice::Borrowed(params),
+                body: FuncBody::Stmts(SharedSlice::Borrowed(body)),
                 is_arrow: false,
                 is_async: *is_async,
                 is_generator: *is_generator,
@@ -3011,8 +3163,11 @@ impl<'a> Compiler<'a> {
                 body,
             ),
             Expr::TaggedTemplate {
-                tag, cooked, exprs, ..
-            } => self.compile_tagged(tag, cooked, exprs),
+                tag,
+                cooked,
+                raw,
+                exprs,
+            } => self.compile_tagged(tag, cooked, raw, exprs),
             Expr::Super => self.raise_bare_super(),
             Expr::Spread(inner) => self.compile_expr(inner),
             Expr::DynamicImport(specifier) => {
@@ -3165,8 +3320,8 @@ impl<'a> Compiler<'a> {
                 } => {
                     let val = self.defer_function(FuncDef {
                         name: Some(name.clone()),
-                        params,
-                        body: FuncBody::Stmts(body),
+                        params: SharedSlice::Borrowed(params),
+                        body: FuncBody::Stmts(SharedSlice::Borrowed(body)),
                         is_arrow: false,
                         is_async: *is_async,
                         is_generator: *is_generator,
@@ -3183,8 +3338,8 @@ impl<'a> Compiler<'a> {
                 ObjectProp::Getter { name, body } => {
                     let val = self.defer_function(FuncDef {
                         name: Some(format!("get {name}")),
-                        params: &[],
-                        body: FuncBody::Stmts(body),
+                        params: SharedSlice::Borrowed(&[]),
+                        body: FuncBody::Stmts(SharedSlice::Borrowed(body)),
                         is_arrow: false,
                         is_async: false,
                         is_generator: false,
@@ -3200,8 +3355,8 @@ impl<'a> Compiler<'a> {
                 ObjectProp::Setter { name, param, body } => {
                     let val = self.defer_function(FuncDef {
                         name: Some(format!("set {name}")),
-                        params: std::slice::from_ref(param),
-                        body: FuncBody::Stmts(body),
+                        params: SharedSlice::Borrowed(std::slice::from_ref(param)),
+                        body: FuncBody::Stmts(SharedSlice::Borrowed(body)),
                         is_arrow: false,
                         is_async: false,
                         is_generator: false,
@@ -3470,15 +3625,40 @@ impl<'a> Compiler<'a> {
     }
 
     /// `` tag`a${x}b` `` desugars to `tag(parts, x)` where `parts` is a
-    /// fresh cooked-strings array per evaluation. Substitution values
-    /// evaluate before the tag, like the evaluator; `raw` is not modeled
-    /// there either.
+    /// fresh cooked-strings array carrying the raw chunks per evaluation.
+    /// Resolve the tag before substitutions, matching the evaluator.
     fn compile_tagged(
         &mut self,
         tag: &'a Expr,
         cooked: &'a [String],
+        raw: &'a [String],
         exprs: &'a [Expr],
     ) -> Result<Reg, Decline> {
+        let (callee, receiver) = match tag {
+            Expr::Member {
+                object, property, ..
+            } if matches!(object.as_ref(), Expr::Super) => {
+                let key = self.compile_expr(property)?;
+                let callee = self.alloc_reg()?;
+                self.emit(Instr::SuperMember { dst: callee, key });
+                (callee, Some(self.compile_this()?))
+            }
+            Expr::Member {
+                object, property, ..
+            } => {
+                let obj = self.compile_expr(object)?;
+                let key = self.compile_expr(property)?;
+                let callee = self.alloc_reg()?;
+                self.emit(Instr::GetProp {
+                    cache: 0,
+                    dst: callee,
+                    obj,
+                    key,
+                });
+                (callee, Some(obj))
+            }
+            _ => (self.compile_expr(tag)?, None),
+        };
         let mut template = Vec::with_capacity(cooked.len());
         for part in cooked {
             let index = self.intern_string(part)?;
@@ -3492,6 +3672,27 @@ impl<'a> Compiler<'a> {
         let tmpl = self.push_const(Constant::SpreadTemplate(template))?;
         let parts = self.alloc_reg()?;
         self.emit(Instr::BuildArray { dst: parts, tmpl });
+        let mut raw_template = Vec::with_capacity(raw.len());
+        for part in raw {
+            let index = self.intern_string(part)?;
+            let reg = self.load_const(index)?;
+            raw_template.push(SpreadEntry { spread: false, reg });
+        }
+        let tmpl = self.push_const(Constant::SpreadTemplate(raw_template))?;
+        let raw_parts = self.alloc_reg()?;
+        self.emit(Instr::BuildArray {
+            dst: raw_parts,
+            tmpl,
+        });
+        let key = self.intern_string("raw")?;
+        let key = self.load_const(key)?;
+        self.emit(Instr::SetProp {
+            cache: 0,
+            obj: parts,
+            key,
+            val: raw_parts,
+        });
+
         let start = self.alloc_regs(1 + values.len())?;
         self.emit(Instr::Mov {
             dst: start,
@@ -3505,54 +3706,23 @@ impl<'a> Compiler<'a> {
         }
         let argc = 1 + values.len() as u16;
         let dst = self.alloc_reg()?;
-        match tag {
-            Expr::Member {
-                object, property, ..
-            } if matches!(object.as_ref(), Expr::Super) => {
-                let key = self.compile_expr(property)?;
-                let callee = self.alloc_reg()?;
-                self.emit(Instr::SuperMember { dst: callee, key });
-                let this = self.compile_this()?;
-                self.emit(Instr::CallMethod {
-                    dst,
-                    callee,
-                    this,
-                    args: start,
-                    argc,
-                });
-            }
-            Expr::Member {
-                object, property, ..
-            } => {
-                let obj = self.compile_expr(object)?;
-                let key = self.compile_expr(property)?;
-                let callee = self.alloc_reg()?;
-                self.emit(Instr::GetProp {
-                    dst: callee,
-                    obj,
-                    key,
-                });
-                self.emit(Instr::CallMethod {
-                    dst,
-                    callee,
-                    this: obj,
-                    args: start,
-                    argc,
-                });
-            }
-            Expr::Super => {
-                return self.raise_bare_super();
-            }
-            _ => {
-                let callee = self.compile_expr(tag)?;
-                self.emit(Instr::Call {
-                    dst,
-                    callee,
-                    args: start,
-                    argc,
-                });
-            }
+        if let Some(this) = receiver {
+            self.emit(Instr::CallMethod {
+                dst,
+                callee,
+                this,
+                args: start,
+                argc,
+            });
+        } else {
+            self.emit(Instr::Call {
+                dst,
+                callee,
+                args: start,
+                argc,
+            });
         }
+
         Ok(dst)
     }
 
@@ -3661,6 +3831,7 @@ impl<'a> Compiler<'a> {
                 let key = self.compile_expr(property)?;
                 let callee = self.alloc_reg()?;
                 self.emit(Instr::GetProp {
+                    cache: 0,
                     dst: callee,
                     obj,
                     key,
@@ -3750,6 +3921,7 @@ impl<'a> Compiler<'a> {
                     let key = self.compile_expr(property)?;
                     let callee = self.alloc_reg()?;
                     self.emit(Instr::GetProp {
+                        cache: 0,
                         dst: callee,
                         obj,
                         key,
@@ -3796,6 +3968,7 @@ impl<'a> Compiler<'a> {
         let end = self.emit_jump(|target| Instr::JumpIfNullish { src: obj, target });
         let key = self.compile_expr(property)?;
         self.emit(Instr::GetProp {
+            cache: 0,
             dst: join,
             obj,
             key,
@@ -3853,7 +4026,12 @@ impl<'a> Compiler<'a> {
                 let obj = self.compile_expr(object)?;
                 let key = self.compile_expr(property)?;
                 if op == AssignOp::Assign {
-                    self.emit(Instr::SetProp { obj, key, val: rhs });
+                    self.emit(Instr::SetProp {
+                        cache: 0,
+                        obj,
+                        key,
+                        val: rhs,
+                    });
                     Ok(rhs)
                 } else {
                     let dst = self.alloc_reg()?;
@@ -3873,14 +4051,10 @@ impl<'a> Compiler<'a> {
                 if op != AssignOp::Assign {
                     return Err(Decline::Func("invalid assignment target"));
                 }
-                let Some(pattern) = expr_to_pattern(target) else {
+                let Some(pattern) = PatternView::from_expr(target) else {
                     return Err(Decline::Func("invalid assignment target"));
                 };
-                // The converted pattern is owned, but nested function
-                // expressions borrow it for the rest of compilation: promote
-                // it to the compilation lifetime.
-                let pattern: &'a Pattern = Box::leak(Box::new(pattern));
-                self.compile_destructure(pattern, rhs, DestructureMode::Assign)?;
+                self.compile_pattern_view(pattern, rhs, DestructureMode::Assign)?;
                 Ok(rhs)
             }
             _ => Err(Decline::Func("invalid assignment target")),
@@ -3930,6 +4104,7 @@ impl<'a> Compiler<'a> {
                 let key = self.compile_expr(property)?;
                 let current = self.alloc_reg()?;
                 self.emit(Instr::GetProp {
+                    cache: 0,
                     dst: current,
                     obj,
                     key,
@@ -3940,7 +4115,12 @@ impl<'a> Compiler<'a> {
                 });
                 let jump = self.logical_skip_jump(op, current)?;
                 let rhs = self.compile_expr(value)?;
-                self.emit(Instr::SetProp { obj, key, val: rhs });
+                self.emit(Instr::SetProp {
+                    cache: 0,
+                    obj,
+                    key,
+                    val: rhs,
+                });
                 self.emit(Instr::Mov {
                     dst: join,
                     src: rhs,
@@ -4047,7 +4227,10 @@ fn compile_function(
     def: FuncDef<'_>,
     outer_block: HashSet<String>,
 ) -> Result<FuncOutcome, Decline> {
-    if def.is_async || def.is_generator || has_rest_param(def.params) || has_dup_params(def.params)
+    if def.is_async
+        || def.is_generator
+        || has_rest_param(&def.params)
+        || has_dup_params(&def.params)
     {
         return Ok(FuncOutcome::Ast(build_ast_function(&def)));
     }
@@ -4057,7 +4240,7 @@ fn compile_function(
         ThisMode::Frame
     };
     let mut compiler = Compiler::for_function(outer_block, this_mode, def.is_arrow);
-    match compiler.compile_unit_function(def.clone()) {
+    match compiler.compile_unit_function(&def) {
         Ok(bytecode) => Ok(FuncOutcome::Bytecode(Rc::new(bytecode))),
         Err(Decline::Func(_)) => Ok(FuncOutcome::Ast(build_ast_function(&def))),
         Err(unit @ Decline::Unit(_)) => Err(unit),
@@ -4069,9 +4252,9 @@ fn compile_function(
 /// environment; capture-free-ness holds because capturing functions decline
 /// the whole unit (slot bindings are invisible to environment chains).
 fn build_ast_function(def: &FuncDef<'_>) -> Rc<AstFunction> {
-    let body = match def.body {
+    let body = match &def.body {
         FuncBody::Stmts(stmts) => stmts.to_vec(),
-        FuncBody::Expr(expr) => vec![Statement::Return(Some(Box::new((*expr).clone())))],
+        FuncBody::Expr(expr) => vec![Statement::Return(Some(Box::new((**expr).clone())))],
     };
     let uses_arguments = if def.is_arrow {
         arrow_body_references(&ExprOrBlock::Block(body.clone()), "arguments")

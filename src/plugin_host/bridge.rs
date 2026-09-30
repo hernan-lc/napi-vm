@@ -107,6 +107,11 @@ pub(super) struct CompositeHostBridge {
     any(target_os = "linux", target_os = "macos", target_os = "windows")
 ))]
 impl HostBridge for CompositeHostBridge {
+    fn trace_roots(&self, values: &mut Vec<Value>, envs: &mut Vec<crate::interpreter::Env>) {
+        self.plugin.trace_roots(values, envs);
+        self.native.trace_roots(values, envs);
+    }
+
     fn call_host(&self, id: usize, args: Vec<Value>) -> Result<Value, VmErr> {
         if PluginHostBridge::has_tag(id) {
             self.plugin.call_host(id, args)

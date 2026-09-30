@@ -1026,6 +1026,65 @@ impl NativeAddonLoader for RustNodeApiHost {
 }
 
 impl HostBridge for RustNodeApiHost {
+    fn trace_roots(&self, values: &mut Vec<Value>, envs: &mut Vec<crate::interpreter::Env>) {
+        let state = self.state.borrow();
+        envs.push(state.global.clone());
+        values.extend(state.object_prototype.clone());
+        values.extend(state.type_tags.values().map(|(_, v)| v.clone()));
+        for record in state.callbacks.values() {
+            if let NativeCallback::ThreadsafeFunctionCall { callback, .. } = &record.callback {
+                values.extend(callback.clone());
+            }
+        }
+        for env in &state.environments {
+            values.extend(
+                env.handles
+                    .borrow()
+                    .slots
+                    .iter()
+                    .filter_map(|s| s.value.clone()),
+            );
+            values.extend(
+                env.references
+                    .borrow()
+                    .values()
+                    .filter(|r| r.ref_count > 0)
+                    .filter_map(|r| r.value.clone()),
+            );
+            values.extend(
+                env.deferreds
+                    .borrow()
+                    .values()
+                    .map(|d| Value::Promise(d.promise.clone())),
+            );
+            values.extend(
+                env.threadsafe_functions
+                    .borrow()
+                    .values()
+                    .filter_map(|f| f.callback.clone()),
+            );
+            for context in env.async_contexts.borrow().values() {
+                values.extend([context._resource.clone(), context._resource_name.clone()]);
+            }
+            values.extend(env.wraps.borrow().values().map(|v| v._value.clone()));
+            values.extend(
+                env.added_finalizers
+                    .borrow()
+                    .iter()
+                    .map(|v| v._value.clone()),
+            );
+            values.extend(env.externals.borrow().values().map(|v| v._value.clone()));
+            values.extend(
+                env.external_buffers
+                    .borrow()
+                    .values()
+                    .map(|v| v._value.clone()),
+            );
+            values.extend(env.pending_exception.borrow().clone());
+            values.extend(env.fatal_exceptions.borrow().iter().cloned());
+        }
+    }
+
     fn supports_blocking_event_wait(&self) -> bool {
         true
     }

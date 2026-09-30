@@ -40,6 +40,22 @@ thread_local! {
     static NEXT_ID: Cell<u64> = const { Cell::new(FIRST_USER_SYMBOL) };
 }
 
+#[derive(Default)]
+#[cfg(feature = "napi")]
+pub(crate) struct SymbolContext {
+    registry: HashMap<String, Rc<SymbolData>>,
+    next: Option<u64>,
+}
+#[cfg(feature = "napi")]
+impl SymbolContext {
+    pub(crate) fn swap_active(&mut self) {
+        SYMBOL_REGISTRY.with(|r| std::mem::swap(&mut *r.borrow_mut(), &mut self.registry));
+        NEXT_ID.with(|n| {
+            self.next = Some(n.replace(self.next.unwrap_or(FIRST_USER_SYMBOL)));
+        });
+    }
+}
+
 pub(super) fn install(e: &mut Environment) {
     let constructor = Value::object(vec![]);
     e.set("Symbol", constructor.clone());

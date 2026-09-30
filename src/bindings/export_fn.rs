@@ -25,7 +25,7 @@ use crate::value::Value;
 struct ExportedFunction {
     state: Arc<VMState>,
     /// Index into the runtime's export table.
-    index: usize,
+    index: super::export_slots::ExportId,
 }
 
 /// Is this a value that must cross as a callable rather than as data?
@@ -61,6 +61,7 @@ pub(super) fn export(
         )
     };
     if create != sys::Status::napi_ok {
+        state.release_export(index);
         drop(unsafe { Box::from_raw(context_ptr) });
         return Err(VmErr::Msg(format!(
             "failed to export a VM function (status {})",
@@ -177,12 +178,11 @@ impl ExportedFunction {
             .try_start()
             .map_err(|_| VmErr::Msg("VM is busy with another execution".to_string()))?;
 
-        let mut args = Vec::with_capacity(argv.len());
-        for raw in argv {
-            args.push(from_napi(env, *raw)?);
-        }
-
         let result = self.state.with_runtime(|runtime| {
+            let mut args = Vec::with_capacity(argv.len());
+            for raw in argv {
+                args.push(from_napi(env, *raw)?);
+            }
             let Some(callee) = runtime.export(self.index) else {
                 return Err(VmErr::Msg(
                     "this VM function is no longer available".to_string(),

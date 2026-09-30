@@ -2,7 +2,7 @@
 # Compare the reviewed revision with the current checkout using separate builds.
 set -euo pipefail
 repo_dir="$(git rev-parse --show-toplevel)"
-reviewed_revision=0fa987d8860d620cd1008a84f2a17c9b67c495cd
+reviewed_revision=cf9d240a99747e29d94b970c30483d14ad831e9f
 baseline_dir="${SCHEDULER_BASELINE_DIR:-${TMPDIR:-/tmp}/napi-vm-benchmark-$reviewed_revision}"
 output_dir="${SCHEDULER_OUTPUT_DIR:-$repo_dir/artifacts/scheduler}"
 mkdir -p "$output_dir" "$baseline_dir"

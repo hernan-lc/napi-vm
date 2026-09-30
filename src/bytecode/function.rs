@@ -63,8 +63,8 @@ pub struct BytecodeFunction {
     /// frame environment; arrows never seed (they would shadow the
     /// captured one) and pass the need outward to their definer instead.
     pub captures_arguments: bool,
-    /// Per-instruction property inline caches, parallel to `code`: only
-    /// `GetProp`/`SetProp` sites use their slot, the rest stay empty.
+    pub needs_frame_environment: bool,
+    /// Compact property inline caches, indexed by `GetProp`/`SetProp` sites.
     /// Cells only, so the VM probes and fills with plain loads and stores
     /// and no borrow can span a re-entrant slow path.
     pub caches: Box<[crate::shape::PropCache]>,
@@ -132,14 +132,8 @@ impl BytecodeFunction {
             stats.compiled = 1;
             stats.deopts = code.deopts.get();
         }
-        for (index, instr) in self.code.iter().enumerate() {
-            if !matches!(instr, Instr::GetProp { .. } | Instr::SetProp { .. }) {
-                continue;
-            }
+        for cache in &self.caches {
             stats.ic_sites += 1;
-            let Some(cache) = self.caches.get(index) else {
-                continue;
-            };
             let (hits, misses) = cache.stats();
             stats.ic_hits = stats.ic_hits.saturating_add(hits);
             stats.ic_misses = stats.ic_misses.saturating_add(misses);

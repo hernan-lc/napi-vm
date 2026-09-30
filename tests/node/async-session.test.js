@@ -106,8 +106,12 @@ test('Node worker teardown wakes and terminates the persistent guest owner',asyn
   const path=require('node:path').resolve(__dirname,'../../index.js');
   const worker=new Worker(`const {parentPort}=require('node:worker_threads');const {AsyncSession}=require(${JSON.stringify(path)});const s=new AsyncSession();s.run('while(true){}').catch(()=>{});parentPort.postMessage('started');`,{eval:true});
   await new Promise((resolve,reject)=>{worker.once('message',resolve);worker.once('error',reject);});
+  // Node and Bun differ in terminate()'s return value; both emit the actual
+  // exit status. Verify the lifecycle event instead of the wrapper's result.
+  const exited=new Promise((resolve,reject)=>{worker.once('exit',resolve);worker.once('error',reject);});
   let timer;
-  try {assert.equal(await Promise.race([worker.terminate(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('worker teardown timed out')),2000);})]),process.versions.bun ? 0 : 1);}
+  worker.terminate();
+  try {assert.equal(await Promise.race([exited,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('worker teardown timed out')),2000);})]),1);}
   finally {clearTimeout(timer);await worker.terminate();}
 });
 

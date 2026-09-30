@@ -3,6 +3,8 @@
 /** Separate async-only API. Existing Vm synchronous/runAsync behavior is unchanged. */
 export declare class AsyncSession {
   constructor(options?: AsyncSessionOptions | undefined | null)
+  evaluationStats(): Promise<string>
+  collectCycles(): Promise<number>
   run(source: string): Promise<string>
   evaluate(source: string): Promise<string>
   exposeFunction(name: string, callback: (...args: any[]) => any, isAsync?: boolean | undefined | null): Promise<void>
@@ -97,6 +99,10 @@ export declare class Vm {
    * from guest code.
    */
   dispose(): void
+  evaluationStats(): string
+  /** Collect unreachable cycles at a quiescent VM boundary. */
+  collectCycles(): number
+  heapStats(): string
   setImportMetaMain(isMain: boolean): void
   /** Cap the number of loop iterations in a single execution. */
   setLoopLimit(n: number): void

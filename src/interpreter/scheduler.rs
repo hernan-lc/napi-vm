@@ -181,6 +181,7 @@ impl CancellationToken {
 pub(super) struct ExecutionState {
     pub wake: Arc<crate::host::WakeSignal>,
     pub fuel: Cell<u64>,
+    pub poll_remaining: Cell<u64>,
     pub loops: Cell<u64>,
     pub jobs: Cell<usize>,
     pub cancellation: std::cell::RefCell<CancellationToken>,
@@ -195,6 +196,7 @@ impl ExecutionState {
         Self {
             wake: Arc::new(crate::host::WakeSignal::default()),
             fuel: Cell::new(super::DEFAULT_FUEL_BUDGET),
+            poll_remaining: Cell::new(0),
             loops: Cell::new(super::DEFAULT_LOOP_BUDGET),
             jobs: Cell::new(super::jobs::MAX_JOBS_PER_DRAIN),
             cancellation: std::cell::RefCell::new(CancellationToken::default()),
@@ -234,6 +236,48 @@ mod lifecycle_tests {
             .expect("fresh execution")
             .clock = Rc::new(clock.clone());
         (vm, clock)
+    }
+
+    #[test]
+    fn batched_polling_preserves_exact_fuel_and_bounds_zero_cost_instructions() {
+        let (mut vm, _) = controlled();
+        vm.set_fuel_budget(7);
+        vm.begin_execution();
+        vm.consume_fuel(3).unwrap();
+        vm.consume_fuel(4).unwrap();
+        assert_eq!(vm.execution.fuel.get(), 0);
+        assert!(vm.consume_fuel(1).unwrap_err().to_string().contains("fuel"));
+        vm.set_fuel_budget(1000);
+        vm.execution.poll_remaining.set(0);
+        vm.consume_fuel(0).unwrap();
+        vm.execution.cancellation.borrow().cancel();
+        let mut observed = false;
+        for _ in 0..64 {
+            if vm.consume_fuel(0).is_err() {
+                observed = true;
+                break;
+            }
+        }
+        assert!(
+            observed,
+            "zero-cost dispatch must observe cancellation within 64 instructions"
+        );
+    }
+    #[test]
+    fn batched_deadline_polling_has_the_same_bound() {
+        let (mut vm, clock) = controlled();
+        vm.begin_execution();
+        vm.execution.deadline.set(Some(1.));
+        vm.consume_fuel(1).unwrap();
+        clock.advance(2.).unwrap();
+        let mut observed = false;
+        for _ in 0..64 {
+            if vm.consume_fuel(1).is_err() {
+                observed = true;
+                break;
+            }
+        }
+        assert!(observed);
     }
 
     #[test]

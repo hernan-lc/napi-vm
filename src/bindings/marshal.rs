@@ -779,6 +779,16 @@ pub(super) enum WireValue {
 }
 
 impl WireValue {
+    /// Convert a Node value to wire data in a temporary isolated heap. No guest
+    /// container can survive this conversion, including an invalid cyclic input.
+    pub(super) fn from_napi(env: sys::napi_env, raw: sys::napi_value) -> Result<Self, VmErr> {
+        let mut context = crate::runtime::OwnerContext::default();
+        let _lease = context.enter();
+        let result = from_napi(env, raw).and_then(|value| Self::from_value(&value));
+        crate::heap::collect_after_interpreter_drop();
+        result
+    }
+
     pub(super) fn from_value(value: &Value) -> Result<Self, VmErr> {
         let mut active = HashSet::new();
         Self::from_value_d(value, 0, &mut active)

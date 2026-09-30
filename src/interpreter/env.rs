@@ -479,8 +479,12 @@ impl Environment {
             if !binding.initialized {
                 return ModifyOutcome::Uninitialized;
             }
-            binding.value = f(binding.value.clone());
-            return ModifyOutcome::Updated(binding.value.clone());
+            let value = f(binding.value.deref_binding());
+            match &binding.value {
+                Value::Binding(cell) => *cell.borrow_mut() = value.clone(),
+                _ => binding.value = value.clone(),
+            }
+            return ModifyOutcome::Updated(value);
         }
         match self.parent {
             Some(ref p) => p.borrow_mut().modify(n, f),

@@ -1205,3 +1205,17 @@ fn for_of_loops() {
         true,
     );
 }
+
+#[test]
+fn raw_tagged_templates_and_export_mutation_remain_equivalent() {
+    check("function tag(s){return s.raw[0];}tag`a\\nb`;", true);
+    check("String.raw`a\\nb`;", true);
+    check_with_modules(
+        "import {n,inc} from 'counter';inc();n;",
+        true,
+        &[(
+            "counter",
+            "export let n=7;export function inc(){return ++n;}",
+        )],
+    );
+}

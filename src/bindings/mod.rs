@@ -26,3 +26,5 @@ pub use crate::format::{
 };
 pub use language_service::LanguageService;
 pub use vm::{AsyncSession, AsyncSessionOptions, VM, create_vm, debug_parse, run_code, run_source};
+
+mod export_slots;

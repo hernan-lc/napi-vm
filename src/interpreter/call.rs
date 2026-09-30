@@ -1180,12 +1180,59 @@ impl Interpreter {
         if prefix { Ok(new_val) } else { Ok(cur) }
     }
 
+    pub(crate) fn call_this_borrowed(
+        &mut self,
+        f: &Value,
+        this_val: Value,
+        args: &[Value],
+    ) -> Result<Value, VmErr> {
+        if let Value::Function(fd) = f
+            && fd.bound.is_none()
+            && !fd.is_generator
+            && let Some(code) = &fd.bytecode
+        {
+            self.execution.check()?;
+            if self.get_stack().len() >= self.max_call_depth {
+                return Err(VmErr::Msg(
+                    "RangeError: Maximum call stack size exceeded".into(),
+                ));
+            }
+            let parent_env = fd.closure.clone().unwrap_or_else(|| self.global.clone());
+            let fname = fd.name.clone().unwrap_or_else(|| {
+                self.anonymous_frame_name
+                    .get_or_insert_with(|| Rc::from("<anonymous>"))
+                    .clone()
+            });
+            self.push_frame(fname, Span::unknown());
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::bytecode::vm::run_function(self, code, parent_env, this_val, args)
+            }));
+            if let Err(panic) = outcome {
+                self.pop_frame();
+                std::panic::resume_unwind(panic);
+            }
+            let result = match outcome.expect("panic resumed above") {
+                Err(VmErr::Ret(v)) | Ok(v) => Ok(v),
+                Err(VmErr::Msg(message)) => Err(VmErr::RuntimeError(Box::new(RuntimeErrorData {
+                    message,
+                    span: None,
+                    stack: self.get_stack().to_vec(),
+                }))),
+                other => other,
+            };
+            self.pop_frame();
+            return result;
+        }
+        self.call_this(f, this_val, args.to_vec())
+    }
+
     pub(crate) fn call_this(
         &mut self,
         f: &Value,
         this_val: Value,
         args: Vec<Value>,
     ) -> Result<Value, VmErr> {
+        self.execution.check()?;
         if args.len() > crate::value::MAX_ARRAY_LEN {
             return Err(crate::value::limit_err("Maximum argument count exceeded"));
         }
@@ -1236,30 +1283,8 @@ impl Interpreter {
                 // for nested closures. Frame push/pop and error mapping
                 // mirror the AST path below exactly (async/generator
                 // bodies never compile).
-                if let Some(code) = &fd.bytecode {
-                    let code = code.clone();
-                    let fname = fd.name.clone().unwrap_or_else(|| {
-                        self.anonymous_frame_name
-                            .get_or_insert_with(|| Rc::from("<anonymous>"))
-                            .clone()
-                    });
-                    self.push_frame(fname, Span::unknown());
-                    let r =
-                        crate::bytecode::vm::run_function(self, &code, parent_env, this_val, args);
-                    let result = match r {
-                        Err(VmErr::Ret(v)) => Ok(v),
-                        Ok(v) => Ok(v),
-                        Err(VmErr::Msg(msg)) => {
-                            Err(VmErr::RuntimeError(Box::new(RuntimeErrorData {
-                                message: msg,
-                                span: None,
-                                stack: self.get_stack().to_vec(),
-                            })))
-                        }
-                        other => other,
-                    };
-                    self.pop_frame();
-                    return result;
+                if fd.bytecode.is_some() {
+                    return self.call_this_borrowed(f, this_val, &args);
                 }
                 let rest_idx = fd.params.iter().position(|p| p.starts_with("..."));
                 let fe = match rest_idx {
@@ -1662,6 +1687,7 @@ impl Interpreter {
                 None => self.ctor_with_new_target(&target, args, new_target),
             };
         }
+        self.execution.check()?;
         match f {
             Value::HostFunction { properties, .. } => {
                 let id = properties
@@ -1744,7 +1770,7 @@ impl Interpreter {
                         &code,
                         parent_env,
                         inst.clone(),
-                        args,
+                        &args,
                     );
                     return match r {
                         Err(VmErr::Ret(v)) if is_js_object(&v) => Ok(v),

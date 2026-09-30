@@ -59,7 +59,7 @@ pub use rust_node_api::{ReportedNodeVersion, RustNodeApiHost, RustNodeApiOptions
 pub struct Realm {
     jobs: Jobs,
     modules: Rc<RefCell<HashMap<String, Module>>>,
-    module_sources: Rc<RefCell<HashMap<String, String>>>,
+    module_sources: Rc<RefCell<HashMap<String, std::sync::Arc<str>>>>,
     module_aliases: Rc<RefCell<HashMap<(String, String), String>>>,
     module_file_urls: Rc<RefCell<HashMap<String, String>>>,
     evaluating: Rc<RefCell<std::collections::HashSet<String>>>,
@@ -200,7 +200,7 @@ pub struct Interpreter {
     /// link: whichever module is imported first runs, and its own import of
     /// the partner runs that one, whose import back is already in flight and
     /// so returns the partially-populated record.
-    pub module_sources: Rc<RefCell<HashMap<String, String>>>,
+    pub module_sources: Rc<RefCell<HashMap<String, std::sync::Arc<str>>>>,
     /// Import aliases scoped to the importing module. Package aliases need
     /// this context so two npm dependencies can use different versions of the
     /// same bare specifier without sharing a global name.
@@ -255,7 +255,10 @@ pub struct Interpreter {
     pub(crate) new_target_stack: Vec<Value>,
     /// The source code for the current module/script, used to extract
     /// source lines for error context. Stored as lines for efficient lookup.
-    source_lines: Vec<String>,
+    source_lines: SourceContext,
+    prepared_cache: PreparedCache,
+    collection_threshold: usize,
+    last_evaluation_tier: Option<&'static str>,
     /// How many generator bodies are executing beneath this interpreter.
     /// Zero for the driver; one more than its parent inside a generator body.
     /// Unused where there are no coroutines to nest (see `build.rs`).
@@ -286,6 +289,8 @@ pub struct Interpreter {
     /// Tier-up thresholds for the JIT seam. Default policy; hosts tune it
     /// with [`Self::set_jit_policy`].
     jit_policy: crate::jit::JitPolicy,
+    tier_tracking: crate::jit::TierTracking,
+    pub(crate) activation_pool: Vec<(Vec<Value>, Vec<crate::bytecode::vm::RunSlot>)>,
     /// Registered native-code backend, if any. `None` (the default) means
     /// hot functions stay on bytecode; see [`Self::set_jit_backend`].
     jit_backend: Option<crate::jit::BackendRef>,
@@ -404,7 +409,10 @@ impl Interpreter {
             this_binding_key: None,
             anonymous_frame_name: None,
             new_target_stack: Vec::new(),
-            source_lines: Vec::new(),
+            source_lines: SourceContext::default(),
+            prepared_cache: PreparedCache::default(),
+            collection_threshold: 4096,
+            last_evaluation_tier: None,
             gen_depth: 0,
             loop_budget: DEFAULT_LOOP_BUDGET,
             execution: Rc::new(scheduler::ExecutionState::new()),
@@ -416,6 +424,8 @@ impl Interpreter {
             guest_execution_depth: Rc::new(Cell::new(0)),
             gc_id: 0,
             jit_policy: crate::jit::JitPolicy::default(),
+            tier_tracking: crate::jit::TierTracking::Disabled,
+            activation_pool: Vec::new(),
             jit_backend: None,
         };
         interp.gc_id =
@@ -681,6 +691,7 @@ export default { createRequire, isBuiltin, builtinModules };
             source: source.into(),
             statements,
             executable,
+            kind: SourceKind::Script,
         })
     }
 
@@ -688,20 +699,91 @@ export default { createRequire, isBuiltin, builtinModules };
     /// budget, full job drain, same as [`Self::eval_source`] but with no
     /// lexer or parser work.
     pub fn execute(&mut self, program: &PreparedProgram) -> Result<Value, VmErr> {
-        self.ensure_can_evaluate()?;
-        self.begin_execution();
-        self.set_source(&program.source);
-        let result = match &program.executable {
+        self.execute_with_options(program, EvaluationOptions::default())
+    }
+
+    pub(crate) fn execute_prepared_raw(
+        &mut self,
+        program: &PreparedProgram,
+    ) -> Result<Value, VmErr> {
+        match &program.executable {
             Executable::Bytecode(module) => self.run_bytecode_module(module),
             Executable::Ast => self.run_program_body(&program.statements),
-        };
-        match result {
-            Ok(value) => self.drain_jobs().map(|()| value),
-            Err(error) => {
-                let _ = self.drain_jobs();
-                Err(error)
-            }
         }
+    }
+
+    pub fn execute_with_options(
+        &mut self,
+        program: &PreparedProgram,
+        options: EvaluationOptions,
+    ) -> Result<Value, VmErr> {
+        if options.resume_pending_checkpoint && self.jobs.borrow().checkpoint_pending {
+            self.drain_microtasks()?;
+        }
+        self.ensure_can_evaluate()?;
+        self.begin_execution();
+        self.last_evaluation_tier = Some(if program.stats().is_some() {
+            "bytecode"
+        } else {
+            "ast"
+        });
+        self.source_lines = SourceContext::new(program.source.clone());
+        let result = self.execute_prepared_raw(program);
+        let drain = match options.drain {
+            DrainPolicy::None => Ok(()),
+            DrainPolicy::Microtasks => self.drain_microtasks(),
+            DrainPolicy::UntilIdle => self.drain_jobs(),
+        };
+        let result = match result {
+            Ok(value) => drain.map(|()| value),
+            Err(error) => Err(error),
+        };
+        if options.retire_execution {
+            self.retire_completed_execution();
+        }
+        result
+    }
+
+    pub fn eval_source_with_options(
+        &mut self,
+        source: &str,
+        options: EvaluationOptions,
+    ) -> Result<Value, VmErr> {
+        let program = self.prepare_source(source, SourceKind::Script)?;
+        self.execute_with_options(&program, options)
+    }
+
+    fn prepare_source(&mut self, source: &str, kind: SourceKind) -> Result<PreparedProgram, VmErr> {
+        if let Some(program) = self.prepared_cache.get(source, kind) {
+            return Ok(program);
+        }
+        let mut program = Self::compile(source)?;
+        program.kind = kind;
+        self.prepared_cache.insert(program.clone());
+        Ok(program)
+    }
+    #[cfg(any(feature = "napi", feature = "wasm"))]
+    pub(crate) fn eval_module_with_options(
+        &mut self,
+        source: &str,
+        options: EvaluationOptions,
+    ) -> Result<Value, VmErr> {
+        let program = self.prepare_source(source, SourceKind::Module)?;
+        self.execute_with_options(&program, options)
+    }
+
+    pub fn evaluation_diagnostics(&self) -> String {
+        let (hits, misses, entries, bytes) = self.prepared_cache_stats();
+        serde_json::json!({"tier": self.last_evaluation_tier, "cacheHits": hits, "cacheMisses": misses, "cacheEntries": entries, "cacheSourceBytes": bytes}).to_string()
+    }
+
+    pub fn prepared_cache_stats(&self) -> (u64, u64, usize, usize) {
+        (
+            self.prepared_cache.hits,
+            self.prepared_cache.misses,
+            self.prepared_cache.programs.len(),
+            self.prepared_cache.bytes,
+        )
     }
 
     /// Reclaim unreachable reference cycles on this thread's heap: objects,
@@ -715,6 +797,21 @@ export default { createRequire, isBuiltin, builtinModules };
         crate::heap::collect()
     }
 
+    /// Call at a quiescent host boundary, after converting or pinning results.
+    pub fn maybe_collect_cycles(&mut self) -> Option<crate::heap::HeapStats> {
+        if self.collection_threshold != 0
+            && crate::heap::allocation_debt() >= self.collection_threshold
+        {
+            Some(self.collect_cycles())
+        } else {
+            None
+        }
+    }
+    /// Zero disables automatic collection; explicit collection remains available.
+    pub fn set_collection_threshold(&mut self, threshold: usize) {
+        self.collection_threshold = threshold;
+    }
+
     /// This interpreter's live GC roots: running and persistent globals,
     /// module records and scopes, the CommonJS cache, queued jobs, and any
     /// in-flight constructor targets.
@@ -724,6 +821,9 @@ export default { createRequire, isBuiltin, builtinModules };
             values: self.new_target_stack.clone(),
             jobs: vec![self.jobs.clone()],
         };
+        if let Some(host) = &self.host {
+            host.trace_roots(&mut roots.values, &mut roots.envs);
+        }
         if let Ok(modules) = self.modules.try_borrow() {
             for module in modules.values() {
                 roots.values.extend(module.exports.values().cloned());
@@ -772,6 +872,112 @@ export default { createRequire, isBuiltin, builtinModules };
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceKind {
+    Script,
+    Module,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrainPolicy {
+    None,
+    Microtasks,
+    UntilIdle,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct EvaluationOptions {
+    pub drain: DrainPolicy,
+    pub resume_pending_checkpoint: bool,
+    pub retire_execution: bool,
+}
+impl Default for EvaluationOptions {
+    fn default() -> Self {
+        Self {
+            drain: DrainPolicy::UntilIdle,
+            resume_pending_checkpoint: false,
+            retire_execution: true,
+        }
+    }
+}
+
+#[derive(Default)]
+struct PreparedCache {
+    programs: std::collections::VecDeque<PreparedProgram>,
+    bytes: usize,
+    hits: u64,
+    misses: u64,
+}
+impl PreparedCache {
+    fn get(&mut self, source: &str, kind: SourceKind) -> Option<PreparedProgram> {
+        if let Some(index) = self
+            .programs
+            .iter()
+            .position(|p| p.source.as_ref() == source && p.kind == kind)
+        {
+            self.hits += 1;
+            let program = self.programs.remove(index).expect("located cache entry");
+            self.programs.push_back(program.clone());
+            Some(program)
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+    fn insert(&mut self, program: PreparedProgram) {
+        const MAX_BYTES: usize = 2 * 1024 * 1024;
+        if program.source.len() > MAX_BYTES {
+            return;
+        }
+        while self.programs.len() >= 64 || self.bytes + program.source.len() > MAX_BYTES {
+            if let Some(old) = self.programs.pop_front() {
+                self.bytes -= old.source.len();
+            } else {
+                break;
+            }
+        }
+        self.bytes += program.source.len();
+        self.programs.push_back(program);
+    }
+}
+
+/// Source text is shared; line offsets are allocated only for diagnostics.
+#[derive(Clone, Default)]
+struct SourceContext {
+    text: std::sync::Arc<str>,
+    offsets: std::cell::OnceCell<Vec<usize>>,
+}
+impl SourceContext {
+    fn new(text: std::sync::Arc<str>) -> Self {
+        Self {
+            text,
+            offsets: Default::default(),
+        }
+    }
+    fn line(&self, line: usize) -> Option<&str> {
+        let index = line.checked_sub(1)?;
+        let offsets = self.offsets.get_or_init(|| {
+            let mut offsets = Vec::new();
+            if !self.text.is_empty() {
+                offsets.push(0);
+            }
+            for (i, byte) in self.text.bytes().enumerate() {
+                if byte == b'\n' && i + 1 < self.text.len() {
+                    offsets.push(i + 1);
+                }
+            }
+            offsets
+        });
+        let start = *offsets.get(index)?;
+        let end = offsets.get(index + 1).copied().unwrap_or(self.text.len());
+        let text = &self.text[start..end];
+        Some(if let Some(text) = text.strip_suffix('\n') {
+            text.strip_suffix('\r').unwrap_or(text)
+        } else {
+            text
+        })
+    }
+}
+
 /// A lexed+parsed script, ready for repeated execution without touching
 /// the lexer or parser again. Compile once with [`Interpreter::compile`],
 /// run many times with [`Interpreter::execute`]. The AST is shared through
@@ -782,6 +988,7 @@ pub struct PreparedProgram {
     source: std::sync::Arc<str>,
     statements: std::sync::Arc<Vec<Statement>>,
     executable: Executable,
+    kind: SourceKind,
 }
 
 impl PreparedProgram {
@@ -811,13 +1018,7 @@ impl Interpreter {
     /// Delegates to [`Self::compile`] + [`Self::execute`]: for repeated
     /// execution, compile once and execute many times instead.
     pub fn eval_source(&mut self, source: &str) -> Result<Value, VmErr> {
-        match Self::compile(source) {
-            Ok(program) => self.execute(&program),
-            Err(error) => {
-                let _ = self.drain_jobs();
-                Err(error)
-            }
-        }
+        self.eval_source_with_options(source, EvaluationOptions::default())
     }
 
     /// Drive one host-initiated guest function call exactly like a top-level
@@ -866,10 +1067,7 @@ impl Interpreter {
     pub(crate) fn run_script_source(&mut self, source: &str) -> Result<Value, VmErr> {
         let previous_source = self.source_lines.clone();
         self.set_source(source);
-        let result = match crate::parser::parse_cached(source) {
-            Ok(statements) => self.run_program_body(&statements),
-            Err(failure) => Err(failure.into_vm_err()),
-        };
+        let result = Self::compile(source).and_then(|program| self.execute_prepared_raw(&program));
         self.source_lines = previous_source;
         result
     }
@@ -1379,6 +1577,10 @@ impl Interpreter {
     /// Record a module's source without running it. `import` evaluates it on
     /// first use.
     pub fn define_module(&mut self, name: &str, source: String) {
+        self.define_module_shared(name, source.into());
+    }
+
+    pub(crate) fn define_module_shared(&mut self, name: &str, source: std::sync::Arc<str>) {
         self.module_sources
             .borrow_mut()
             .insert(name.to_string(), source);
@@ -1440,24 +1642,8 @@ impl Interpreter {
     /// bodies select the execution tier exactly like scripts, so repeated
     /// imports of supported modules run the register VM.
     fn eval_module_source(&mut self, source: &str) -> Result<(), VmErr> {
-        let statements =
-            crate::parser::parse_cached(source).map_err(|failure| failure.into_vm_err())?;
-        // Modules hoist exactly like scripts: `var` and eagerly-defined
-        // function declarations first, then lexical dead zones. Without this,
-        // a module-level call above its function declaration fails to resolve.
-        match crate::bytecode::compile_program(&statements) {
-            Ok(module) => {
-                crate::bytecode::verify_module(&module).map_err(|error| {
-                    VmErr::Msg(format!(
-                        "internal error: bytecode verification failed: {error}"
-                    ))
-                })?;
-                self.run_bytecode_module(&module)?;
-            }
-            Err(_) => {
-                self.run_program_body(&statements)?;
-            }
-        }
+        let program = self.prepare_source(source, SourceKind::Module)?;
+        self.execute_prepared_raw(&program)?;
         Ok(())
     }
 
@@ -1533,6 +1719,7 @@ impl Interpreter {
         self.execution.active.set(true);
         self.execution.loops.set(self.loop_budget);
         self.execution.fuel.set(self.fuel_budget);
+        self.execution.poll_remaining.set(0);
         self.execution.jobs.set(self.max_jobs_per_drain);
     }
 
@@ -1633,8 +1820,19 @@ impl Interpreter {
     }
 
     /// Account one bytecode instruction against the fuel budget.
+    pub(crate) fn check_execution(&self) -> Result<(), VmErr> {
+        self.execution.check()
+    }
+
     pub(crate) fn consume_fuel(&mut self, cost: u64) -> Result<(), VmErr> {
-        self.execution.check()?;
+        let remaining = self.execution.poll_remaining.get();
+        let charged = cost.max(1); // zero-cost instructions must still poll
+        if charged >= remaining {
+            self.execution.check()?;
+            self.execution.poll_remaining.set(64);
+        } else {
+            self.execution.poll_remaining.set(remaining - charged);
+        }
         match self.execution.fuel.get().checked_sub(cost) {
             Some(remaining) => {
                 self.execution.fuel.set(remaining);
@@ -1656,6 +1854,20 @@ impl Interpreter {
     /// backends observe, guard, and decline — they cannot execute.
     pub fn set_jit_backend(&mut self, backend: crate::jit::BackendRef) {
         self.jit_backend = Some(backend);
+        self.tier_tracking = crate::jit::TierTracking::BackendEnabled;
+    }
+
+    pub fn set_tier_tracking(&mut self, mode: crate::jit::TierTracking) {
+        self.tier_tracking = if self.jit_backend.is_some() {
+            crate::jit::TierTracking::BackendEnabled
+        } else {
+            mode
+        };
+    }
+    pub(crate) fn note_loop_iter(&self, counters: &crate::jit::TierCounters) {
+        if self.tier_tracking != crate::jit::TierTracking::Disabled {
+            crate::jit::note_loop_iter(counters);
+        }
     }
 
     /// Tune when functions tier up and when deoptimizing code is discarded.
@@ -1683,6 +1895,9 @@ impl Interpreter {
         code: &crate::bytecode::BytecodeFunction,
         args: &[Value],
     ) -> crate::jit::TierDecision {
+        if self.tier_tracking == crate::jit::TierTracking::Disabled {
+            return crate::jit::TierDecision::NoBackend;
+        }
         match self.jit_backend.clone() {
             Some(backend) => {
                 let compile = |feedback: &crate::jit::TierFeedback| backend.compile(code, feedback);
@@ -1708,12 +1923,12 @@ impl Interpreter {
     /// Set the source code for the current script/module. Used to extract
     /// source lines for error context.
     pub fn set_source(&mut self, source: &str) {
-        self.source_lines = source.lines().map(String::from).collect();
+        self.source_lines = SourceContext::new(source.into());
     }
 
     /// Get a source line by 1-based line number, if available.
     pub fn get_source_line(&self, line: usize) -> Option<&str> {
-        self.source_lines.get(line - 1).map(|s| s.as_str())
+        self.source_lines.line(line)
     }
 
     /// Push a frame onto the call stack. The name is shared (`Rc<str>`), so

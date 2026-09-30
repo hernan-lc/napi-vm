@@ -97,6 +97,161 @@ impl Job {
     }
 }
 
+type TimerKey = (u64, u128);
+struct TimerEntry {
+    key: TimerKey,
+    id: u64,
+    job: Job,
+}
+/// Sorted small queues avoid allocating a tree node and ID index per timer.
+/// Promotion is sticky until empty so cancellation cannot cause mode churn.
+#[derive(Default)]
+struct TreeTimers {
+    entries: BTreeMap<TimerKey, (u64, Job)>,
+    ids: HashMap<u64, TimerKey>,
+}
+enum TimerQueue {
+    Small {
+        entries: Vec<TimerEntry>,
+        spare: Option<TreeTimers>,
+    },
+    Tree {
+        entries: BTreeMap<TimerKey, (u64, Job)>,
+        ids: HashMap<u64, TimerKey>,
+        small: Vec<TimerEntry>,
+    },
+}
+impl Default for TimerQueue {
+    fn default() -> Self {
+        Self::Small {
+            entries: Vec::new(),
+            spare: None,
+        }
+    }
+}
+impl TimerQueue {
+    const SMALL_LIMIT: usize = 128;
+    const MAX_RETAINED_IDS: usize = 16_384;
+    fn len(&self) -> usize {
+        match self {
+            Self::Small { entries: v, .. } => v.len(),
+            Self::Tree { entries, .. } => entries.len(),
+        }
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn contains_id(&self, id: u64) -> bool {
+        match self {
+            Self::Small { entries: v, .. } => v.iter().any(|e| e.id == id),
+            Self::Tree { ids, .. } => ids.contains_key(&id),
+        }
+    }
+    fn insert(&mut self, key: TimerKey, id: u64, job: Job) {
+        if let Self::Small { entries: v, spare } = self {
+            let index = v.partition_point(|e| e.key < key);
+            v.insert(index, TimerEntry { key, id, job });
+            if v.len() <= Self::SMALL_LIMIT {
+                return;
+            }
+            let TreeTimers {
+                mut entries,
+                mut ids,
+            } = spare.take().unwrap_or_default();
+            ids.reserve(v.len());
+            for e in v.drain(..) {
+                ids.insert(e.id, e.key);
+                entries.insert(e.key, (e.id, e.job));
+            }
+            let small = std::mem::take(v);
+            *self = Self::Tree {
+                entries,
+                ids,
+                small,
+            };
+            return;
+        }
+        if let Self::Tree { entries, ids, .. } = self {
+            entries.insert(key, (id, job));
+            ids.insert(id, key);
+        }
+    }
+    fn cancel(&mut self, id: u64) {
+        match self {
+            Self::Small { entries: v, .. } => {
+                if let Some(i) = v.iter().position(|e| e.id == id) {
+                    v.remove(i);
+                }
+            }
+            Self::Tree { entries, ids, .. } => {
+                if let Some(key) = ids.remove(&id) {
+                    entries.remove(&key);
+                }
+            }
+        }
+        self.demote_empty();
+    }
+    fn demote_empty(&mut self) {
+        let Self::Tree {
+            entries,
+            ids,
+            small,
+        } = self
+        else {
+            return;
+        };
+        if !entries.is_empty() {
+            return;
+        }
+        debug_assert!(ids.is_empty());
+        // Empty cached storage retains no jobs/guest roots. A small-only queue
+        // never allocates an ID index. Cap reuse after unusually large queues.
+        let spare = (ids.capacity() <= Self::MAX_RETAINED_IDS).then(|| TreeTimers {
+            entries: std::mem::take(entries),
+            ids: std::mem::take(ids),
+        });
+        let entries = std::mem::take(small);
+        *self = Self::Small { entries, spare };
+    }
+    fn first_key(&self) -> Option<TimerKey> {
+        match self {
+            Self::Small { entries: v, .. } => v.first().map(|e| e.key),
+            Self::Tree { entries, .. } => entries.first_key_value().map(|(k, _)| *k),
+        }
+    }
+    fn pop(&mut self) -> Option<Job> {
+        let job = match self {
+            Self::Small { entries: v, .. } => {
+                if v.is_empty() {
+                    return None;
+                }
+                v.remove(0).job
+            }
+            Self::Tree { entries, ids, .. } => {
+                let (_, (id, job)) = entries.pop_first()?;
+                ids.remove(&id);
+                job
+            }
+        };
+        self.demote_empty();
+        Some(job)
+    }
+    fn trace_roots(&self, out: &mut Vec<Value>) {
+        match self {
+            Self::Small { entries: v, .. } => {
+                for e in v {
+                    e.job.trace_values(out);
+                }
+            }
+            Self::Tree { entries, .. } => {
+                for (_, job) in entries.values() {
+                    job.trace_values(out);
+                }
+            }
+        }
+    }
+}
+
 struct AtomicsWaiter {
     id: u64,
     promise: Rc<RefCell<PromiseInner>>,
@@ -112,9 +267,9 @@ pub struct JobQueue {
     /// clock here: a timer runs after every microtask has, which preserves the
     /// ordering guarantees guest code depends on without a wall clock.
     // Nonnegative finite f64 bit patterns have the same order as their values.
-    timers: BTreeMap<(u64, u128), (u64, Job)>,
-    timer_ids: HashMap<u64, (u64, u128)>,
+    timers: TimerQueue,
     next_timer_id: u64,
+    timer_ids_wrapped: bool,
     next_sequence: u128,
     peak_depth: usize,
     clock: super::scheduler::ClockMode,
@@ -137,9 +292,7 @@ impl JobQueue {
         {
             job.trace_values(out);
         }
-        for (_, job) in self.timers.values() {
-            job.trace_values(out);
-        }
+        self.timers.trace_roots(out);
         for waiters in self.atomics_waiters.values() {
             for waiter in waiters {
                 out.push(Value::Promise(waiter.promise.clone()));
@@ -179,11 +332,14 @@ impl JobQueue {
         const MAX_ID: u64 = (1 << 53) - 1;
         loop {
             self.next_timer_id = if self.next_timer_id >= MAX_ID {
+                self.timer_ids_wrapped = true;
                 1
             } else {
                 self.next_timer_id + 1
             };
-            if !self.timer_ids.contains_key(&self.next_timer_id) {
+            // Before the first wrap, monotonically minted IDs cannot alias.
+            // Once wrapped, keep checking against every live timer.
+            if !self.timer_ids_wrapped || !self.timers.contains_id(self.next_timer_id) {
                 break;
             }
         }
@@ -195,8 +351,7 @@ impl JobQueue {
         let delay = normalize_delay(delay);
         let deadline = (self.clock.now_ms() + delay).min(f64::MAX);
         let key = (deadline.to_bits(), self.next_sequence);
-        self.timers.insert(key, (id, job));
-        self.timer_ids.insert(id, key);
+        self.timers.insert(key, id, job);
         self.observe_depth();
         id
     }
@@ -261,9 +416,7 @@ impl JobQueue {
     }
 
     pub fn cancel_timer(&mut self, id: u64) {
-        if let Some(key) = self.timer_ids.remove(&id) {
-            self.timers.remove(&key);
-        }
+        self.timers.cancel(id);
     }
 
     /// Remove the smallest deadline, breaking ties by scheduling order.
@@ -271,9 +424,7 @@ impl JobQueue {
         if !self.has_due_timer() {
             return None;
         }
-        let (_, (id, job)) = self.timers.pop_first()?;
-        self.timer_ids.remove(&id);
-        Some(job)
+        self.timers.pop()
     }
 
     pub fn has_microtasks(&self) -> bool {
@@ -293,9 +444,7 @@ impl JobQueue {
         Ok(())
     }
     pub fn next_deadline(&self) -> Option<f64> {
-        self.timers
-            .first_key_value()
-            .map(|(key, _)| f64::from_bits(key.0))
+        self.timers.first_key().map(|key| f64::from_bits(key.0))
     }
     pub fn has_due_timer(&self) -> bool {
         self.next_deadline()
@@ -425,6 +574,83 @@ mod scheduler_tests {
         }
     }
     #[test]
+    fn wrapped_ids_skip_multiple_live_small_queue_entries() {
+        let mut q = JobQueue::default();
+        for expected in 1..=10 {
+            assert_eq!(q.push_timer(0., Value::Undefined, vec![]), expected);
+        }
+        q.next_timer_id = (1 << 53) - 1;
+        assert_eq!(q.push_timer(0., Value::Undefined, vec![]), 11);
+        assert!(q.timer_ids_wrapped);
+        assert_eq!(q.len(), 11);
+    }
+    #[test]
+    fn empty_storage_is_reused_and_large_index_retention_is_capped() {
+        let mut q = JobQueue::default();
+        q.push_timer(0., Value::Undefined, vec![]);
+        q.take_timer().unwrap();
+        let TimerQueue::Small { entries, spare } = &q.timers else {
+            panic!()
+        };
+        let capacity = entries.capacity();
+        assert!(capacity > 0);
+        assert!(spare.is_none());
+        for _ in 0..20 {
+            let id = q.push_timer(0., Value::Undefined, vec![]);
+            q.cancel_timer(id);
+        }
+        let TimerQueue::Small { entries, spare } = &q.timers else {
+            panic!()
+        };
+        assert_eq!(entries.capacity(), capacity);
+        assert!(spare.is_none());
+        for _ in 0..1000 {
+            q.push_timer(0., Value::Undefined, vec![]);
+        }
+        while q.take_timer().is_some() {}
+        let TimerQueue::Small {
+            spare: Some(spare), ..
+        } = &q.timers
+        else {
+            panic!()
+        };
+        assert!(spare.ids.capacity() > 0);
+        assert!(spare.ids.is_empty() && spare.entries.is_empty());
+        for _ in 0..20000 {
+            q.push_timer(0., Value::Undefined, vec![]);
+        }
+        while q.take_timer().is_some() {}
+        assert!(matches!(&q.timers, TimerQueue::Small { spare: None, .. }));
+    }
+    #[test]
+    fn hybrid_promotes_once_traces_roots_and_resets_when_empty() {
+        let mut q = JobQueue::default();
+        for i in 0..TimerQueue::SMALL_LIMIT {
+            q.push_timer(1., Value::Number(i as f64), vec![]);
+        }
+        assert!(matches!(q.timers, TimerQueue::Small { .. }));
+        q.push_timer(1., Value::Number(TimerQueue::SMALL_LIMIT as f64), vec![]);
+        assert!(matches!(q.timers, TimerQueue::Tree { .. }));
+        let mut roots = Vec::new();
+        q.trace_roots(&mut roots);
+        assert_eq!(roots.len(), TimerQueue::SMALL_LIMIT + 1);
+        for i in 0..=TimerQueue::SMALL_LIMIT {
+            if i == TimerQueue::SMALL_LIMIT {
+                assert!(matches!(q.timers, TimerQueue::Tree { .. }));
+            }
+            let Some(Job::Callback {
+                callback: Value::Number(n),
+                ..
+            }) = q.take_timer()
+            else {
+                panic!("missing timer");
+            };
+            assert_eq!(n, i as f64);
+        }
+        assert!(matches!(q.timers, TimerQueue::Small { .. }));
+    }
+
+    #[test]
     fn timers_normalize_and_keep_fifo_ties() {
         let mut q = JobQueue::default();
         for (n, d) in [4.0, 0.0, f64::NAN, -1.0, f64::INFINITY, -0.0, 4.0]
@@ -437,7 +663,6 @@ mod scheduler_tests {
             (0..7).map(|_| take(&mut q)).collect::<Vec<_>>(),
             vec![1., 2., 3., 4., 5., 0., 6.]
         );
-        assert!(q.timer_ids.is_empty());
         assert!(q.timers.is_empty());
     }
     #[test]
@@ -463,6 +688,5 @@ mod scheduler_tests {
         q.trace_roots(&mut roots);
         assert!(roots.is_empty());
         assert!(q.is_empty());
-        assert!(q.timer_ids.is_empty());
     }
 }

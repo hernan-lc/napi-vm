@@ -25,16 +25,20 @@ fn parse(src: &str) -> Vec<Statement> {
 }
 
 /// Evaluate pre-parsed statements on a fresh interpreter with builtins loaded.
-fn run_stmts(stmts: &[Statement]) {
+fn run_stmts(stmts: &[Statement], collector: &mut Interpreter) {
     let mut interp = Interpreter::new();
     setup_builtins(&interp.global);
-    let _ = interp.run(stmts);
+    interp.run(stmts).expect("benchmark workload succeeds");
+    drop(interp);
+    // Fresh AST embeddings must collect after discarding guest results/roots.
+    // Otherwise Criterion measures accumulating garbage and eventually OOMs.
+    collector.collect_cycles();
 }
 
 /// Full pipeline: parse then evaluate.
-fn run(src: &str) {
+fn run(src: &str, collector: &mut Interpreter) {
     let stmts = parse(src);
-    run_stmts(&stmts);
+    run_stmts(&stmts, collector);
 }
 
 /// Representative workloads. Each is a self-contained program whose final
@@ -79,7 +83,8 @@ fn bench_run(c: &mut Criterion) {
     let mut group = c.benchmark_group("run");
     for (name, src) in WORKLOADS {
         group.bench_with_input(BenchmarkId::from_parameter(name), src, |b, src| {
-            b.iter(|| run(black_box(src)));
+            let mut collector = Interpreter::new();
+            b.iter(|| run(black_box(src), &mut collector));
         });
     }
     group.finish();

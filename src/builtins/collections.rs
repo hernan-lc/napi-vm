@@ -162,7 +162,27 @@ thread_local! {
     /// One prototype per kind, built on first use and shared by every
     /// instance. Methods live there rather than on the instance, so
     /// `Object.keys(map)` is empty — as it is in a real engine.
-    static PROTOTYPES: RefCell<Vec<(&'static str, Rc<Value>)>> = const { RefCell::new(Vec::new()) };
+    static PROTOTYPES: RefCell<Vec<(&'static str, Rc<Value>, crate::heap::RootId)>> = const { RefCell::new(Vec::new()) };
+}
+
+#[derive(Default)]
+#[cfg(feature = "napi")]
+pub(crate) struct CollectionContext(Vec<(&'static str, Rc<Value>, crate::heap::RootId)>);
+#[cfg(feature = "napi")]
+impl CollectionContext {
+    pub(crate) fn swap_active(&mut self) {
+        PROTOTYPES.with(|p| std::mem::swap(&mut *p.borrow_mut(), &mut self.0));
+    }
+}
+
+/// Called only after this arena's final interpreter has been dropped.
+#[cfg(feature = "napi")]
+pub(crate) fn clear_collection_cache() {
+    PROTOTYPES.with(|protos| {
+        for (_, _, pin) in protos.borrow_mut().drain(..) {
+            crate::heap::remove_root(pin);
+        }
+    });
 }
 
 /// A fresh prototype object: methods, the `size` getter and the iterator.
@@ -190,13 +210,14 @@ fn prototype_for(kind: Kind) -> Result<Rc<Value>, VmErr> {
         protos
             .borrow()
             .iter()
-            .find(|(tag, _)| *tag == kind.tag())
-            .map(|(_, proto)| proto.clone())
+            .find(|(tag, _, _)| *tag == kind.tag())
+            .map(|(_, proto, _)| proto.clone())
     }) {
         return Ok(existing);
     }
     let proto = Rc::new(build_prototype(kind)?);
-    PROTOTYPES.with(|protos| protos.borrow_mut().push((kind.tag(), proto.clone())));
+    let pin = crate::heap::add_root((*proto).clone());
+    PROTOTYPES.with(|protos| protos.borrow_mut().push((kind.tag(), proto.clone(), pin)));
     Ok(proto)
 }
 
@@ -493,4 +514,27 @@ pub fn describe_collection(value: &Value) -> Option<String> {
     let kind = kind_of(value)?;
     let entries = entries_of(value)?;
     Some(format!("{}({})", kind.tag(), entries.borrow().len()))
+}
+
+#[cfg(all(test, feature = "napi"))]
+mod lifecycle_tests {
+    use super::*;
+    #[test]
+    fn final_owner_collection_releases_cached_intrinsic_pins() {
+        let mut context = crate::runtime::OwnerContext::default();
+        let _lease = context.enter();
+        let vm = Interpreter::with_builtins();
+        {
+            let proto = prototype_for(Kind::Map).unwrap();
+            proto.set_prop("self".into(), (*proto).clone()).unwrap();
+        }
+        assert_eq!(PROTOTYPES.with(|protos| protos.borrow().len()), 1);
+        drop(vm);
+        let stats = crate::heap::collect_after_interpreter_drop();
+        assert_eq!(stats.skipped, None);
+        assert_eq!(stats.marked, 0);
+        assert!(PROTOTYPES.with(|protos| protos.borrow().is_empty()));
+        crate::heap::collect();
+        assert_eq!(crate::heap::counters().tracked, 0);
+    }
 }

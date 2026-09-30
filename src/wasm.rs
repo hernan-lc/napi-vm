@@ -29,8 +29,6 @@ use crate::lang::{
     AnalysisContext, Completion, CompletionKind, DiagnosticSeverity, HostFunctionInfo,
     HostFunctionParameter, ModuleInfo, clamp_type_name,
 };
-use crate::lexer::Lexer;
-use crate::parser::Parser;
 use crate::value::{MAX_ARRAY_LEN, MAX_OBJECT_PROPS, MAX_STRING_LEN, Value, limit_err};
 
 /// Maximum nesting marshalled across the wasm boundary in either direction.
@@ -337,11 +335,9 @@ const CONSOLE_SETUP: &str = r#"
 
 /// Run a snippet on the interpreter, ignoring its result. Used for console setup.
 fn run_setup(interp: &mut Interpreter) {
-    interp.begin_execution();
-    let toks = Lexer::new(CONSOLE_SETUP).tokenize_with_spans();
-    let mut parser = Parser::new_with_spans(toks);
-    let stmts = parser.parse();
-    let _ = interp.run_program_body(&stmts);
+    interp
+        .eval_source(CONSOLE_SETUP)
+        .expect("console setup must compile and execute");
 }
 
 /// Build the `__out` sink: a Rust closure that appends `(level, text)` to the
@@ -501,23 +497,14 @@ impl WasmVm {
         }
         self.logs.borrow_mut().clear();
         self.interp.cur_mod = module_name.map(ToString::to_string);
-        self.interp.set_source(source);
-        self.interp.begin_execution();
-        let toks = Lexer::new(source).tokenize_with_spans();
-        let mut parser = Parser::new_with_spans(toks);
-        let stmts = parser.parse();
-        let result = if parser.depth_exceeded {
-            Err(VmErr::Msg(
-                "RangeError: Maximum parse depth exceeded".to_string(),
-            ))
-        } else {
-            self.interp
-                .run_program_body(&stmts)
-                .and_then(|value| self.interp.drain_jobs().map(|()| value))
-                .map_err(|e| self.interp.enrich_error(e, None))
-        };
+        let result = self
+            .interp
+            .eval_source(source)
+            .map_err(|e| self.interp.enrich_error(e, None));
         self.interp.cur_mod = None;
-        self.build_run_result(result)
+        let output = self.build_run_result(result);
+        self.interp.maybe_collect_cycles();
+        output
     }
 
     /// Expose a browser function to the VM as a callable global. Arguments and
@@ -573,20 +560,12 @@ impl WasmVm {
             .ensure_can_evaluate()
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         self.interp.cur_mod = Some(name.to_string());
-        self.interp.begin_execution();
-        let toks = Lexer::new(source).tokenize_with_spans();
-        let mut parser = Parser::new_with_spans(toks);
-        let stmts = parser.parse();
-        if parser.depth_exceeded {
-            self.interp.cur_mod = None;
-            return Err(JsValue::from_str(
-                "RangeError: Maximum parse depth exceeded",
-            ));
-        }
+        let scope = self.interp.module_scope(name);
+        let outer = self.interp.take_scope(scope);
         let result = self
             .interp
-            .run_program_body(&stmts)
-            .and_then(|value| self.interp.drain_jobs().map(|()| value));
+            .eval_module_with_options(source, Default::default());
+        self.interp.take_scope(outer);
         self.interp.cur_mod = None;
         result.map_err(|e| JsValue::from_str(&e.to_string()))?;
 

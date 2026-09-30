@@ -89,6 +89,7 @@ struct HeapInner {
     pins: HashMap<u64, Value>,
     next_pin: u64,
     total_collected: u64,
+    allocation_debt: usize,
 }
 
 impl HeapInner {
@@ -109,6 +110,7 @@ impl HeapInner {
             pins: HashMap::new(),
             next_pin: 1,
             total_collected: 0,
+            allocation_debt: 0,
         }
     }
 
@@ -136,6 +138,24 @@ impl HeapInner {
 
 thread_local! {
     static HEAP: RefCell<HeapInner> = RefCell::new(HeapInner::new());
+}
+
+/// An isolated allocation registry leased by a single runtime owner.
+/// The registry is detached from TLS between operations, so migrating a
+/// gated VM cannot leave its roots reachable on the previous native thread.
+#[cfg(feature = "napi")]
+pub(crate) struct HeapContext(HeapInner);
+#[cfg(feature = "napi")]
+impl Default for HeapContext {
+    fn default() -> Self {
+        Self(HeapInner::new())
+    }
+}
+#[cfg(feature = "napi")]
+impl HeapContext {
+    pub(crate) fn swap_active(&mut self) {
+        HEAP.with(|heap| std::mem::swap(&mut *heap.borrow_mut(), &mut self.0));
+    }
 }
 
 /// A heap container that registers itself at creation. Missed mutable
@@ -170,7 +190,11 @@ macro_rules! track_impl {
     ($ty:ty, $vec:ident) => {
         impl Track for $ty {
             fn track_rc(rc: &Rc<Self>) {
-                HEAP.with(|heap| heap.borrow_mut().$vec.push(Rc::downgrade(rc)));
+                HEAP.with(|heap| {
+                    let mut heap = heap.borrow_mut();
+                    heap.$vec.push(Rc::downgrade(rc));
+                    heap.allocation_debt = heap.allocation_debt.saturating_add(1);
+                });
             }
         }
     };
@@ -624,6 +648,7 @@ pub(crate) fn collect() -> HeapStats {
             stats.collected += sweep_vec(&mut heap.async_tasks, &marker.marked, |_| true);
         }
         heap.total_collected += stats.collected as u64;
+        heap.allocation_debt = 0;
     });
     stats
 }
@@ -643,6 +668,30 @@ pub fn counters() -> HeapCounters {
             total_collected: heap.total_collected,
         }
     })
+}
+
+/// RAII pin for guest values retained by an embedding host on this owner.
+pub struct RootPin(RootId);
+impl RootPin {
+    pub fn new(value: Value) -> Self {
+        Self(add_root(value))
+    }
+}
+impl Drop for RootPin {
+    fn drop(&mut self) {
+        remove_root(self.0);
+    }
+}
+pub(crate) fn allocation_debt() -> usize {
+    HEAP.with(|h| h.borrow().allocation_debt)
+}
+/// Collect only after an interpreter and its host-owned result have been dropped.
+#[cfg(feature = "napi")]
+pub(crate) fn collect_after_interpreter_drop() -> HeapStats {
+    if HEAP.with(|heap| heap.borrow().interps.is_empty()) {
+        crate::builtins::clear_collection_cache();
+    }
+    collect()
 }
 
 #[cfg(test)]

@@ -47,10 +47,34 @@ pub(crate) struct Shape {
 thread_local! {
     /// The canonical empty layout. Every object starts here conceptually;
     /// every rebuild replays from here.
-    static SHAPE_ROOT: Rc<Shape> = Shape::fresh(Vec::new());
+    static SHAPE_ROOT: RefCell<Rc<Shape>> = RefCell::new(Shape::fresh(Vec::new()));
     /// Shape id counter. Resetting per thread is fine: shapes never cross
     /// threads (values have a single owner thread).
     static NEXT_SHAPE_ID: Cell<u32> = const { Cell::new(1) };
+}
+
+#[cfg(feature = "napi")]
+pub(crate) struct ShapeContext {
+    root: Rc<Shape>,
+    next: u32,
+}
+#[cfg(feature = "napi")]
+impl Default for ShapeContext {
+    fn default() -> Self {
+        let root = Shape::fresh(Vec::new());
+        let next = root.id.checked_add(1).expect("shape IDs exhausted");
+        Self { root, next }
+    }
+}
+#[cfg(feature = "napi")]
+impl ShapeContext {
+    pub(crate) fn swap_active(&mut self) {
+        SHAPE_ROOT.with(|root| std::mem::swap(&mut *root.borrow_mut(), &mut self.root));
+        NEXT_SHAPE_ID.with(|next| {
+            let previous = next.replace(self.next);
+            self.next = previous;
+        });
+    }
 }
 
 impl Shape {
@@ -77,7 +101,7 @@ impl Shape {
 
     /// The canonical empty layout.
     pub fn root() -> Rc<Shape> {
-        SHAPE_ROOT.with(Rc::clone)
+        SHAPE_ROOT.with(|root| root.borrow().clone())
     }
 
     /// Slot index of `key` in this layout, if present.
@@ -94,11 +118,10 @@ impl Shape {
             return child.clone();
         }
         let mut keys = self.keys.clone();
-        keys.push(Rc::from(key));
+        let key: Rc<str> = Rc::from(key);
+        keys.push(key.clone());
         let child = Self::fresh(keys);
-        self.transitions
-            .borrow_mut()
-            .insert(Rc::from(key), child.clone());
+        self.transitions.borrow_mut().insert(key, child.clone());
         child
     }
 
