@@ -536,6 +536,10 @@ impl NodeAddonSidecar {
                         reader_wake.fire();
                     }
                 }
+                // Publish disconnection before notifying: the owner must not
+                // observe an empty live channel and lose the EOF wake.
+                drop(response_tx);
+                drop(event_tx);
                 reader_response_wake.fire();
                 reader_wake.fire();
             })
