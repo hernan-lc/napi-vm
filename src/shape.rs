@@ -263,21 +263,50 @@ mod tests {
     use crate::interpreter::Interpreter;
     use crate::value::Value;
 
-    fn eval(src: &str) -> Value {
+    struct PinnedValue {
+        value: Value,
+        _pin: crate::heap::RootPin,
+    }
+    impl std::ops::Deref for PinnedValue {
+        type Target = Value;
+        fn deref(&self) -> &Value {
+            &self.value
+        }
+    }
+    struct PinnedCell {
+        cell: Rc<crate::value::ObjectCell>,
+        _pin: crate::heap::RootPin,
+    }
+    impl std::ops::Deref for PinnedCell {
+        type Target = crate::value::ObjectCell;
+        fn deref(&self) -> &Self::Target {
+            &self.cell
+        }
+    }
+    fn eval(src: &str) -> PinnedValue {
         let mut interp = Interpreter::with_builtins();
-        interp.eval_source(src).expect("test source must run")
+        let value = interp.eval_source(src).expect("test source must run");
+        let pin = crate::heap::RootPin::new(value.clone());
+        drop(interp);
+        // Host-owned results (including earlier cells in the same test)
+        // stay pinned while unreachable builtin cycles are reclaimed.
+        assert_eq!(crate::heap::collect().skipped, None);
+        PinnedValue { value, _pin: pin }
     }
 
-    fn cell_of(value: &Value) -> Rc<crate::value::ObjectCell> {
+    fn cell_of(value: &Value) -> PinnedCell {
         match value {
-            Value::Object { props } => props.clone(),
+            Value::Object { props } => PinnedCell {
+                cell: props.clone(),
+                _pin: crate::heap::RootPin::new(value.clone()),
+            },
             other => panic!("expected object, got {other:?}"),
         }
     }
 
     /// Read `key` twice so the cell builds its layout, then return the id.
     /// Shapes build lazily; comparing unbuilt cells would pass vacuously.
-    fn built_id(cell: &Rc<crate::value::ObjectCell>, key: &str) -> u32 {
+    fn built_id(cell: &crate::value::ObjectCell, key: &str) -> u32 {
         cell.own_index(key);
         cell.own_index(key);
         cell.shape_id().expect("two reads build the layout")
@@ -286,8 +315,8 @@ mod tests {
     #[test]
     fn shared_layout_shared_shape() {
         let pair = eval("[{x: 1, y: 2}, {x: 3, y: 4}]");
-        let Value::Array(items) = &pair else {
-            panic!("expected array, got {pair:?}")
+        let Value::Array(items) = &*pair else {
+            panic!("expected array, got {:?}", pair.value)
         };
         let items = items.borrow();
         assert_eq!(
