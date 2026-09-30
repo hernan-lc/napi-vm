@@ -265,3 +265,28 @@ test('metadata and configured limits preserve pending timer deadlines', async ()
     await assert.rejects(s.pollEventLoop(10), /deadline/);
   } finally { s.dispose(); }
 });
+
+test('a saved host result protects reentry across executions and queued admission', {timeout:5000}, async () => {
+  const s = new AsyncSession();
+  const other = new AsyncSession();
+  let release, observed;
+  const continuation = new Promise(resolve => { release = resolve; });
+  try {
+    await s.setExecutionLimits(10_000_000_000, 2000);
+    await s.exposeFunction('background', async () => {
+      await continuation;
+      try { await s.run('2+2;'); observed = 'accepted'; }
+      catch (error) { observed = error.message; }
+      return 7;
+    }, true);
+    assert.equal(await s.run('var saved=background();42;'), '42');
+    // Admit B before releasing A's callback. Pure guest work precedes await;
+    // neither a new host dispatch nor a synchronous Node wait masks the gap.
+    const b = s.run('for(var i=0;i<100000;i++){};await saved;');
+    release();
+    assert.equal(await b, '7');
+    assert.match(observed, /awaiting Node|host.call dependency/);
+    assert.equal(await other.run('42;'), '42');
+    assert.equal(await s.run('2+2;'), '4');
+  } finally { s.dispose(); other.dispose(); }
+});

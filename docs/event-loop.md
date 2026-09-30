@@ -163,17 +163,27 @@ and token. Empty auto-polls do not start another execution. A real background
 failure still stops the session; an idle session does not acquire an error just
 because its previous execution's deadline would now have expired.
 
-AsyncSession admission counts Node dependencies from dispatch, before guest
-`await`, until callback settlement. Each count belongs to its execution epoch.
-Commands submitted while an active execution depends on Node reject with an
-`awaiting Node (active host-call dependency)` error, including callback commands
-submitted before the guest reaches `await`. Actual blocking Node waits also
-reject reentry. Retirement deactivates the epoch without deleting stored host
-results: completed and unresolved unawaited results remain available to later
-`await`, and delayed callbacks may submit commands after execution completes.
-Settlement/rejection releases its dependency once; cancellation, abandonment,
-and disposal retain the existing result and Node-reference cleanup paths.
-Admission protection is local to the session.
+AsyncSession admission counts unsettled Node calls from dispatch until callback
+settlement. Those dependency leases belong to the session, survive execution
+retirement, and remain visible to later executions that may await a saved
+result. Commands submitted while guest execution is active **or already
+admitted to the owner queue**, and an unsettled Node dependency exists, reject
+with an `awaiting Node (active host-call dependency)` error. Protecting queued
+execution closes the interval before the owner starts it; protecting all
+unsettled calls closes reentry by callbacks from earlier executions. Actual
+blocking Node waits also reject reentry.
+
+Inactivity disables this admission restriction without deleting host results:
+completed and unresolved unawaited results remain available to later `await`,
+and delayed callbacks may submit commands while no guest execution is active
+or admitted. Settled stored results are not Node dependencies and do not lock
+admission. An admitted guest command holds an RAII reservation through its
+execution; completion, failed submission, cancellation, panic, and shutdown
+release it. Settlement/rejection releases its dependency once; cancellation,
+abandonment, and disposal retain the existing result and Node-reference cleanup
+paths. Admission protection is local to the session. The check conservatively
+covers every unsettled Node call during guest work, since later guest code may
+await a result from an earlier execution.
 
 ### Host bridge wait compatibility
 

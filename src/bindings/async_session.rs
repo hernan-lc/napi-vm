@@ -32,6 +32,7 @@ struct CompletionState {
     bridge: Arc<BridgeState>,
     tsfn: AtomicUsize,
     pending: AtomicUsize,
+    guest_admissions: AtomicUsize,
     closed: AtomicBool,
     main_released: AtomicBool,
     wake: Arc<WakeSignal>,
@@ -126,7 +127,18 @@ enum Operation {
         timeout_ms: Option<u32>,
     },
 }
+// Covers the interval from admission through execution completion. Keeping
+// this lease in the queued command closes the pre-start dependency window and
+// releases reservations on send failure, cancellation, panic and shutdown.
+struct GuestAdmission(Arc<CompletionState>);
+impl Drop for GuestAdmission {
+    fn drop(&mut self) {
+        self.0.guest_admissions.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 struct Command {
+    admission: Option<GuestAdmission>,
     deferred: usize,
     operation: Operation,
     cancellation: CancellationToken,
@@ -298,6 +310,7 @@ fn owner(
         bridge.set_owner_execution_active(vm.has_active_execution());
         match rx.try_recv() {
             Ok(Command {
+                admission,
                 deferred,
                 operation,
                 cancellation: token,
@@ -397,6 +410,7 @@ fn owner(
                 vm.retire_completed_execution();
                 bridge.set_owner_execution_active(vm.has_active_execution());
                 bridge.prune_owner_results(&vm);
+                drop(admission);
                 complete(&state, deferred, result);
                 if auto_poll {
                     match vm.poll_event_loop(budget) {
@@ -519,6 +533,7 @@ impl AsyncSession {
             bridge: main_bridge.shared_state(),
             tsfn: AtomicUsize::new(tsfn as usize),
             pending: AtomicUsize::new(0),
+            guest_admissions: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
             main_released: AtomicBool::new(false),
             wake: Arc::new(WakeSignal::default()),
@@ -732,7 +747,10 @@ impl AsyncSession {
     }
     fn submit(&self, env: Env, operation: Operation) -> napi::Result<Unknown<'_>> {
         self.main_bridge.shared_state().prune_abandoned_on_main();
-        if self.main_bridge.owner_waiting_for_node() {
+        if self
+            .main_bridge
+            .owner_waiting_for_node(self.state.guest_admissions.load(Ordering::Acquire) > 0)
+        {
             return Err(napi::Error::from_reason(
                 "async session is awaiting Node (active host-call dependency); reentrant commands must wait for the active execution to complete",
             ));
@@ -755,6 +773,12 @@ impl AsyncSession {
                     "async session command queue is full; await a completion before retrying",
                 )
             })?;
+        let admission = if matches!(&operation, Operation::Run(..)) {
+            self.state.guest_admissions.fetch_add(1, Ordering::AcqRel);
+            Some(GuestAdmission(self.state.clone()))
+        } else {
+            None
+        };
         let raw_env = env.raw();
         if previous == 0
             && let Err(error) = chk(unsafe {
@@ -782,6 +806,7 @@ impl AsyncSession {
             .unwrap_or_else(|e| e.into_inner())
             .insert(deferred as usize, cancellation.clone());
         if let Err(error) = self.sender.try_send(Command {
+            admission,
             deferred: deferred as usize,
             operation,
             cancellation,

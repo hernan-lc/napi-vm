@@ -299,20 +299,21 @@ impl BridgeState {
     }
 }
 
-/// Message sent from the VM worker to the Node main thread. It contains only
-/// owned wire values and integer N-API handles; no `Rc<RefCell<Value>>` crosses
-/// the thread boundary.
-struct ExecutionDependencies {
+/// Session-lifetime Node dependencies; execution retirement only changes activity.
+struct NodeDependencies {
     active: AtomicBool,
     calls: AtomicUsize,
 }
-struct DependencyLease(Arc<ExecutionDependencies>);
+struct DependencyLease(Arc<NodeDependencies>);
 impl Drop for DependencyLease {
     fn drop(&mut self) {
         self.0.calls.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
+/// Message sent from the VM worker to the Node main thread. It contains only
+/// owned wire values and integer N-API handles; no `Rc<RefCell<Value>>` crosses
+/// the thread boundary.
 struct AsyncCallMsg {
     dependency: DependencyLease,
     state: Arc<BridgeState>,
@@ -330,7 +331,7 @@ pub(super) struct AsyncState {
     state: Arc<BridgeState>,
     next_pending: AtomicUsize,
     waiting_for_node: AtomicUsize,
-    execution: Mutex<Arc<ExecutionDependencies>>,
+    dependencies: Arc<NodeDependencies>,
     pending: Mutex<HashMap<usize, PendingResult>>,
     cancellation: Mutex<crate::CancellationToken>,
     deadline: Mutex<Option<std::time::Instant>>,
@@ -443,10 +444,10 @@ impl NapiHostBridge {
             state: self.state.clone(),
             next_pending: AtomicUsize::new(0),
             waiting_for_node: AtomicUsize::new(0),
-            execution: Mutex::new(Arc::new(ExecutionDependencies {
+            dependencies: Arc::new(NodeDependencies {
                 active: AtomicBool::new(false),
                 calls: AtomicUsize::new(0),
-            })),
+            }),
             pending: Mutex::new(HashMap::new()),
             cancellation: Mutex::new(crate::CancellationToken::default()),
             deadline: Mutex::new(None),
@@ -477,25 +478,19 @@ impl NapiHostBridge {
             }
         }
     }
-    pub(super) fn owner_waiting_for_node(&self) -> bool {
+    pub(super) fn owner_waiting_for_node(&self, guest_admitted: bool) -> bool {
         self.get_async_state().is_some_and(|s| {
-            let execution = s.execution.lock().unwrap_or_else(|e| e.into_inner());
+            let execution = &s.dependencies;
             s.waiting_for_node.load(Ordering::Acquire) > 0
-                || (execution.active.load(Ordering::Acquire)
+                || ((guest_admitted || execution.active.load(Ordering::Acquire))
                     && execution.calls.load(Ordering::Acquire) > 0)
         })
     }
     pub(super) fn set_owner_execution_active(&self, active: bool) {
         if let Some(state) = self.get_async_state() {
-            let mut execution = state.execution.lock().unwrap_or_else(|e| e.into_inner());
-            if active && !execution.active.load(Ordering::Acquire) {
-                *execution = Arc::new(ExecutionDependencies {
-                    active: AtomicBool::new(true),
-                    calls: AtomicUsize::new(0),
-                });
-            } else if !active {
-                execution.active.store(false, Ordering::Release);
-            }
+            // Unsettled calls can be awaited by later executions. Retirement
+            // changes activity, not the identity/lifetime of their leases.
+            state.dependencies.active.store(active, Ordering::Release);
         }
     }
     pub(super) fn owner_seed(&self) -> Result<Arc<AsyncState>, VmErr> {
@@ -658,11 +653,7 @@ impl NapiHostBridge {
         }
         let func_ref = state.state.begin_call(id)?;
         let dependency = {
-            let execution = state
-                .execution
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
+            let execution = state.dependencies.clone();
             execution.calls.fetch_add(1, Ordering::AcqRel);
             DependencyLease(execution)
         };
@@ -1352,5 +1343,43 @@ fn reject_deferred_with_message(env: sys::napi_env, deferred: sys::napi_deferred
     let reject_status = unsafe { sys::napi_reject_deferred(env, deferred, js_error) };
     if reject_status != sys::Status::napi_ok {
         // The environment may be closing; there is no safe follow-up action.
+    }
+}
+
+#[cfg(test)]
+mod dependency_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_call_survives_retirement_and_protects_the_next_execution() {
+        // No Node handles are created: directly exercise the same admission
+        // state used by the owner, with explicit execution transition barriers.
+        let bridge = NapiHostBridge::new(ptr::null_mut());
+        let state = Arc::new(AsyncState {
+            state: bridge.shared_state(),
+            next_pending: AtomicUsize::new(0),
+            waiting_for_node: AtomicUsize::new(0),
+            dependencies: Arc::new(NodeDependencies {
+                active: AtomicBool::new(false),
+                calls: AtomicUsize::new(0),
+            }),
+            pending: Mutex::new(HashMap::new()),
+            cancellation: Mutex::new(crate::CancellationToken::default()),
+            deadline: Mutex::new(None),
+            reply_wake: Mutex::new(None),
+        });
+        *bridge.async_state.lock().unwrap() = Some(state.clone());
+        bridge.set_owner_execution_active(true); // A starts.
+        let execution = state.dependencies.clone();
+        execution.calls.fetch_add(1, Ordering::AcqRel);
+        let dispatched = DependencyLease(execution);
+        bridge.set_owner_execution_active(false); // A returns saved, unawaited.
+        assert!(!bridge.owner_waiting_for_node(false)); // Idle reentry stays usable.
+        assert!(bridge.owner_waiting_for_node(true)); // B admitted, not started.
+        bridge.set_owner_execution_active(true); // B starts before callback A.
+        assert!(bridge.owner_waiting_for_node(false)); // B may later await saved.
+        drop(dispatched); // Callback A settles exactly once.
+        assert!(!bridge.owner_waiting_for_node(false));
+        assert!(!bridge.owner_waiting_for_node(true)); // Stored settled results do not lock admission.
     }
 }
