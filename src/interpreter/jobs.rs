@@ -115,6 +115,9 @@ pub struct JobQueue {
     timer_keys: HashMap<(u64, u128), u64>,
     next_timer_id: u64,
     next_sequence: u128,
+    clock: super::scheduler::ClockMode,
+    pub(crate) checkpoint_pending: bool,
+    pub(crate) prefer_timer: bool,
     atomics_waiters: HashMap<(usize, usize), VecDeque<AtomicsWaiter>>,
     next_atomics_waiter_id: u64,
 }
@@ -180,7 +183,8 @@ impl JobQueue {
             .checked_add(1)
             .expect("timer sequence exhausted");
         let delay = normalize_delay(delay);
-        let key = (delay.to_bits(), self.next_sequence);
+        let deadline = (self.clock.now_ms() + delay).min(f64::MAX);
+        let key = (deadline.to_bits(), self.next_sequence);
         self.timers.insert(key, job);
         self.timer_ids.insert(id, key);
         self.timer_keys.insert(key, id);
@@ -255,6 +259,9 @@ impl JobQueue {
 
     /// Remove the smallest deadline, breaking ties by scheduling order.
     pub fn take_timer(&mut self) -> Option<Job> {
+        if !self.has_due_timer() {
+            return None;
+        }
         let (key, job) = self.timers.pop_first()?;
         if let Some(id) = self.timer_keys.remove(&key) {
             self.timer_ids.remove(&id);
@@ -266,6 +273,53 @@ impl JobQueue {
         !self.microtasks.is_empty()
     }
 
+    pub fn set_clock(
+        &mut self,
+        clock: super::scheduler::ClockMode,
+    ) -> Result<(), crate::error::VmErr> {
+        if !self.timers.is_empty() {
+            return Err(crate::error::VmErr::Msg(
+                "cannot change clocks with pending timers".into(),
+            ));
+        }
+        self.clock = clock;
+        Ok(())
+    }
+    pub fn next_deadline(&self) -> Option<f64> {
+        self.timers
+            .first_key_value()
+            .map(|(key, _)| f64::from_bits(key.0))
+    }
+    pub fn has_due_timer(&self) -> bool {
+        self.next_deadline()
+            .is_some_and(|deadline| self.clock.is_legacy() || deadline <= self.clock.now_ms())
+    }
+    pub fn has_external_events(&self) -> bool {
+        !self.external_events.is_empty()
+    }
+    pub fn external_len(&self) -> usize {
+        self.external_events.len()
+    }
+    pub fn is_runnable(&self) -> bool {
+        self.has_microtasks() || self.has_external_events() || self.has_due_timer()
+    }
+    pub fn try_push_external_event(&mut self, job: Job, capacity: usize) -> Result<(), Job> {
+        if self.external_len() >= capacity {
+            Err(job)
+        } else {
+            self.push_external_event(job);
+            Ok(())
+        }
+    }
+    pub(crate) fn timer_wait(&self) -> Option<std::time::Duration> {
+        if !self.clock.is_real_time() {
+            return None;
+        }
+        self.next_deadline().map(|d| {
+            std::time::Duration::try_from_secs_f64(((d - self.clock.now_ms()).max(0.0)) / 1000.0)
+                .unwrap_or(std::time::Duration::MAX)
+        })
+    }
     pub fn is_empty(&self) -> bool {
         self.microtasks.is_empty() && self.external_events.is_empty() && self.timers.is_empty()
     }

@@ -1000,6 +1000,7 @@ fn execute_module_source(
 }
 
 fn execute_source(interp: &mut Interpreter, source: &str) -> Result<Value, VmErr> {
+    interp.ensure_can_evaluate()?;
     interp.set_source(source);
     interp.begin_execution();
     // Refuse to execute a program that did not parse. Recovering from a

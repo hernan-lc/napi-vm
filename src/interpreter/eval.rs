@@ -861,6 +861,7 @@ impl Interpreter {
     }
 
     pub(super) fn eval_stmt(&mut self, s: &Statement) -> Result<Value, VmErr> {
+        self.consume_fuel(1)?;
         match s {
             Statement::Expr(e) => self.eval_expr(e),
             Statement::VarDecl {
@@ -1717,6 +1718,7 @@ impl Interpreter {
     }
 
     pub(crate) fn eval_expr(&mut self, e: &Expr) -> Result<Value, VmErr> {
+        self.consume_fuel(1)?;
         match e {
             Expr::Number(n) => Ok(Value::Number(*n)),
             Expr::String(s) => {

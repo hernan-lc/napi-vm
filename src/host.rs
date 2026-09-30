@@ -98,6 +98,18 @@ pub trait HostBridge {
         Ok(Vec::new())
     }
 
+    /// Bounded ingress contract. Implementations should return at most `limit`
+    /// events and retain excess work at the source, applying producer backpressure.
+    /// The compatibility implementation delegates to the older API; the VM retains
+    /// any oversized legacy batch and reports Backpressure rather than dropping it.
+    fn poll_host_events_bounded(
+        &self,
+        timeout: Duration,
+        _limit: usize,
+    ) -> Result<Vec<HostEvent>, VmErr> {
+        self.poll_host_events(timeout)
+    }
+
     /// Register a wake notifier the bridge fires (from any thread) when
     /// host-originated work arrives, so the VM owner can sleep instead of
     /// polling. Bridges without threaded ingress keep the default no-op.

@@ -101,31 +101,7 @@ impl Interpreter {
             }
             // Microtasks are exhausted and it is still pending; run the next
             // timer before checking whether its own host bridge has work.
-            let timer = self.jobs.borrow_mut().take_timer();
-            if let Some(timer) = timer {
-                match timer {
-                    crate::interpreter::Job::Callback { callback, args } => {
-                        self.call_this(&callback, Value::Undefined, args)?;
-                    }
-                    crate::interpreter::Job::HostCallback { callback } => {
-                        self.run_host_callback(callback)?;
-                    }
-                    crate::interpreter::Job::HostPromiseSettled {
-                        promise,
-                        state,
-                        value,
-                    } => self.settle_host_promise(promise, state, value)?,
-                    crate::interpreter::Job::AtomicsWaitTimeout { key, waiter_id } => {
-                        crate::interpreter::jobs::settle_atomics_wait_timeout(
-                            &self.jobs, key, waiter_id,
-                        );
-                    }
-                    crate::interpreter::Job::Reaction { .. }
-                    | crate::interpreter::Job::PromiseResolveThenable { .. }
-                    | crate::interpreter::Job::HostUncaughtException { .. } => {
-                        unreachable!("only callback jobs are stored in the timer queue")
-                    }
-                }
+            if self.run_await_timer()? {
                 continue;
             }
             let has_pending_host_work = self

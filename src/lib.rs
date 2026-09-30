@@ -37,10 +37,13 @@ pub use error::VmErr;
 pub use format::{PrintOptions, Printer};
 pub use host::{HostBridge, HostCallback, HostCallbackKind, HostEvent, WakeNotifier, WakeSlot};
 pub use interpreter::{
+    CancellationToken, Clock, ClockMode, Environment, EventLoopOptions, Fairness, Interpreter,
+    Module, PreparedProgram, RealTimeClock, TurnBudget, TurnOutcome, VirtualClock, YieldReason,
+};
+pub use interpreter::{
     CommonJsModuleFormat, CommonJsModuleLoader, FileCommonJsLoader, NativeAddonLoader,
     ResolvedCommonJsModule,
 };
-pub use interpreter::{Environment, Interpreter, Module, PreparedProgram};
 #[cfg(not(target_arch = "wasm32"))]
 pub use interpreter::{
     NativeAddonBackendHost, NativeAddonOptions, NativeAddonPolicy, NativeAddonRuntime,
