@@ -74,6 +74,8 @@ impl WakeSlot {
 #[derive(Default)]
 pub struct WakeSignal {
     pending: Mutex<bool>,
+    #[cfg(test)]
+    before_wait: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     ready: std::sync::Condvar,
     wakeups: std::sync::atomic::AtomicU64,
 }
@@ -90,6 +92,10 @@ impl WakeSignal {
     pub fn wait(&self, timeout: Option<Duration>) {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         if !*pending {
+            #[cfg(test)]
+            if let Some(ready) = self.before_wait.lock().unwrap().take() {
+                ready.send(()).unwrap();
+            }
             pending = match timeout {
                 Some(d) => {
                     self.ready
@@ -133,6 +139,10 @@ pub trait HostBridge {
     /// Invoke the host function registered under `id` with `args`, returning
     /// the marshalled result back into the VM.
     fn call_host(&self, id: usize, args: Vec<Value>) -> Result<Value, VmErr>;
+
+    /// Configure interruption of blocking host calls. Existing bridges may
+    /// retain the default when they have no blocking operations.
+    fn set_execution_context(&self, _token: crate::CancellationToken, _timeout: Option<Duration>) {}
 
     /// Poll host-originated events. Implementations must enqueue work here
     /// instead of entering guest code from a host or native thread.
@@ -349,6 +359,22 @@ mod wake_tests {
         signal.wait(None);
         assert_eq!(signal.wakeups(), 2);
     }
+    #[test]
+    fn cancellation_wakes_a_waiter_at_the_condvar_sleep_boundary() {
+        let signal = Arc::new(WakeSignal::default());
+        let token = crate::CancellationToken::default();
+        token.register_wake(&signal);
+        let (ready, observed) = std::sync::mpsc::channel();
+        *signal.before_wait.lock().unwrap() = Some(ready);
+        let waiter = signal.clone();
+        let worker = std::thread::spawn(move || waiter.wait(None));
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The notification is sent with the condition mutex held. fire()
+        // acquires it only once wait() atomically releases it for sleeping.
+        token.cancel();
+        worker.join().unwrap();
+    }
+
     #[test]
     fn racing_producer_preserves_every_event() {
         let signal = Arc::new(WakeSignal::default());

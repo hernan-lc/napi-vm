@@ -505,25 +505,34 @@ impl Interpreter {
             let _ = timeout;
             Duration::ZERO
         };
-        self.check_execution_interrupt()?;
-        let timer_wait = self.jobs.borrow().timer_wait();
-        let mut wait = timer_wait.map_or(timeout, |d| d.min(timeout));
-        if let Some(deadline) = self.execution.deadline.get() {
-            wait = wait.min(Duration::from_secs_f64(
-                ((deadline - self.execution.clock.now_ms()).max(0.0)) / 1000.0,
-            ));
+        let clock = RealTimeClock::default();
+        loop {
+            self.check_execution_interrupt()?;
+            let elapsed = Duration::from_secs_f64(clock.now_ms() / 1000.0);
+            let remaining = timeout.saturating_sub(elapsed);
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+            let timer_wait = self.jobs.borrow().timer_wait();
+            let mut wait = timer_wait.map_or(remaining, |d| d.min(remaining));
+            if let Some(deadline) = self.execution.deadline.get() {
+                wait = wait.min(Duration::from_secs_f64(
+                    ((deadline - self.execution.clock.now_ms()).max(0.0)) / 1000.0,
+                ));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if !wait.is_zero() {
+                self.execution
+                    .cancellation
+                    .borrow()
+                    .register_wake(&self.execution.wake);
+                self.execution.wake.wait(Some(wait));
+            }
+            self.check_execution_interrupt()?;
+            if self.drain_queued_jobs(false)? > 0 {
+                return Ok(true);
+            }
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if !wait.is_zero() {
-            self.execution
-                .cancellation
-                .borrow()
-                .register_wake(&self.execution.wake);
-            self.execution.wake.wait(Some(wait));
-        }
-        self.check_execution_interrupt()?;
-        self.enqueue_host_events(Duration::ZERO)?;
-        Ok(self.drain_queued_jobs(false)? > 0)
     }
 
     fn enqueue_host_events(&mut self, timeout: Duration) -> Result<usize, VmErr> {

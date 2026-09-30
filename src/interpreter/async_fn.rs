@@ -111,6 +111,9 @@ impl Interpreter {
                 self.run_event_loop_once(wait)?;
                 continue;
             }
+            if self.jobs.borrow().next_deadline().is_some() {
+                return Err(VmErr::Msg("pending Promise requires host-driven timer progress; advance the virtual clock or poll from the browser host before awaiting again".into()));
+            }
             let has_pending_host_work = self
                 .host
                 .as_ref()

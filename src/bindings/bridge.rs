@@ -310,6 +310,7 @@ struct AsyncCallMsg {
     reply_tx: mpsc::Sender<Result<WireValue, String>>,
     cancellation: crate::CancellationToken,
     result_alive: Arc<AtomicBool>,
+    reply_signal: Arc<crate::host::WakeSignal>,
 }
 
 /// Shared async state used by the interpreter while it waits for host calls.
@@ -432,7 +433,7 @@ impl NapiHostBridge {
             pending: Mutex::new(HashMap::new()),
             cancellation: Mutex::new(crate::CancellationToken::default()),
             deadline: Mutex::new(None),
-            reply_wake: Mutex::new(None),
+            reply_wake: Mutex::new(Some(Arc::new(crate::host::WakeSignal::default()))),
         });
         *guard = Some(state.clone());
         Ok(state)
@@ -582,28 +583,23 @@ impl NapiHostBridge {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
-            let reply = if let Some(signal) = signal {
-                match receiver.try_recv() {
-                    Err(mpsc::TryRecvError::Empty) => {
-                        signal.wait(
-                            deadline
-                                .map(|d| d.saturating_duration_since(std::time::Instant::now())),
-                        );
-                        continue;
-                    }
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        return Err(VmErr::Msg("async host call channel closed".into()));
-                    }
-                    Ok(reply) => reply,
+            let signal = signal.expect("dispatcher reply signal");
+            state
+                .cancellation
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .register_wake(&signal);
+            let reply = match receiver.try_recv() {
+                Err(mpsc::TryRecvError::Empty) => {
+                    signal.wait(
+                        deadline.map(|d| d.saturating_duration_since(std::time::Instant::now())),
+                    );
+                    continue;
                 }
-            } else {
-                match receiver.recv_timeout(std::time::Duration::from_millis(5)) {
-                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        return Err(VmErr::Msg("async host call channel closed".into()));
-                    }
-                    Ok(reply) => reply,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(VmErr::Msg("async host call channel closed".into()));
                 }
+                Ok(reply) => reply,
             };
             return reply
                 .map(|v| v.into_value())
@@ -633,6 +629,12 @@ impl NapiHostBridge {
             func_ref,
             args,
             reply_tx,
+            reply_signal: state
+                .reply_wake
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .expect("reply signal"),
             result_alive,
             cancellation: state
                 .cancellation
@@ -843,6 +845,7 @@ struct MainCallLease {
     state: Arc<BridgeState>,
     id: usize,
     env_available: bool,
+    reply_signal: Arc<crate::host::WakeSignal>,
 }
 
 impl Drop for MainCallLease {
@@ -853,6 +856,7 @@ impl Drop for MainCallLease {
             self.state.finish_call_on_teardown(self.id);
         }
         self.state.wake.fire();
+        self.reply_signal.fire();
     }
 }
 
@@ -873,6 +877,7 @@ extern "C" fn tsfn_callback(
         state: msg.state.clone(),
         id: msg.func_id,
         env_available: !env.is_null(),
+        reply_signal: msg.reply_signal.clone(),
     };
     if env.is_null() {
         let _ = msg
@@ -999,6 +1004,7 @@ extern "C" fn tsfn_callback(
         state: msg.state.clone(),
         promise_id,
         result_alive: msg.result_alive,
+        reply_signal: msg.reply_signal,
     });
     msg.state
         .promises
@@ -1040,6 +1046,7 @@ extern "C" fn tsfn_callback(
 }
 
 struct Settlement {
+    reply_signal: Arc<crate::host::WakeSignal>,
     result_alive: Arc<AtomicBool>,
     state: Arc<BridgeState>,
     promise_id: usize,
@@ -1058,6 +1065,7 @@ impl Settlement {
             let _ = sender.send(value);
             self.state.release_promise_on_main(self.promise_id);
             self.wake.fire();
+            self.reply_signal.fire();
         }
     }
 

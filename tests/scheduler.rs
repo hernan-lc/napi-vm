@@ -493,3 +493,40 @@ fn future_timer_wait_is_capped_by_execution_deadline() {
     );
     assert!(vm.jobs.borrow().next_deadline().is_some());
 }
+
+#[test]
+fn cancellation_between_readiness_check_and_wait_is_latched() {
+    struct BarrierBridge {
+        ready: std::sync::mpsc::Sender<()>,
+        release: RefCell<std::sync::mpsc::Receiver<()>>,
+    }
+    impl HostBridge for BarrierBridge {
+        fn call_host(&self, _: usize, _: Vec<Value>) -> Result<Value, VmErr> {
+            unreachable!()
+        }
+        fn poll_host_events(&self, _: Duration) -> Result<Vec<HostEvent>, VmErr> {
+            self.ready.send(()).unwrap();
+            self.release.borrow().recv().unwrap();
+            Ok(vec![])
+        }
+    }
+    let token = CancellationToken::default();
+    let cancelled = token.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut vm = Interpreter::with_builtins();
+        vm.set_cancellation_token(token);
+        vm.set_host_bridge(Rc::new(BarrierBridge {
+            ready: ready_tx,
+            release: RefCell::new(release_rx),
+        }));
+        vm.run_event_loop_once(Duration::from_secs(60))
+            .unwrap_err()
+            .to_string()
+    });
+    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    cancelled.cancel();
+    release_tx.send(()).unwrap();
+    assert!(worker.join().unwrap().contains("cancelled"));
+}

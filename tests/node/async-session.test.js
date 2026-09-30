@@ -159,3 +159,31 @@ test('cancel and dispose wake a future-timer await after a host barrier', async 
     s.dispose();
   }
 });
+
+test('abandoned results are retired while closure-held results survive', async () => {
+  const s = new AsyncSession();
+  try {
+    await s.exposeFunction('background', async () => 7, true);
+    for (let i=0; i<1050; i++) assert.equal(await s.run('background();42;'), '42');
+    await s.run('var read;{let saved=background();read=()=>saved;}');
+    assert.equal(await s.run('await read();'), '7');
+  } finally { s.dispose(); }
+});
+test('virtual top-level await never advances time and supports host-driven recovery', async () => {
+  const s = new AsyncSession({clock:'virtual', autoPoll:false});
+  try {
+    await s.evaluate('var saved=new Promise(r=>setTimeout(()=>r(42),50));');
+    await assert.rejects(s.run('await saved;'), /host-driven timer progress/);
+    assert.equal((await s.pollEventLoop(10)).nextDeadline, 50);
+    await s.advanceClock(50);
+    await s.pollEventLoop(10);
+    assert.equal(await s.run('await saved;'), '42');
+  } finally { s.dispose(); }
+});
+test('a short execution deadline caps a far-future timer await', {timeout:2000}, async () => {
+  const s = new AsyncSession({clock:'real-time'});
+  try {
+    await s.setExecutionLimits(1000000000, 5);
+    await assert.rejects(s.run('await new Promise(r=>setTimeout(()=>r(42),60000));'), /deadline/);
+  } finally { s.dispose(); }
+});

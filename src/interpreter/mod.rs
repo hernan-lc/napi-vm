@@ -1547,10 +1547,21 @@ impl Interpreter {
         Ok(())
     }
     pub fn set_cancellation_token(&mut self, token: CancellationToken) {
+        if let Some(host) = &self.host {
+            let remaining = self.execution.deadline.get().map(|d| {
+                std::time::Duration::from_secs_f64(
+                    (d - self.execution.clock.now_ms()).max(0.0) / 1000.0,
+                )
+            });
+            host.set_execution_context(token.clone(), remaining);
+        }
         token.register_wake(&self.execution.wake);
         *self.execution.cancellation.borrow_mut() = token;
     }
     pub fn set_execution_timeout(&mut self, timeout: Option<std::time::Duration>) {
+        if let Some(host) = &self.host {
+            host.set_execution_context(self.execution.cancellation.borrow().clone(), timeout);
+        }
         self.execution
             .deadline
             .set(timeout.map(|d| self.execution.clock.now_ms() + d.as_secs_f64() * 1000.0));

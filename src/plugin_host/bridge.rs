@@ -115,6 +115,11 @@ impl HostBridge for CompositeHostBridge {
         }
     }
 
+    fn set_execution_context(&self, token: crate::CancellationToken, timeout: Option<Duration>) {
+        self.plugin.set_execution_context(token.clone(), timeout);
+        self.native.set_execution_context(token, timeout);
+    }
+
     fn supports_blocking_event_wait(&self) -> bool {
         self.native.supports_blocking_event_wait()
     }
