@@ -2384,9 +2384,23 @@ impl Value {
 
     /// Read through a live module binding. A value that is not one is
     /// returned unchanged, so this is safe to apply anywhere.
+    #[inline]
     pub fn deref_binding(&self) -> Value {
         match self {
-            Value::Binding(cell) => cell.borrow().clone(),
+            Value::Binding(cell) => cell.borrow().clone_for_execution(),
+            other => other.clone_for_execution(),
+        }
+    }
+
+    /// Copy common register payloads without entering the full enum clone.
+    /// Heap values retain the derived Clone implementation and its identity.
+    #[inline(always)]
+    pub(crate) fn clone_for_execution(&self) -> Self {
+        match self {
+            Self::Undefined => Self::Undefined,
+            Self::Null => Self::Null,
+            Self::Bool(value) => Self::Bool(*value),
+            Self::Number(value) => Self::Number(*value),
             other => other.clone(),
         }
     }
@@ -2831,22 +2845,11 @@ impl Drop for Value {
         ) {
             return;
         }
-        match self {
-            Value::Array(_)
-            | Value::Object { .. }
-            | Value::Function(_)
-            | Value::HostFunction { .. }
-            | Value::Class(_)
-            | Value::Proxy(_)
-            | Value::Promise(_)
-            | Value::Generator { .. }
-            | Value::Binding(_) => self.drop_children(),
-            #[cfg(stackful_coroutines)]
-            Value::AsyncTask(_) => self.drop_children(),
-            // The remaining variants own no nested Values. Their ordinary
-            // field drops suffice (notably builtin NativeFunction payloads).
-            _ => {}
+        if matches!(self, Value::NativeFunction { .. }) {
+            // Builtin payloads contain only a name and a function pointer.
+            return;
         }
+        self.drop_children();
     }
 }
 
