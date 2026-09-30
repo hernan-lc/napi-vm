@@ -1261,6 +1261,7 @@ mod owner_migration_tests {
     #[test]
     fn owner_migration_thread_handoffs_and_drop() {
         let outer_shape = shape_identity();
+        let outer_shapes_created = crate::shape::Shape::created_count();
         let outer_heap = crate::heap::counters();
         let state = VM::new_state();
         let (expected, pinned) = state.with_runtime(|runtime| {
@@ -1273,11 +1274,13 @@ mod owner_migration_tests {
             (arena_identity(runtime), pinned)
         });
         assert_eq!(shape_identity(), outer_shape);
+        assert_eq!(crate::shape::Shape::created_count(), outer_shapes_created);
         assert_eq!(crate::heap::counters(), outer_heap);
         for _ in 0..8 {
             let transferred = state.clone();
             std::thread::spawn(move || {
                 let outer = shape_identity();
+                let outer_count = crate::shape::Shape::created_count();
                 transferred.with_runtime(|runtime| {
                     assert_eq!(arena_identity(runtime), expected);
                     assert_eq!(runtime.interp.collect_cycles().skipped, None);
@@ -1287,6 +1290,7 @@ mod owner_migration_tests {
                     ));
                 });
                 assert_eq!(shape_identity(), outer);
+                assert_eq!(crate::shape::Shape::created_count(), outer_count);
             })
             .join()
             .unwrap();
@@ -1303,14 +1307,17 @@ mod owner_migration_tests {
         // No bridge exists: destruction here exercises only Rust state.
         std::thread::spawn(move || drop(state)).join().unwrap();
         assert_eq!(shape_identity(), outer_shape);
+        assert_eq!(crate::shape::Shape::created_count(), outer_shapes_created);
         assert_eq!(crate::heap::counters(), outer_heap);
     }
     #[test]
     fn owner_migration_panic_nested_contexts_restore_tls() {
         let mut ambient = crate::runtime::OwnerContext::default();
         let _ambient = ambient.enter();
+        let ambient_shapes_created = crate::shape::Shape::created_count();
         let first = VM::new_state();
         let second = VM::new_state();
+        assert_eq!(crate::shape::Shape::created_count(), ambient_shapes_created);
         let first_identity = first.with_runtime(arena_identity);
         let second_identity = second.with_runtime(arena_identity);
         assert_ne!(first_identity.0, second_identity.0);
@@ -1329,6 +1336,7 @@ mod owner_migration_tests {
         }));
         assert!(panic.is_err());
         assert_eq!(shape_identity(), ambient_shape);
+        assert_eq!(crate::shape::Shape::created_count(), ambient_shapes_created);
         assert_eq!(crate::heap::counters(), ambient_heap);
         assert_eq!(first.with_runtime(arena_identity), first_identity);
         assert_eq!(second.with_runtime(arena_identity), second_identity);
