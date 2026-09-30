@@ -481,8 +481,8 @@ impl Environment {
             }
             let value = f(binding.value.deref_binding());
             match &binding.value {
-                Value::Binding(cell) => *cell.borrow_mut() = value.clone(),
-                _ => binding.value = value.clone(),
+                Value::Binding(cell) => *cell.borrow_mut() = value.clone_for_execution(),
+                _ => binding.value = value.clone_for_execution(),
             }
             return ModifyOutcome::Updated(value);
         }

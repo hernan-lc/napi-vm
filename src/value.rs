@@ -2845,8 +2845,8 @@ impl Drop for Value {
         ) {
             return;
         }
-        if matches!(self, Value::NativeFunction { .. }) {
-            // Builtin payloads contain only a name and a function pointer.
+        if matches!(self, Value::String(_) | Value::NativeFunction { .. }) {
+            // Strings and builtin payloads contain no nested guest Values.
             return;
         }
         self.drop_children();
