@@ -47,7 +47,7 @@ Run against the final implementation on Linux x86_64, Rust 1.97.1, Node 26.10.0,
 
 Builds, addon replacement, tests and final benchmark timing are serialized. Earlier exploratory Bun processes also collided with addon replacement and are excluded from final results. The independently reproduced reviewed-head full-suite stack overflow was investigated under GDB, which showed recursive `ArrayCell` teardown. The final scoped repository suite passes. Unscoped `bun test` includes vendored input-device tests and fails because Bun cannot implement their Node-only skip call; it is not the repository test command after this change.
 
-GitHub Actions was disabled (`GET /repos/nglmercer/napi-vm/actions/permissions` returned `enabled: false`). It was enabled before the final push so the existing pull-request workflow can run. Check [the PR's current checks](https://github.com/nglmercer/napi-vm/pull/7/checks) for the final documentation descendant of the implementation revision; local checks do not establish remote CI success.
+GitHub Actions was disabled (`GET /repos/nglmercer/napi-vm/actions/permissions` returned `enabled: false`). It was enabled before the final push so the pull-request workflow can run. The CI workflow also accepts manual dispatch and pushes to the PR branch, allowing an explicit final-head run when a synchronize event does not schedule one. Check [the PR's current checks](https://github.com/nglmercer/napi-vm/pull/7/checks) for the final documentation descendant of the implementation revision; local checks do not establish remote CI success.
 
 ## Remaining limitations / checks not run locally
 
