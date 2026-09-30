@@ -96,4 +96,28 @@ describe("browser build", { skip: built ? false : "playground/pkg is not built" 
       "abc",
     );
   });
+  test("virtual clock polling resumes checkpoints without blocking", () => {
+    vm.set_clock("virtual");
+    run("var scheduled=[];setTimeout(()=>{scheduled.push('timer');queueMicrotask(()=>scheduled.push('micro'));},10);");
+    assert.equal(vm.poll_event_loop(10).executedJobs,0);
+    assert.equal(vm.poll_event_loop(0).nextDeadline,10);
+    vm.advance_clock(10);
+    assert.equal(vm.poll_event_loop(1).checkpointPending,true);
+    assert.equal(vm.run("scheduled.push('intruder')").ok,false);
+    assert.equal(vm.poll_event_loop(1).executedJobs,1);
+    assert.equal(run("scheduled.join(',')"),"timer,micro");
+    assert.throws(()=>vm.advance_clock(-1));
+    vm.set_clock("legacy");
+  });
+  test("real-time clock polling leaves future timers pending",async()=>{
+    vm.set_clock("real-time");
+    run("var fired=false;setTimeout(()=>{fired=true},20)");
+    const turn=vm.poll_event_loop(10);
+    assert.equal(turn.executedJobs,0);assert.equal(turn.runnable,false);assert.ok(turn.nextDeadline>=20);
+    await new Promise(r=>setTimeout(r,25));
+    assert.equal(vm.poll_event_loop(1).executedJobs,1);
+    assert.equal(run("fired"),"true");
+    vm.set_clock("legacy");
+  });
+
 });
