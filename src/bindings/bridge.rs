@@ -852,6 +852,7 @@ impl Drop for MainCallLease {
     fn drop(&mut self) {
         if self.env_available {
             self.state.finish_call_on_main(self.id);
+            self.state.prune_abandoned_on_main();
         } else {
             self.state.finish_call_on_teardown(self.id);
         }

@@ -671,7 +671,9 @@ impl RustPluginHost {
 
         for (name, source) in &prepared.sources {
             interpreter.define_module(name, source.clone());
+            #[cfg(not(target_arch = "wasm32"))]
             let prefix = format!("./plugin:{}/", prepared.manifest.name);
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(relative) = name.strip_prefix(&prefix) {
                 let path = prepared.root.join(relative);
                 if let Ok(url) = url::Url::from_file_path(path) {

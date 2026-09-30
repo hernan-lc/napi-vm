@@ -29,6 +29,7 @@ pub struct AsyncSessionOptions {
 }
 
 struct CompletionState {
+    bridge: Arc<BridgeState>,
     tsfn: AtomicUsize,
     pending: AtomicUsize,
     closed: AtomicBool,
@@ -181,6 +182,7 @@ extern "C" fn complete_on_node(
         .unwrap_or_else(|e| e.into_inner())
         .remove(&deferred);
     if !env.is_null() {
+        state.bridge.prune_abandoned_on_main();
         match result.and_then(|v| to_napi(env, &v.into_value()).map_err(|e| e.to_string())) {
             Ok(value) => {
                 let _status = unsafe {
@@ -492,6 +494,7 @@ impl AsyncSession {
             return Err(napi::Error::from_reason(error.to_string()));
         }
         let state = Arc::new(CompletionState {
+            bridge: main_bridge.shared_state(),
             tsfn: AtomicUsize::new(tsfn as usize),
             pending: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
