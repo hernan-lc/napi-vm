@@ -281,6 +281,7 @@ fn owner(
     let budget = TurnBudget::jobs(options.max_jobs_per_turn.unwrap_or(1024) as usize);
     let auto_poll = options.auto_poll.unwrap_or(true);
     let mut configured_timeout = None;
+    let mut configured_fuel = None;
     let mut stopped_error = None;
     while !state.closed.load(Ordering::Acquire) {
         // An unfinished checkpoint precedes command admission, including new
@@ -294,18 +295,13 @@ fn owner(
                 }
             }
         }
+        bridge.set_owner_execution_active(vm.has_active_execution());
         match rx.try_recv() {
             Ok(Command {
                 deferred,
                 operation,
                 cancellation: token,
             }) => {
-                *state
-                    .active_cancel
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = token.clone();
-                vm.set_cancellation_token(token.clone());
-                bridge.set_owner_cancellation(token.clone());
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                     || -> Result<WireValue, String> {
                         if token.is_cancelled() {
@@ -317,10 +313,22 @@ fn owner(
                         match operation {
                             Operation::Run(source, drain) => {
                                 vm.ensure_can_evaluate().map_err(|e| e.to_string())?;
-                                let timeout = configured_timeout
-                                    .map(|ms: u32| std::time::Duration::from_millis(ms as u64));
-                                vm.set_execution_timeout(timeout);
-                                bridge.set_owner_timeout(timeout);
+                                if !vm.has_active_execution() {
+                                    *state
+                                        .active_cancel
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner()) = token.clone();
+                                    vm.set_cancellation_token(token.clone());
+                                    bridge.set_owner_cancellation(token.clone());
+                                    if let Some(fuel) = configured_fuel {
+                                        vm.set_fuel_budget(fuel);
+                                    }
+                                    let timeout = configured_timeout
+                                        .map(|ms: u32| std::time::Duration::from_millis(ms as u64));
+                                    vm.set_execution_timeout(timeout);
+                                    bridge.set_owner_timeout(timeout);
+                                }
+                                bridge.set_owner_execution_active(true);
                                 let value = if drain {
                                     super::vm::execute_source(&mut vm, &source)
                                 } else {
@@ -370,7 +378,7 @@ fn owner(
                                 .map(turn_wire)
                                 .map_err(|e| e.to_string()),
                             Operation::Limits { fuel, timeout_ms } => {
-                                vm.set_fuel_budget(fuel);
+                                configured_fuel = Some(fuel);
                                 configured_timeout = timeout_ms;
                                 Ok(WireValue::Undefined)
                             }
@@ -386,6 +394,8 @@ fn owner(
                 } else {
                     result
                 };
+                vm.retire_completed_execution();
+                bridge.set_owner_execution_active(vm.has_active_execution());
                 bridge.prune_owner_results(&vm);
                 complete(&state, deferred, result);
                 if auto_poll {
@@ -413,6 +423,18 @@ fn owner(
                     vm.jobs.borrow().timer_wait()
                 } else {
                     None
+                };
+                bridge.set_owner_execution_active(vm.has_active_execution());
+                let timeout = match (
+                    timeout,
+                    if auto_poll && stopped_error.is_none() {
+                        vm.execution_wait_remaining()
+                    } else {
+                        None
+                    },
+                ) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
                 };
                 state.wake.wait(timeout);
             }
@@ -712,7 +734,7 @@ impl AsyncSession {
         self.main_bridge.shared_state().prune_abandoned_on_main();
         if self.main_bridge.owner_waiting_for_node() {
             return Err(napi::Error::from_reason(
-                "async session is awaiting Node; reentrant commands must wait for the active execution to complete",
+                "async session is awaiting Node (active host-call dependency); reentrant commands must wait for the active execution to complete",
             ));
         }
         if self.state.closed.load(Ordering::Acquire) {

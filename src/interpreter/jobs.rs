@@ -343,6 +343,10 @@ impl JobQueue {
         self.host_overflow.push_back(job);
         self.observe_depth();
     }
+    pub(crate) fn has_outstanding_work(&self) -> bool {
+        !self.is_empty() || !self.atomics_waiters.is_empty()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.microtasks.is_empty()
             && self.external_events.is_empty()

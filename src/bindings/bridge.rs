@@ -302,7 +302,19 @@ impl BridgeState {
 /// Message sent from the VM worker to the Node main thread. It contains only
 /// owned wire values and integer N-API handles; no `Rc<RefCell<Value>>` crosses
 /// the thread boundary.
+struct ExecutionDependencies {
+    active: AtomicBool,
+    calls: AtomicUsize,
+}
+struct DependencyLease(Arc<ExecutionDependencies>);
+impl Drop for DependencyLease {
+    fn drop(&mut self) {
+        self.0.calls.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 struct AsyncCallMsg {
+    dependency: DependencyLease,
     state: Arc<BridgeState>,
     func_id: usize,
     func_ref: usize,
@@ -318,6 +330,7 @@ pub(super) struct AsyncState {
     state: Arc<BridgeState>,
     next_pending: AtomicUsize,
     waiting_for_node: AtomicUsize,
+    execution: Mutex<Arc<ExecutionDependencies>>,
     pending: Mutex<HashMap<usize, PendingResult>>,
     cancellation: Mutex<crate::CancellationToken>,
     deadline: Mutex<Option<std::time::Instant>>,
@@ -430,6 +443,10 @@ impl NapiHostBridge {
             state: self.state.clone(),
             next_pending: AtomicUsize::new(0),
             waiting_for_node: AtomicUsize::new(0),
+            execution: Mutex::new(Arc::new(ExecutionDependencies {
+                active: AtomicBool::new(false),
+                calls: AtomicUsize::new(0),
+            })),
             pending: Mutex::new(HashMap::new()),
             cancellation: Mutex::new(crate::CancellationToken::default()),
             deadline: Mutex::new(None),
@@ -461,8 +478,25 @@ impl NapiHostBridge {
         }
     }
     pub(super) fn owner_waiting_for_node(&self) -> bool {
-        self.get_async_state()
-            .is_some_and(|s| s.waiting_for_node.load(Ordering::Acquire) > 0)
+        self.get_async_state().is_some_and(|s| {
+            let execution = s.execution.lock().unwrap_or_else(|e| e.into_inner());
+            s.waiting_for_node.load(Ordering::Acquire) > 0
+                || (execution.active.load(Ordering::Acquire)
+                    && execution.calls.load(Ordering::Acquire) > 0)
+        })
+    }
+    pub(super) fn set_owner_execution_active(&self, active: bool) {
+        if let Some(state) = self.get_async_state() {
+            let mut execution = state.execution.lock().unwrap_or_else(|e| e.into_inner());
+            if active && !execution.active.load(Ordering::Acquire) {
+                *execution = Arc::new(ExecutionDependencies {
+                    active: AtomicBool::new(true),
+                    calls: AtomicUsize::new(0),
+                });
+            } else if !active {
+                execution.active.store(false, Ordering::Release);
+            }
+        }
     }
     pub(super) fn owner_seed(&self) -> Result<Arc<AsyncState>, VmErr> {
         self.prepare_for_async()?;
@@ -623,7 +657,17 @@ impl NapiHostBridge {
             return Err(VmErr::Msg("async bridge is shutting down".into()));
         }
         let func_ref = state.state.begin_call(id)?;
+        let dependency = {
+            let execution = state
+                .execution
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            execution.calls.fetch_add(1, Ordering::AcqRel);
+            DependencyLease(execution)
+        };
         let msg = Box::new(AsyncCallMsg {
+            dependency,
             state: state.state.clone(),
             func_id: id,
             func_ref,
@@ -1000,6 +1044,7 @@ extern "C" fn tsfn_callback(
     }
     let promise_id = msg.state.next_promise.fetch_add(1, Ordering::Relaxed);
     let settlement = Arc::new(Settlement {
+        dependency: Mutex::new(Some(msg.dependency)),
         reply_tx: Mutex::new(Some(msg.reply_tx)),
         wake: msg.state.wake.clone(),
         state: msg.state.clone(),
@@ -1047,6 +1092,7 @@ extern "C" fn tsfn_callback(
 }
 
 struct Settlement {
+    dependency: Mutex<Option<DependencyLease>>,
     reply_signal: Arc<crate::host::WakeSignal>,
     result_alive: Arc<AtomicBool>,
     state: Arc<BridgeState>,
@@ -1063,6 +1109,10 @@ impl Settlement {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         if let Some(sender) = sender {
+            self.dependency
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
             let _ = sender.send(value);
             self.state.release_promise_on_main(self.promise_id);
             self.wake.fire();

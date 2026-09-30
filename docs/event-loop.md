@@ -149,3 +149,28 @@ on the browser thread.
 
 See [scheduler-benchmarks.md](scheduler-benchmarks.md) for reproduction, measured
 results, tested configurations, and checks that were not run.
+
+### Execution and host-call lifetimes
+
+An execution owns its cancellation token, absolute deadline, and remaining hard
+fuel, loop, and job budgets. Metadata commands do not replace that context.
+`setExecutionLimits` configures the next genuinely new execution; changing it
+while timers or continuations remain does not refill or extend their limits.
+Soft turns, nested drains, pending checkpoints, timer queues, Atomics waiters,
+and rooted suspended async bodies retain the original context. Once guest code
+has returned and all of that work is finished, the owner retires the deadline
+and token. Empty auto-polls do not start another execution. A real background
+failure still stops the session; an idle session does not acquire an error just
+because its previous execution's deadline would now have expired.
+
+AsyncSession admission counts Node dependencies from dispatch, before guest
+`await`, until callback settlement. Each count belongs to its execution epoch.
+Commands submitted while an active execution depends on Node reject with an
+`awaiting Node (active host-call dependency)` error, including callback commands
+submitted before the guest reaches `await`. Actual blocking Node waits also
+reject reentry. Retirement deactivates the epoch without deleting stored host
+results: completed and unresolved unawaited results remain available to later
+`await`, and delayed callbacks may submit commands after execution completes.
+Settlement/rejection releases its dependency once; cancellation, abandonment,
+and disposal retain the existing result and Node-reference cleanup paths.
+Admission protection is local to the session.

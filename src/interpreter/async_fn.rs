@@ -27,6 +27,8 @@ use crate::value::{PromiseState, Value};
 /// The suspended body of one in-flight async call.
 #[cfg(stackful_coroutines)]
 pub struct AsyncTask {
+    execution: Rc<super::scheduler::ExecutionState>,
+    counted: bool,
     coroutine: Option<crate::value::GenCoroutine>,
     /// The promise the call returned, settled when the body finishes.
     result: Rc<RefCell<PromiseInner>>,
@@ -204,7 +206,13 @@ pub(crate) fn spawn_async(
         }
     });
 
+    interp
+        .execution
+        .continuations
+        .set(interp.execution.continuations.get() + 1);
     let task = crate::heap::tracked(Rc::new(RefCell::new(AsyncTask {
+        execution: interp.execution.clone(),
+        counted: true,
         coroutine: Some(coroutine),
         result: result.clone(),
     })));
@@ -225,6 +233,13 @@ fn step(
         return Ok(());
     };
     let outcome = coroutine.resume(resume);
+    if matches!(&outcome, corosensei::CoroutineResult::Return(_)) {
+        let mut task = task.borrow_mut();
+        task.execution
+            .continuations
+            .set(task.execution.continuations.get() - 1);
+        task.counted = false;
+    }
     let result = task.borrow().result.clone();
     match outcome {
         // Suspended at an `await`: continue when the awaited value settles.
@@ -282,6 +297,11 @@ impl Drop for AsyncTask {
     /// [`crate::value::force_abandon`]). Dropping the coroutine directly
     /// would force-unwind across stacks, which faults on Windows.
     fn drop(&mut self) {
+        if self.counted {
+            self.execution
+                .continuations
+                .set(self.execution.continuations.get() - 1);
+        }
         if let Some(coroutine) = self.coroutine.take()
             && !coroutine.done()
         {

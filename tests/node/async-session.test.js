@@ -187,3 +187,81 @@ test('a short execution deadline caps a far-future timer await', {timeout:2000},
     await assert.rejects(s.run('await new Promise(r=>setTimeout(()=>r(42),60000));'), /deadline/);
   } finally { s.dispose(); }
 });
+
+test('dispatched host dependency rejects reentry before guest await', {timeout:3000}, async () => {
+  for (const delayed of [false, true]) {
+    const s = new AsyncSession(); const other = new AsyncSession();
+    let started, release, attempted, observed;
+    const atCallback = new Promise(r => { started = r; });
+    const continuation = new Promise(r => { release = r; });
+    const atAttempt = new Promise(r => { attempted = r; });
+    try {
+      await s.setExecutionLimits(10000000000);
+      await s.exposeFunction('background', async () => {
+        started();
+        if (delayed) await continuation;
+        try { await s.run('2+2;'); observed = 'accepted'; }
+        catch (error) { observed = error.message; }
+        finally { attempted(); }
+        return 1;
+      }, true);
+      // The guest stays in pure execution until cancelled, so no await_host
+      // guard or synchronous host barrier can mask the dispatch window.
+      const work = s.run('var saved=background();while(true){};await saved;');
+      const rejectedWork = assert.rejects(work, /cancelled/);
+      await atCallback;
+      assert.equal(await other.run('42;'), '42');
+      release();
+      // A queued reentry must not hang the test: cancellation releases the old
+      // implementation's accepted command; its error then fails this assertion.
+      await new Promise(r => setImmediate(r));
+      s.cancel();
+      await atAttempt; await rejectedWork;
+      assert.match(observed, /awaiting Node|host.call dependency/);
+    } finally { s.dispose(); other.dispose(); }
+  }
+});
+
+test('completed deadlines do not poison idle metadata or new executions', async () => {
+  const s = new AsyncSession();
+  try {
+    await s.setExecutionLimits(1000000000, 50);
+    await s.run('var answer=42;');
+    await new Promise(r => setTimeout(r,100));
+    assert.equal(await s.getGlobal('answer'),'42');
+    assert.equal(await s.run('2+2;'),'4');
+  } finally { s.dispose(); }
+});
+
+test('delayed unawaited callback can reenter after its execution completes', async () => {
+  const s = new AsyncSession();
+  let release, completed;
+  const callbackComplete = new Promise(resolve => { completed = resolve; });
+  const continuation = new Promise(resolve => { release = resolve; });
+  try {
+    await s.exposeFunction('background', async () => {
+      await continuation;
+      assert.equal(await s.run('2+2;'), '4');
+      completed();
+      return 7;
+    }, true);
+    assert.equal(await s.run('var saved=background();42;'), '42');
+    assert.equal(await s.run('3+3;'), '6');
+    release();
+    // Wait for callback reentry before asking the owner to await its result.
+    await callbackComplete;
+    assert.equal(await s.run('await saved;'), '7');
+  } finally { s.dispose(); }
+});
+
+test('metadata and configured limits preserve pending timer deadlines', async () => {
+  const s = new AsyncSession({clock:'real-time', autoPoll:false});
+  try {
+    await s.setExecutionLimits(1_000_000_000, 50);
+    await s.evaluate('var answer=42;setTimeout(()=>answer++,1000000);');
+    await s.setExecutionLimits(1_000_000_000, 5000);
+    assert.equal(await s.getGlobal('answer'), '42');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await assert.rejects(s.pollEventLoop(10), /deadline/);
+  } finally { s.dispose(); }
+});

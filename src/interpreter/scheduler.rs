@@ -185,9 +185,10 @@ pub(super) struct ExecutionState {
     pub jobs: Cell<usize>,
     pub cancellation: std::cell::RefCell<CancellationToken>,
     pub deadline: Cell<Option<f64>>,
-    pub clock: RealTimeClock,
+    pub clock: Rc<dyn Clock>,
     pub drain_depth: Cell<usize>,
     pub active: Cell<bool>,
+    pub continuations: Cell<usize>,
 }
 impl ExecutionState {
     pub fn new() -> Self {
@@ -198,9 +199,10 @@ impl ExecutionState {
             jobs: Cell::new(super::jobs::MAX_JOBS_PER_DRAIN),
             cancellation: std::cell::RefCell::new(CancellationToken::default()),
             deadline: Cell::new(None),
-            clock: RealTimeClock::default(),
+            clock: Rc::new(RealTimeClock::default()),
             drain_depth: Cell::new(0),
-            active: Cell::new(true),
+            active: Cell::new(false),
+            continuations: Cell::new(0),
         }
     }
     pub fn check(&self) -> Result<(), VmErr> {
@@ -217,5 +219,69 @@ impl ExecutionState {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use crate::Interpreter;
+
+    fn controlled() -> (Interpreter, VirtualClock) {
+        let mut vm = Interpreter::with_builtins();
+        let clock = VirtualClock::default();
+        Rc::get_mut(&mut vm.execution)
+            .expect("fresh execution")
+            .clock = Rc::new(clock.clone());
+        (vm, clock)
+    }
+
+    #[test]
+    fn completed_execution_retires_deadline_without_idle_reactivation() {
+        let (mut vm, clock) = controlled();
+        vm.set_execution_timeout(Some(Duration::from_millis(50)));
+        vm.eval_source("var answer = 42;").unwrap();
+        assert!(!vm.has_active_execution());
+        assert!(vm.execution.deadline.get().is_none());
+        clock.advance(100.).unwrap();
+        vm.poll_event_loop(TurnBudget::jobs(10)).unwrap();
+        assert!(!vm.has_active_execution());
+        vm.set_execution_timeout(Some(Duration::from_millis(50)));
+        assert!(matches!(
+            vm.eval_source("2 + 2;").unwrap(),
+            crate::Value::Number(4.0)
+        ));
+    }
+
+    #[test]
+    fn timers_checkpoints_and_suspended_bodies_keep_the_original_deadline() {
+        for source in [
+            "setTimeout(() => 1, 1000);",
+            "queueMicrotask(() => 1);",
+            "var gate=new Promise(() => {}); async function f(){ await gate; } var suspended=f();",
+        ] {
+            let (mut vm, clock) = controlled();
+            vm.jobs
+                .borrow_mut()
+                .set_clock(ClockMode::Virtual(VirtualClock::default()))
+                .unwrap();
+            vm.set_execution_timeout(Some(Duration::from_millis(50)));
+            vm.begin_execution();
+            vm.run_program_body(&crate::parser::parse_cached(source).unwrap())
+                .unwrap();
+            vm.poll_event_loop(TurnBudget::jobs(0)).unwrap();
+            vm.retire_completed_execution();
+            assert!(vm.has_active_execution(), "{source}");
+            let deadline = vm.execution.deadline.get();
+            vm.begin_execution();
+            assert_eq!(vm.execution.deadline.get(), deadline);
+            clock.advance(100.).unwrap();
+            assert!(
+                vm.poll_event_loop(TurnBudget::jobs(10))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("deadline")
+            );
+        }
     }
 }

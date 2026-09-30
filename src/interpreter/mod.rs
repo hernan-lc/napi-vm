@@ -1521,7 +1521,10 @@ impl Interpreter {
     /// full budget. Not called from `run` itself: block bodies and loop
     /// bodies re-enter it recursively and must not refill mid-execution.
     pub fn begin_execution(&mut self) {
-        if self.execution.drain_depth.get() != 0
+        if (self.execution.active.get()
+            && (self.jobs.borrow().has_outstanding_work()
+                || self.execution.continuations.get() > 0))
+            || self.execution.drain_depth.get() != 0
             || self.jobs.borrow().checkpoint_pending
             || self.guest_execution_depth.get() != 0
         {
@@ -1531,6 +1534,35 @@ impl Interpreter {
         self.execution.loops.set(self.loop_budget);
         self.execution.fuel.set(self.fuel_budget);
         self.execution.jobs.set(self.max_jobs_per_drain);
+    }
+
+    pub(crate) fn retire_completed_execution(&mut self) {
+        if self.execution.active.get()
+            && !self.jobs.borrow().has_outstanding_work()
+            && self.execution.continuations.get() == 0
+            && self.guest_execution_depth.get() == 0
+            && self.jobs.borrow().dispatch_depth == 0
+        {
+            self.execution.active.set(false);
+            self.execution.deadline.set(None);
+            *self.execution.cancellation.borrow_mut() = CancellationToken::default();
+            if let Some(host) = &self.host {
+                host.set_execution_context(CancellationToken::default(), None);
+            }
+        }
+    }
+
+    #[cfg(any(feature = "napi", test))]
+    pub(crate) fn has_active_execution(&self) -> bool {
+        self.execution.active.get()
+    }
+    #[cfg(feature = "napi")]
+    pub(crate) fn execution_wait_remaining(&self) -> Option<std::time::Duration> {
+        self.execution.deadline.get().map(|d| {
+            std::time::Duration::from_secs_f64(
+                (d - self.execution.clock.now_ms()).max(0.0) / 1000.0,
+            )
+        })
     }
 
     /// New evaluations cannot overtake an unfinished checkpoint from a soft yield.

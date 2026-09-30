@@ -394,21 +394,18 @@ impl Interpreter {
         if !queue.host_overflow.is_empty() {
             yield_reason = YieldReason::Backpressure;
         }
-        if yield_reason == YieldReason::Idle
-            && queue.is_empty()
-            && self.execution.drain_depth.get() == 1
-            && self.guest_execution_depth.get() == 0
-            && queue.dispatch_depth == 0
-        {
-            self.execution.active.set(false);
-        }
-        TurnOutcome {
+        let outcome = TurnOutcome {
             executed_jobs,
             runnable: queue.is_runnable() || !queue.host_overflow.is_empty(),
             yield_reason,
             next_deadline: queue.next_deadline(),
             checkpoint_pending: queue.checkpoint_pending,
+        };
+        drop(queue);
+        if yield_reason == YieldReason::Idle && self.execution.drain_depth.get() == 1 {
+            self.retire_completed_execution();
         }
+        outcome
     }
 
     fn poll_queued_jobs(
@@ -416,7 +413,10 @@ impl Interpreter {
         budget: TurnBudget,
         microtasks_only: bool,
     ) -> Result<TurnOutcome, VmErr> {
-        if !self.execution.active.get() && self.execution.drain_depth.get() == 0 {
+        if !self.execution.active.get()
+            && self.execution.drain_depth.get() == 0
+            && self.jobs.borrow().is_runnable()
+        {
             self.begin_execution();
         }
         struct DrainGuard(Rc<super::scheduler::ExecutionState>, super::Jobs);
@@ -432,7 +432,7 @@ impl Interpreter {
             .set(self.execution.drain_depth.get() + 1);
         let _guard = DrainGuard(self.execution.clone(), self.jobs.clone());
         let clock = RealTimeClock::default();
-        let initial_remaining = self.execution.jobs.get();
+        let mut initial_remaining = self.execution.jobs.get();
         let mut executed = 0;
         loop {
             self.check_execution_interrupt()?;
@@ -457,6 +457,14 @@ impl Interpreter {
             } else {
                 self.jobs.borrow().is_runnable()
             };
+            if ready && !self.execution.active.get() {
+                // External ingress starts a fresh context only when work exists.
+                self.execution.active.set(true);
+                self.execution.loops.set(self.loop_budget);
+                self.execution.fuel.set(self.fuel_budget);
+                self.execution.jobs.set(self.max_jobs_per_drain);
+                initial_remaining = self.execution.jobs.get();
+            }
             if !ready {
                 return Ok(self.outcome(executed, YieldReason::Idle));
             }
