@@ -55,8 +55,10 @@ cover virtual/real clocks, async host calls and idle CPU. Fields that cannot be
 measured at the JS layer (Rust allocations) are explicitly null there; the Rust
 allocation harness supplies their counts separately.
 
-Remote matrix results and published PRs are unavailable in this environment:
-`gh auth status` rejects the configured token. These logs establish local Linux
+At the time of measurement, remote matrix results and published PRs were unavailable:
+`gh auth status` rejected the configured CLI token. A later publication step
+can use the authenticated GitHub connector; this does not supply remote results
+for the recorded measurements. These logs establish local Linux
 x64 validation, not remote platform/release readiness.
 
 `recheck-03-before-final-library.log` preserves a failed check from overlapping
