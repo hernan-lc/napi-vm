@@ -1031,6 +1031,10 @@ impl NativeAddonLoader for RustNodeApiHost {
 }
 
 impl HostBridge for RustNodeApiHost {
+    fn supports_blocking_event_wait(&self) -> bool {
+        true
+    }
+
     fn call_host(&self, id: usize, args: Vec<Value>) -> Result<Value, VmErr> {
         self.ensure_running()?;
         self.invoke_native(id, Value::Undefined, args, None, &mut reject_guest_callback)

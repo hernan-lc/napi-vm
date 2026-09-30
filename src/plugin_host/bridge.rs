@@ -115,6 +115,10 @@ impl HostBridge for CompositeHostBridge {
         }
     }
 
+    fn supports_blocking_event_wait(&self) -> bool {
+        self.native.supports_blocking_event_wait()
+    }
+
     fn poll_host_events(&self, timeout: Duration) -> Result<Vec<HostEvent>, VmErr> {
         self.native.poll_host_events(timeout)
     }

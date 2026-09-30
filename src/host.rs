@@ -68,6 +68,48 @@ impl WakeSlot {
     }
 }
 
+/// Level-triggered wake latch. Events live in their own queues; only wake
+/// notifications coalesce. Signalling between an owner's scan and wait cannot
+/// be lost because the latch is tested under the same mutex as the wait.
+#[derive(Default)]
+pub struct WakeSignal {
+    pending: Mutex<bool>,
+    ready: std::sync::Condvar,
+    wakeups: std::sync::atomic::AtomicU64,
+}
+impl WakeSignal {
+    pub fn fire(&self) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if !*pending {
+            *pending = true;
+            self.wakeups
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.ready.notify_one();
+        }
+    }
+    pub fn wait(&self, timeout: Option<Duration>) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if !*pending {
+            pending = match timeout {
+                Some(d) => {
+                    self.ready
+                        .wait_timeout_while(pending, d, |p| !*p)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0
+                }
+                None => self
+                    .ready
+                    .wait_while(pending, |p| !*p)
+                    .unwrap_or_else(|e| e.into_inner()),
+            };
+        }
+        *pending = false;
+    }
+    pub fn wakeups(&self) -> u64 {
+        self.wakeups.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// An event delivered from the host into the VM's shared event loop.
 pub enum HostEvent {
     Callback(HostCallback),
@@ -96,6 +138,12 @@ pub trait HostBridge {
     /// instead of entering guest code from a host or native thread.
     fn poll_host_events(&self, _timeout: Duration) -> Result<Vec<HostEvent>, VmErr> {
         Ok(Vec::new())
+    }
+
+    /// True when poll_host_events honors blocking timeouts or wake signals.
+    /// Function-only bridges keep the default; real-time timers use VM waits.
+    fn supports_blocking_event_wait(&self) -> bool {
+        false
     }
 
     /// Bounded ingress contract. Implementations should return at most `limit`
@@ -280,5 +328,48 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<WakeNotifier>();
         assert_send_sync::<Arc<WakeSlot>>();
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+    #[test]
+    fn notifications_coalesce_but_latched_wakeup_is_not_lost() {
+        let signal = Arc::new(WakeSignal::default());
+        signal.fire();
+        signal.fire();
+        assert_eq!(signal.wakeups(), 1);
+        signal.wait(None);
+        let s = signal.clone();
+        let producer = std::thread::spawn(move || {
+            s.fire();
+        });
+        producer.join().unwrap();
+        signal.wait(None);
+        assert_eq!(signal.wakeups(), 2);
+    }
+    #[test]
+    fn racing_producer_preserves_every_event() {
+        let signal = Arc::new(WakeSignal::default());
+        let (tx, rx) = std::sync::mpsc::sync_channel(8);
+        let s = signal.clone();
+        let p = std::thread::spawn(move || {
+            for i in 0..10000 {
+                tx.send(i).unwrap();
+                s.fire();
+            }
+        });
+        let mut received = 0;
+        while received < 10000 {
+            while let Ok(i) = rx.try_recv() {
+                assert_eq!(i, received);
+                received += 1;
+            }
+            if received < 10000 {
+                signal.wait(Some(Duration::from_secs(1)));
+            }
+        }
+        p.join().unwrap();
     }
 }

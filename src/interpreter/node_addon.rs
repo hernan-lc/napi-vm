@@ -1149,6 +1149,10 @@ impl NativeAddonLoader for NodeAddonSidecar {
 }
 
 impl HostBridge for NodeAddonSidecar {
+    fn supports_blocking_event_wait(&self) -> bool {
+        true
+    }
+
     fn poll_host_events(&self, timeout: Duration) -> Result<Vec<HostEvent>, VmErr> {
         self.poll_host_events_bounded(timeout, usize::MAX)
     }
