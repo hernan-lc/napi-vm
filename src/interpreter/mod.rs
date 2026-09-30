@@ -440,6 +440,12 @@ impl Interpreter {
 
     /// Attach a host bridge for values such as native addon exports.
     pub fn set_host_bridge(&mut self, bridge: Rc<dyn HostBridge>) {
+        let remaining = self.execution.deadline.get().map(|d| {
+            std::time::Duration::from_secs_f64(
+                (d - self.execution.clock.now_ms()).max(0.0) / 1000.0,
+            )
+        });
+        bridge.set_execution_context(self.execution.cancellation.borrow().clone(), remaining);
         let wake = self.execution.wake.clone();
         bridge.set_wake_notifier(std::sync::Arc::new(move || wake.fire()));
         self.host = Some(bridge);

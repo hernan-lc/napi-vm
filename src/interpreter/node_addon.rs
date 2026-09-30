@@ -798,6 +798,16 @@ impl NodeAddonSidecar {
             .borrow()
             .register_wake(&self.response_wake);
         loop {
+            if self
+                .execution_deadline
+                .get()
+                .is_some_and(|d| Instant::now() >= d)
+            {
+                fail_state(&mut self.state.borrow_mut());
+                return Err(VmErr::Msg(
+                    "RangeError: Guest execution deadline exceeded".into(),
+                ));
+            }
             if self.cancellation.borrow().is_cancelled() {
                 fail_state(&mut self.state.borrow_mut());
                 return Err(VmErr::Msg("Error: Guest execution cancelled".into()));

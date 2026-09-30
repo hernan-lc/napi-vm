@@ -2663,19 +2663,18 @@ impl Value {
             Value::Array(items) => {
                 // Only drain when we own the buffer outright; a shared Rc
                 // keeps its contents until the last reference drops.
-                if Rc::strong_count(items) == 1
-                    && let Some(cell) = Rc::get_mut(items)
-                {
-                    work.append(cell.elements_mut());
-                    work.extend(cell.named.get_mut().drain(..).map(|(_, v)| v));
+                if Rc::strong_count(items) == 1 {
+                    // The heap registry holds Weak handles, so Rc::get_mut
+                    // refuses even a sole strong owner. Drain through the
+                    // cell instead; weak registrations own no guest edges.
+                    work.append(&mut items.elements.borrow_mut());
+                    work.extend(items.named.borrow_mut().drain(..).map(|(_, v)| v));
                 }
             }
             Value::Object { props } => {
-                if Rc::strong_count(props) == 1
-                    && let Some(cell) = Rc::get_mut(props)
-                {
-                    work.extend(cell.slots_mut().drain(..).map(|(_, v)| v));
-                    if let Some(p) = cell.meta.get_mut().proto.take()
+                if Rc::strong_count(props) == 1 {
+                    work.extend(props.slots.borrow_mut().drain(..).map(|(_, v)| v));
+                    if let Some(p) = props.meta.borrow_mut().proto.take()
                         && let Ok(inner) = Rc::try_unwrap(p)
                     {
                         work.push(inner);
@@ -2851,5 +2850,31 @@ mod array_index_tests {
         assert!(matches!(str_char_at("😀x", 1), Some(Value::String(ref s)) if s == "x"));
         assert!(str_char_at("hi", 2).is_none());
         assert!(str_char_at("", 0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod weak_registry_drop_tests {
+    use super::Value;
+    #[test]
+    fn weak_registrations_do_not_disable_iterative_teardown() {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                for array in [true, false] {
+                    let mut value = Value::Undefined;
+                    for _ in 0..20_000 {
+                        value = if array {
+                            Value::array(vec![value])
+                        } else {
+                            Value::object(vec![("child".into(), value)])
+                        };
+                    }
+                    drop(value);
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
