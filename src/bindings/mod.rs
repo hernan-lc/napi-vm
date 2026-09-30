@@ -13,6 +13,7 @@
 //! NAPI-free [`crate::format`] module; it is re-exported here so
 //! `crate::bindings::{VM, create_vm, to_string, ..}` resolve exactly as
 //! they did before the split.
+mod async_session;
 mod bridge;
 mod export_fn;
 mod language_service;
@@ -24,4 +25,4 @@ pub use crate::format::{
     try_to_string, try_to_string_pretty, try_to_string_pretty_colored, try_to_string_with_limit,
 };
 pub use language_service::LanguageService;
-pub use vm::{VM, create_vm, debug_parse, run_code, run_source};
+pub use vm::{AsyncSession, AsyncSessionOptions, VM, create_vm, debug_parse, run_code, run_source};

@@ -702,7 +702,8 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { LanguageService, Vm, VM, createVm, debugParse, runCode } = nativeBinding
+const { AsyncSession, LanguageService, Vm, VM, createVm, debugParse, runCode } = nativeBinding
+export { AsyncSession }
 export { LanguageService }
 export { Vm }
 export { VM }

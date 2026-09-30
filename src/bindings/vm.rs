@@ -24,6 +24,7 @@ use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::{PromiseState, Value};
 
+pub use super::async_session::{AsyncSession, AsyncSessionOptions};
 use super::bridge::{NapiHostBridge, run_async_done_cb};
 use super::marshal::{chk, from_napi, make_str, to_napi};
 
@@ -999,7 +1000,7 @@ fn execute_module_source(
     result
 }
 
-fn execute_source(interp: &mut Interpreter, source: &str) -> Result<Value, VmErr> {
+pub(super) fn execute_source(interp: &mut Interpreter, source: &str) -> Result<Value, VmErr> {
     interp.ensure_can_evaluate()?;
     interp.set_source(source);
     interp.begin_execution();
@@ -1052,7 +1053,7 @@ fn validate_module_source(source: &str) -> ValidationResult {
     }
 }
 
-fn async_result_string(value: Value) -> Result<String, String> {
+pub(super) fn async_result_string(value: Value) -> Result<String, String> {
     match &value {
         Value::Promise(inner) => {
             let inner = inner.borrow();
@@ -1069,7 +1070,11 @@ fn async_result_string(value: Value) -> Result<String, String> {
     }
 }
 
-fn reject_deferred_now(env: sys::napi_env, deferred: sys::napi_deferred, message: String) {
+pub(super) fn reject_deferred_now(
+    env: sys::napi_env,
+    deferred: sys::napi_deferred,
+    message: String,
+) {
     let Ok(js_message) = make_str(env, &message) else {
         return;
     };

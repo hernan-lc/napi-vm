@@ -30,12 +30,16 @@ pub mod value;
 pub mod wasm;
 
 #[cfg(feature = "napi")]
-pub use bindings::{LanguageService, VM, create_vm, debug_parse, run_code};
+pub use bindings::{
+    AsyncSession, AsyncSessionOptions, LanguageService, VM, create_vm, debug_parse, run_code,
+};
 pub use builtins::setup_builtins;
 pub use convert::{value_from_json, value_to_json};
 pub use error::VmErr;
 pub use format::{PrintOptions, Printer};
-pub use host::{HostBridge, HostCallback, HostCallbackKind, HostEvent, WakeNotifier, WakeSignal, WakeSlot};
+pub use host::{
+    HostBridge, HostCallback, HostCallbackKind, HostEvent, WakeNotifier, WakeSignal, WakeSlot,
+};
 pub use interpreter::{
     CancellationToken, Clock, ClockMode, Environment, EventLoopOptions, Fairness, Interpreter,
     Module, PreparedProgram, RealTimeClock, TurnBudget, TurnOutcome, VirtualClock, YieldReason,
