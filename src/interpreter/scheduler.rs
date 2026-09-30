@@ -146,10 +146,32 @@ pub struct TurnOutcome {
 /// A thread-safe cancellation signal. Cancels active guest execution and waits;
 /// never transfers guest values between threads.
 #[derive(Clone, Default)]
-pub struct CancellationToken(Arc<AtomicBool>);
+pub struct CancellationToken(
+    Arc<AtomicBool>,
+    Arc<std::sync::Mutex<Vec<std::sync::Weak<crate::host::WakeSignal>>>>,
+);
 impl CancellationToken {
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Release);
+        for wake in self
+            .1
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+        {
+            wake.fire();
+        }
+    }
+    pub(crate) fn register_wake(&self, wake: &Arc<crate::host::WakeSignal>) {
+        let mut wakes = self.1.lock().unwrap_or_else(|e| e.into_inner());
+        wakes.retain(|w| w.strong_count() > 0);
+        if !wakes.iter().any(|w| w.ptr_eq(&Arc::downgrade(wake))) {
+            wakes.push(Arc::downgrade(wake));
+        }
+        if self.is_cancelled() {
+            wake.fire();
+        }
     }
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
@@ -157,6 +179,7 @@ impl CancellationToken {
 }
 
 pub(super) struct ExecutionState {
+    pub wake: Arc<crate::host::WakeSignal>,
     pub fuel: Cell<u64>,
     pub loops: Cell<u64>,
     pub jobs: Cell<usize>,
@@ -169,6 +192,7 @@ pub(super) struct ExecutionState {
 impl ExecutionState {
     pub fn new() -> Self {
         Self {
+            wake: Arc::new(crate::host::WakeSignal::default()),
             fuel: Cell::new(super::DEFAULT_FUEL_BUDGET),
             loops: Cell::new(super::DEFAULT_LOOP_BUDGET),
             jobs: Cell::new(super::jobs::MAX_JOBS_PER_DRAIN),

@@ -428,3 +428,68 @@ fn collection_refuses_while_dequeued_native_job_values_are_on_the_stack() {
     vm.drain_jobs().unwrap();
     assert_eq!(vm.collect_cycles().skipped, None);
 }
+
+#[test]
+fn throwing_checkpoint_reconciles_state_without_refilling_jobs() {
+    let mut vm = Interpreter::with_builtins();
+    let bad = callback(&mut vm, "()=>{throw new Error('boom')}");
+    let good = callback(&mut vm, "var hits=0;()=>hits++");
+    vm.jobs.borrow_mut().push_microtask(Job::Callback {
+        callback: bad,
+        args: vec![],
+    });
+    vm.jobs.borrow_mut().push_microtask(Job::Callback {
+        callback: good,
+        args: vec![],
+    });
+    vm.set_execution_budget(ExecutionBudget {
+        max_jobs: 1,
+        ..ExecutionBudget::default()
+    });
+    assert!(vm.drain_jobs().unwrap_err().to_string().contains("boom"));
+    assert!(vm.ensure_can_evaluate().is_err());
+    vm.begin_execution();
+    assert!(
+        vm.drain_jobs()
+            .unwrap_err()
+            .to_string()
+            .contains("Maximum job count")
+    );
+    assert!(vm.jobs.borrow().has_microtasks());
+    assert!(matches!(
+        vm.global.borrow().get("hits"),
+        Some(Value::Number(0.0))
+    ));
+}
+
+#[test]
+fn last_throwing_microtask_clears_checkpoint() {
+    let mut vm = Interpreter::with_builtins();
+    assert!(
+        vm.eval_source("queueMicrotask(()=>{throw new Error('boom')});")
+            .is_err()
+    );
+    assert!(vm.ensure_can_evaluate().is_ok());
+    assert!(matches!(
+        vm.eval_source("42;").unwrap(),
+        Value::Number(42.0)
+    ));
+}
+
+#[test]
+fn future_timer_wait_is_capped_by_execution_deadline() {
+    let mut vm = Interpreter::with_builtins();
+    vm.jobs
+        .borrow_mut()
+        .set_clock(ClockMode::RealTime(Rc::new(RealTimeClock::default())))
+        .unwrap();
+    vm.eval_source("setTimeout(()=>42,60000);").unwrap();
+    vm.set_execution_timeout(Some(Duration::ZERO));
+    assert!(
+        vm.run_event_loop_once(Duration::from_secs(60))
+            .unwrap_err()
+            .to_string()
+            .contains("deadline")
+    );
+    assert!(vm.jobs.borrow().next_deadline().is_some());
+}

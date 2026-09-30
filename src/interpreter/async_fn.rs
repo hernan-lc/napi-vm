@@ -104,6 +104,13 @@ impl Interpreter {
             if self.run_await_timer()? {
                 continue;
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            let timer_wait = self.jobs.borrow().timer_wait();
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(wait) = timer_wait {
+                self.run_event_loop_once(wait)?;
+                continue;
+            }
             let has_pending_host_work = self
                 .host
                 .as_ref()

@@ -419,16 +419,18 @@ impl Interpreter {
         if !self.execution.active.get() && self.execution.drain_depth.get() == 0 {
             self.begin_execution();
         }
-        struct DrainGuard(Rc<super::scheduler::ExecutionState>);
+        struct DrainGuard(Rc<super::scheduler::ExecutionState>, super::Jobs);
         impl Drop for DrainGuard {
             fn drop(&mut self) {
+                let mut queue = self.1.borrow_mut();
+                queue.checkpoint_pending = queue.has_microtasks();
                 self.0.drain_depth.set(self.0.drain_depth.get() - 1);
             }
         }
         self.execution
             .drain_depth
             .set(self.execution.drain_depth.get() + 1);
-        let _guard = DrainGuard(self.execution.clone());
+        let _guard = DrainGuard(self.execution.clone(), self.jobs.clone());
         let clock = RealTimeClock::default();
         let initial_remaining = self.execution.jobs.get();
         let mut executed = 0;
@@ -503,27 +505,24 @@ impl Interpreter {
             let _ = timeout;
             Duration::ZERO
         };
+        self.check_execution_interrupt()?;
         let timer_wait = self.jobs.borrow().timer_wait();
-        let wait = timer_wait.map_or(timeout, |d| d.min(timeout));
-        let host_waits = self
-            .host
-            .as_ref()
-            .is_some_and(|h| h.supports_blocking_event_wait());
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.host.is_some() && !host_waits && timer_wait.is_some() && !wait.is_zero() {
-            std::thread::sleep(wait);
-        }
-        if self.host.is_some() {
-            self.enqueue_host_events(if host_waits || timer_wait.is_none() {
-                wait
-            } else {
-                Duration::ZERO
-            })?;
+        let mut wait = timer_wait.map_or(timeout, |d| d.min(timeout));
+        if let Some(deadline) = self.execution.deadline.get() {
+            wait = wait.min(Duration::from_secs_f64(
+                ((deadline - self.execution.clock.now_ms()).max(0.0)) / 1000.0,
+            ));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if self.host.is_none() && timer_wait.is_some() && !wait.is_zero() {
-            std::thread::sleep(wait);
+        if !wait.is_zero() {
+            self.execution
+                .cancellation
+                .borrow()
+                .register_wake(&self.execution.wake);
+            self.execution.wake.wait(Some(wait));
         }
+        self.check_execution_interrupt()?;
+        self.enqueue_host_events(Duration::ZERO)?;
         Ok(self.drain_queued_jobs(false)? > 0)
     }
 

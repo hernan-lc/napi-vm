@@ -440,6 +440,8 @@ impl Interpreter {
 
     /// Attach a host bridge for values such as native addon exports.
     pub fn set_host_bridge(&mut self, bridge: Rc<dyn HostBridge>) {
+        let wake = self.execution.wake.clone();
+        bridge.set_wake_notifier(std::sync::Arc::new(move || wake.fire()));
         self.host = Some(bridge);
     }
 
@@ -449,7 +451,11 @@ impl Interpreter {
     /// [`HostBridge::set_wake_notifier`](crate::host::HostBridge::set_wake_notifier).
     pub fn set_host_wake_notifier(&self, notifier: crate::host::WakeNotifier) {
         if let Some(host) = &self.host {
-            host.set_wake_notifier(notifier);
+            let wake = self.execution.wake.clone();
+            host.set_wake_notifier(std::sync::Arc::new(move || {
+                wake.fire();
+                notifier();
+            }));
         }
     }
 
@@ -1541,6 +1547,7 @@ impl Interpreter {
         Ok(())
     }
     pub fn set_cancellation_token(&mut self, token: CancellationToken) {
+        token.register_wake(&self.execution.wake);
         *self.execution.cancellation.borrow_mut() = token;
     }
     pub fn set_execution_timeout(&mut self, timeout: Option<std::time::Duration>) {

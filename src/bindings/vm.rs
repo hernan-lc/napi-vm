@@ -1001,6 +1001,10 @@ fn execute_module_source(
 }
 
 pub(super) fn execute_source(interp: &mut Interpreter, source: &str) -> Result<Value, VmErr> {
+    // Resume the old checkpoint with its remaining hard budget before admission.
+    if interp.jobs.borrow().checkpoint_pending {
+        interp.drain_microtasks()?;
+    }
     interp.ensure_can_evaluate()?;
     interp.set_source(source);
     interp.begin_execution();
