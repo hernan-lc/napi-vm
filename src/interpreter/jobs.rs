@@ -105,10 +105,17 @@ struct TimerEntry {
 }
 /// Sorted small queues avoid allocating a tree node and ID index per timer.
 /// Promotion is sticky until empty so cancellation cannot cause mode churn.
-#[derive(Default)]
 struct TreeTimers {
     entries: BTreeMap<TimerKey, (u64, Job)>,
-    ids: HashMap<u64, TimerKey>,
+    ids: HashMap<u64, TimerKey, ahash::RandomState>,
+}
+impl Default for TreeTimers {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            ids: HashMap::with_hasher(super::env::randomized_hasher()),
+        }
+    }
 }
 enum TimerQueue {
     Small {
@@ -117,7 +124,7 @@ enum TimerQueue {
     },
     Tree {
         entries: BTreeMap<TimerKey, (u64, Job)>,
-        ids: HashMap<u64, TimerKey>,
+        ids: HashMap<u64, TimerKey, ahash::RandomState>,
         small: Vec<TimerEntry>,
     },
 }

@@ -35,6 +35,11 @@ thread_local! {
     };
 }
 
+/// Keyed runtime-map hashing without retaining any owner or guest data.
+pub(super) fn randomized_hasher() -> ahash::RandomState {
+    BINDING_HASHER.with(Clone::clone)
+}
+
 /// How a binding was declared. This drives assignment and redeclaration
 /// rules, and whether the binding has a temporal dead zone.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -141,7 +146,7 @@ impl Vars {
     fn try_set(&mut self, n: &str, v: Value) -> Result<(), Value> {
         match self.get_mut(n) {
             Some(binding) => {
-                binding.value = v;
+                binding.value.assign_for_execution(v);
                 binding.initialized = true;
                 Ok(())
             }
@@ -182,10 +187,8 @@ impl Vars {
         match self {
             Vars::Small(vars) => {
                 if vars.len() >= PROMOTE_AT {
-                    let mut map = HashMap::with_capacity_and_hasher(
-                        vars.len() + 1,
-                        BINDING_HASHER.with(Clone::clone),
-                    );
+                    let mut map =
+                        HashMap::with_capacity_and_hasher(vars.len() + 1, randomized_hasher());
                     map.extend(vars.drain(..));
                     map.insert(Rc::from(n), b);
                     *self = Vars::Large(map);
@@ -259,7 +262,7 @@ impl Environment {
             .into_iter()
             .map(|(k, v)| (k, Binding::initialized(v, BindKind::Var)));
         let vars = if vars.len() > PROMOTE_AT {
-            let mut map = HashMap::with_hasher(BINDING_HASHER.with(Clone::clone));
+            let mut map = HashMap::with_hasher(randomized_hasher());
             map.extend(vars);
             Vars::Large(map)
         } else {
