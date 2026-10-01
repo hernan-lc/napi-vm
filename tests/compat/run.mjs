@@ -5,6 +5,12 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const runnerDir = resolve(root, "tests/compat/runners");
 
+// Bun on Windows fails to load backslash-spelled script paths handed over via
+// `spawn` (ENOENT on files that exist — the same argv works under Node), so
+// every path crossing the spawn boundary uses forward slashes, which both
+// runtimes accept on Windows. No-op on POSIX.
+const forSpawn = (path) => path.replace(/\\/g, "/");
+
 const statusFor = (runtime, code, stderr, error) => {
   if (error?.code === "ETIMEDOUT") return "timeout";
   if (code === 0) return "pass";
@@ -17,7 +23,7 @@ const statusFor = (runtime, code, stderr, error) => {
 function execute(runtime, command, args, timeout) {
   return new Promise((resolveResult) => {
     const child = spawn(command, args, {
-      cwd: root,
+      cwd: forSpawn(root),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -36,7 +42,10 @@ function execute(runtime, command, args, timeout) {
         runtime,
         status: "runtime-error",
         stdout: [],
-        error: { name: error.name, message: error.message },
+        error: {
+          name: error.name,
+          message: `spawn ${command} failed (${error.code ?? error.name}): ${error.message}`,
+        },
       });
     });
     child.on("close", (code) => {
@@ -44,11 +53,12 @@ function execute(runtime, command, args, timeout) {
       const lines = stdout.replace(/\r\n/g, "\n").trim().split("\n").filter(Boolean);
       const status = timedOut ? "timeout" : statusFor(runtime, code, stderr);
       if (status !== "pass") {
+        const detail = stderr.trim() || `process exited with code ${code}`;
         resolveResult({
           runtime,
           status,
           stdout: lines,
-          error: { message: stderr.trim() || `process exited with code ${code}` },
+          error: { message: `${command} exited with code ${code}: ${detail}` },
         });
         return;
       }
@@ -70,11 +80,11 @@ function execute(runtime, command, args, timeout) {
 
 /** Execute one unchanged fixture under Node, Bun, and napi-vm. */
 export async function runDifferentialFixture(fixture, { timeout = 5000 } = {}) {
-  const path = resolve(fixture);
+  const path = forSpawn(resolve(fixture));
   const runs = await Promise.all([
-    execute("node", "node", [resolve(runnerDir, "node.mjs"), path], timeout),
-    execute("bun", "bun", [resolve(runnerDir, "bun.mjs"), path], timeout),
-    execute("napi-vm", "bun", [resolve(runnerDir, "napi-vm.mjs"), path], timeout),
+    execute("node", "node", [forSpawn(resolve(runnerDir, "node.mjs")), path], timeout),
+    execute("bun", "bun", [forSpawn(resolve(runnerDir, "bun.mjs")), path], timeout),
+    execute("napi-vm", "bun", [forSpawn(resolve(runnerDir, "napi-vm.mjs")), path], timeout),
   ]);
   return Object.fromEntries(runs.map((result) => [result.runtime, result]));
 }

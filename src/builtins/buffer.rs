@@ -495,7 +495,7 @@ fn encode(string: &str, encoding: &str) -> Result<Vec<u8>, VmErr> {
         "utf8" => string.as_bytes().to_vec(),
         "hex" => {
             let mut bytes = Vec::new();
-            for pair in string.as_bytes().chunks_exact(2) {
+            for pair in string.as_bytes().as_chunks::<2>().0 {
                 let (Some(high), Some(low)) = (hex_nibble(pair[0]), hex_nibble(pair[1])) else {
                     break;
                 };
@@ -522,8 +522,10 @@ fn decode(bytes: &[u8], encoding: &str) -> String {
         "latin1" => bytes.iter().map(|byte| char::from(*byte)).collect(),
         "utf16le" => {
             let units = bytes
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair))
                 .collect::<Vec<_>>();
             String::from_utf16_lossy(&units)
         }

@@ -89,14 +89,10 @@ test("a map has no JSON representation of its entries", () => {
 });
 
 test("collection String tags match Node and Bun", () => {
-  const source = `JSON.stringify([
-    String(new Map([[1, 2]])),
-    String(new Set([1])),
-    String(new WeakMap()),
-    String(new WeakSet()),
-    Object.prototype.toString.call(new Map()),
-    String({ [Symbol.toStringTag]: 'Cache' }),
-  ])`;
+  // One line on purpose: the script crosses the spawn boundary as a single
+  // `-e` argument, and embedded newlines break that handoff on Windows.
+  const source =
+    "JSON.stringify([String(new Map([[1, 2]])),String(new Set([1])),String(new WeakMap()),String(new WeakSet()),Object.prototype.toString.call(new Map()),String({ [Symbol.toStringTag]: 'Cache' })])";
   const result = runCode(`${source};`);
   const expected = JSON.stringify([
     "[object Map]",
@@ -115,8 +111,11 @@ test("collection String tags match Node and Bun", () => {
       { encoding: "utf8" },
     );
     if (reference.error?.code === "ENOENT") continue;
-    expect(reference.status).toBe(0);
-    expect(reference.stdout).toBe(result);
+    expect(
+      reference.status,
+      `${runtime} -e failed (status ${reference.status}): ${reference.stderr ?? reference.error?.message ?? ""}`,
+    ).toBe(0);
+    expect(reference.stdout, `${runtime} stdout`).toBe(result);
   }
 });
 

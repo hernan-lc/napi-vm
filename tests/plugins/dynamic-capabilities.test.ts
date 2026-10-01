@@ -1,7 +1,7 @@
 import { afterEach, test, expect } from "bun:test";
 
 import { createHash } from "node:crypto";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -269,8 +269,11 @@ test("extractTarball round-trips files and refuses escapes", () => {
 test("ensureModulesDir creates the folder", () => {
   const dir = join(tmpdir(), `napi-vm-mods-${Date.now()}`);
   try {
-    expect(ensureModulesDir(dir)).toBe(dir);
-    expect(ensureModulesDir(dir)).toBe(dir);
+    // `ensureModulesDir` returns the resolved path; `tmpdir()` itself may go
+    // through a symlink (`/var` → `/private/var` on macOS), so resolve the
+    // expectation the same way instead of comparing against the raw join.
+    expect(ensureModulesDir(dir)).toBe(realpathSync(dir));
+    expect(ensureModulesDir(dir)).toBe(realpathSync(dir));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

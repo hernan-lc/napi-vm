@@ -1,6 +1,6 @@
 import { test, expect, afterEach } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, extname, join, normalize } from "node:path";
 
 import { cleanup, makeHost, makePlugin, manifestWith } from "./helpers";
 
@@ -286,12 +286,15 @@ export default {
 };
 `,
   });
+  // The guest `node:path` follows the host platform (backslashes on
+  // Windows), so the expectation is computed with the host module rather
+  // than hardcoded to POSIX spellings.
   expect(makeHost().load(withPath).loadResult).toEqual([
-    "cache/foo.json",
-    "a/c",
-    "a/b",
-    "c.txt",
-    ".txt",
+    join("cache", "foo.json"),
+    normalize("a/./b/../c"),
+    dirname("a/b/c.txt"),
+    basename("a/b/c.txt"),
+    extname("a/b/c.txt"),
   ]);
 
   const withoutPath = makePlugin({
