@@ -528,19 +528,29 @@ impl Interpreter {
         key: &str,
         value: Value,
     ) -> Result<(), VmErr> {
-        let setter_name = format!("set {key}");
-        let getter_name = format!("get {key}");
         let is_setter = |value: &Value| match value {
-            Value::Function(function) => function.name.as_deref() == Some(setter_name.as_str()),
+            Value::Function(function) => {
+                function
+                    .name
+                    .as_deref()
+                    .and_then(|name| name.strip_prefix("set "))
+                    == Some(key)
+            }
             Value::NativeFunction { name, .. } | Value::HostFunction { name, .. } => {
-                name.as_ref() == setter_name
+                name.strip_prefix("set ") == Some(key)
             }
             _ => false,
         };
         let is_getter = |value: &Value| match value {
-            Value::Function(function) => function.name.as_deref() == Some(getter_name.as_str()),
+            Value::Function(function) => {
+                function
+                    .name
+                    .as_deref()
+                    .and_then(|name| name.strip_prefix("get "))
+                    == Some(key)
+            }
             Value::NativeFunction { name, .. } | Value::HostFunction { name, .. } => {
-                name.as_ref() == getter_name
+                name.strip_prefix("get ") == Some(key)
             }
             _ => false,
         };
@@ -578,7 +588,7 @@ impl Interpreter {
         }
         if let Some((index, _, _)) = existing {
             if props.meta.borrow().attrs_of(key).writable {
-                props.borrow_mut()[index].1 = value;
+                props.borrow_mut()[index].1.assign_for_execution(value);
             }
             return Ok(());
         }

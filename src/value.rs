@@ -748,7 +748,7 @@ impl ObjectCell {
     pub(crate) fn slot_verified(&self, index: usize, key: &str) -> Option<Value> {
         let slots = self.slots.borrow();
         let (k, v) = slots.get(index)?;
-        (k == key).then(|| v.clone())
+        (k == key).then(|| v.clone_for_execution())
     }
 
     /// Clone an own property's raw slot value (bindings unresolved), if

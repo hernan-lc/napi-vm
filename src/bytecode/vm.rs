@@ -612,10 +612,13 @@ fn run_loop(
                     delta,
                     prefix,
                 } => {
-                    let obj = frame.registers[obj as usize].clone_for_execution();
-                    let key = frame.registers[key as usize].clone_for_execution();
-                    frame.registers[dst as usize] =
-                        interp.inc_prop_value(&obj, &key, delta > 0, prefix)?;
+                    let value = interp.inc_prop_value(
+                        &frame.registers[obj as usize],
+                        &frame.registers[key as usize],
+                        delta > 0,
+                        prefix,
+                    )?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::DelProp { dst, obj, key } => {
                     let obj = frame.registers[obj as usize].clone_for_execution();
