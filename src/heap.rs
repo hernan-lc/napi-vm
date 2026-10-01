@@ -153,6 +153,24 @@ impl Default for HeapContext {
 }
 #[cfg(feature = "napi")]
 impl HeapContext {
+    pub(crate) fn reusable(&self) -> bool {
+        let heap = &self.0;
+        let capacity = heap.objects.capacity()
+            + heap.arrays.capacity()
+            + heap.envs.capacity()
+            + heap.functions.capacity()
+            + heap.promises.capacity()
+            + heap.generators.capacity()
+            + heap.proxies.capacity()
+            + heap.bindings.capacity();
+        #[cfg(stackful_coroutines)]
+        let capacity = capacity + heap.async_tasks.capacity();
+        heap.interps.is_empty()
+            && heap.pins.is_empty()
+            && heap.tracked_count() == 0
+            && capacity <= 4096
+    }
+
     pub(crate) fn swap_active(&mut self) {
         HEAP.with(|heap| std::mem::swap(&mut *heap.borrow_mut(), &mut self.0));
     }

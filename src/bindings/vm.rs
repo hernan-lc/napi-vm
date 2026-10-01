@@ -96,11 +96,14 @@ impl FreshProgramCache {
 }
 thread_local! {
     static FRESH_PROGRAMS: std::cell::RefCell<FreshProgramCache> = Default::default();
+    static EMPTY_OWNER: std::cell::RefCell<Option<crate::runtime::OwnerContext>> = const { std::cell::RefCell::new(None) };
 }
 
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
-    let mut context = crate::runtime::OwnerContext::default();
-    let _lease = context.enter();
+    let mut context = EMPTY_OWNER
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_default();
+    let lease = context.enter();
     let result = {
         let mut interp = Interpreter::with_builtins();
         interp.is_main = is_main;
@@ -114,7 +117,11 @@ pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
         interp.global.borrow_mut().clear_edges();
         result
     };
-    crate::heap::collect_after_interpreter_drop();
+    let collected = crate::heap::collect_after_interpreter_drop();
+    drop(lease);
+    if collected.skipped.is_none() && context.reset_empty() {
+        EMPTY_OWNER.with(|slot| *slot.borrow_mut() = Some(context));
+    }
     result
 }
 
@@ -1268,6 +1275,49 @@ pub fn debug_parse(source: String) -> napi::Result<String> {
 mod owner_migration_tests {
     use super::*;
     use std::rc::Rc;
+
+    #[test]
+    fn owner_migration_empty_registry_reuse_is_isolated() {
+        fn first_symbol(context: &mut crate::runtime::OwnerContext) -> u64 {
+            let _lease = context.enter();
+            let mut interp = Interpreter::with_builtins();
+            let value = interp.eval_source("Symbol('first')").unwrap();
+            let Value::Symbol(ref symbol) = value else {
+                panic!("symbol")
+            };
+            let id = symbol.id;
+            drop(value);
+            interp.global.borrow_mut().clear_edges();
+            drop(interp);
+            assert_eq!(crate::heap::collect_after_interpreter_drop().skipped, None);
+            id
+        }
+        let outer_heap = crate::heap::counters();
+        let outer_shapes = crate::shape::Shape::created_count();
+        let expected = first_symbol(&mut crate::runtime::OwnerContext::default());
+        assert_eq!(
+            run_source(
+                "var privateName=42;Map.prototype.extra=42;for(var i=0;i<50;i++)Symbol('old');42;",
+                false
+            )
+            .unwrap(),
+            "42"
+        );
+        let mut recycled = EMPTY_OWNER
+            .with(|slot| slot.borrow_mut().take())
+            .expect("empty registry retained");
+        assert_eq!(first_symbol(&mut recycled), expected);
+        assert_eq!(
+            run_source("typeof privateName;", false).unwrap(),
+            "undefined"
+        );
+        assert_eq!(
+            run_source("Map.prototype.extra;", false).unwrap(),
+            "undefined"
+        );
+        assert_eq!(crate::heap::counters(), outer_heap);
+        assert_eq!(crate::shape::Shape::created_count(), outer_shapes);
+    }
 
     #[test]
     fn owner_migration_prepared_templates_reset_feedback() {

@@ -252,6 +252,17 @@ pub(crate) struct OwnerContext {
 }
 #[cfg(feature = "napi")]
 impl OwnerContext {
+    /// Reuse only an empty, bounded registry. Guest identities and shape
+    /// counters start fresh; no live graph or root survives this reset.
+    pub(crate) fn reset_empty(&mut self) -> bool {
+        if !self.heap.reusable() {
+            return false;
+        }
+        self.shapes = Default::default();
+        self.symbols = Default::default();
+        true
+    }
+
     pub(crate) fn enter(&mut self) -> OwnerLease<'_> {
         self.swap();
         OwnerLease(self)
