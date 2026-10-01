@@ -1384,6 +1384,33 @@ mod owner_migration_tests {
         );
         assert_eq!(run_source(source, false).unwrap(), "42");
         assert_eq!(run_source(source, false).unwrap(), "42");
+        let scalar = "function f(){return 42;} f();";
+        let shared = cache.prepare_for(scalar, true).unwrap();
+        let tracked = cache.prepare_for(scalar, false).unwrap();
+        {
+            let _lease = owner.enter();
+            let mut interp = Interpreter::with_builtins();
+            assert!(interp.feedback_disabled());
+            assert!(matches!(
+                interp.execute(&shared).unwrap(),
+                Value::Number(42.)
+            ));
+            assert_eq!(shared.stats().unwrap().calls, 0);
+            interp.set_tier_tracking(crate::jit::TierTracking::CountersOnly);
+            assert!(matches!(
+                interp.execute(&tracked).unwrap(),
+                Value::Number(42.)
+            ));
+            assert!(tracked.stats().unwrap().calls > 0);
+            assert_eq!(shared.stats().unwrap().calls, 0);
+            assert_eq!(
+                cache.programs.get(scalar).unwrap().0.stats().unwrap().calls,
+                0
+            );
+            interp.global.borrow_mut().clear_edges();
+            drop(interp);
+            assert_eq!(crate::heap::collect_after_interpreter_drop().skipped, None);
+        }
         for index in 0..70 {
             cache.prepare(&format!("{index};")).unwrap();
         }
