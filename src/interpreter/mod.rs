@@ -381,6 +381,11 @@ impl Default for Interpreter {
 }
 
 impl Interpreter {
+    #[cfg(feature = "napi")]
+    pub(crate) fn feedback_disabled(&self) -> bool {
+        self.tier_tracking == crate::jit::TierTracking::Disabled
+    }
+
     pub fn new() -> Self {
         let global = Rc::new(RefCell::new(Environment::global(None)));
         let mut interp = Self {

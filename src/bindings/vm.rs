@@ -69,16 +69,31 @@ fn is_export_identifier(key: &str) -> bool {
 // fork all feedback before running a template in a fresh owner.
 #[derive(Default)]
 struct FreshProgramCache {
-    programs: HashMap<Arc<str>, crate::interpreter::PreparedProgram>,
+    programs: HashMap<Arc<str>, (crate::interpreter::PreparedProgram, bool)>,
     order: std::collections::VecDeque<Arc<str>>,
     bytes: usize,
 }
 impl FreshProgramCache {
+    #[cfg(test)]
     fn prepare(&mut self, source: &str) -> Result<crate::interpreter::PreparedProgram, VmErr> {
-        if let Some(program) = self.programs.get(source) {
-            return Ok(program.fork_for_owner());
+        self.prepare_for(source, false)
+    }
+    fn prepare_for(
+        &mut self,
+        source: &str,
+        feedback_disabled: bool,
+    ) -> Result<crate::interpreter::PreparedProgram, VmErr> {
+        if let Some((program, no_guards)) = self.programs.get(source) {
+            return Ok(if feedback_disabled && *no_guards {
+                program.clone()
+            } else {
+                program.fork_for_owner()
+            });
         }
         let program = Interpreter::compile(source)?;
+        // Only misses walk the tree. Without feedback or property sites,
+        // verified code contains no mutable owner-specific state.
+        let no_guards = program.stats().is_none_or(|stats| stats.ic_sites == 0);
         const MAX_BYTES: usize = 2 * 1024 * 1024;
         if source.len() <= MAX_BYTES {
             while self.programs.len() >= 64 || self.bytes + source.len() > MAX_BYTES {
@@ -89,9 +104,13 @@ impl FreshProgramCache {
             let key: Arc<str> = source.into();
             self.bytes += key.len();
             self.order.push_back(key.clone());
-            self.programs.insert(key, program.clone());
+            self.programs.insert(key, (program.clone(), no_guards));
         }
-        Ok(program.fork_for_owner())
+        Ok(if feedback_disabled && no_guards {
+            program
+        } else {
+            program.fork_for_owner()
+        })
     }
 }
 thread_local! {
@@ -108,7 +127,11 @@ pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
         let mut interp = Interpreter::with_builtins();
         interp.is_main = is_main;
         let result = FRESH_PROGRAMS
-            .with(|cache| cache.borrow_mut().prepare(source))
+            .with(|cache| {
+                cache
+                    .borrow_mut()
+                    .prepare_for(source, interp.feedback_disabled())
+            })
             .and_then(|program| interp.execute(&program))
             .and_then(|value| try_to_string(&value))
             .map_err(|error| VmErr::Msg(interp.enrich_error(error, None).to_string()));
@@ -1348,7 +1371,7 @@ mod owner_migration_tests {
         assert_eq!(stats.ic_misses, 0);
         assert_eq!(stats.compiled, 0);
         assert_eq!(
-            cache.programs.get(source).unwrap().stats().unwrap().calls,
+            cache.programs.get(source).unwrap().0.stats().unwrap().calls,
             0
         );
         assert_eq!(
@@ -1504,7 +1527,11 @@ mod runtime_profile {
                 let builtins = started.elapsed().as_nanos();
                 let started = std::time::Instant::now();
                 let program = FRESH_PROGRAMS
-                    .with(|cache| cache.borrow_mut().prepare(source))
+                    .with(|cache| {
+                        cache
+                            .borrow_mut()
+                            .prepare_for(source, interp.feedback_disabled())
+                    })
                     .unwrap();
                 let value = interp.execute(&program).unwrap();
                 let execution = started.elapsed().as_nanos();
