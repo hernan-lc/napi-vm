@@ -5,7 +5,8 @@ from pathlib import Path
 p=argparse.ArgumentParser(description=__doc__);p.add_argument('directory',type=Path);a=p.parse_args();rng=random.Random(20260930)
 def rows(revision,dataset):
  result={}
- for f in sorted(a.directory.glob(f'{revision}-{dataset}-[0-9].jsonl')):
+ files=a.directory.glob(f'{revision}-{dataset}-*.jsonl')
+ for f in sorted(files,key=lambda path:int(path.stem.rsplit('-',1)[1])):
   for line in f.read_text().splitlines():
    r=json.loads(line);key=(r.get('mode'),r['workload'],r.get('depth'))
    result.setdefault(key,[]).append(r)
@@ -17,8 +18,10 @@ def interval(ratios):
 summary=[]
 for dataset in ['call_metrics','timer_queue_matrix','public']:
  baseline=rows('baseline',dataset);modified=rows('modified',dataset)
+ if baseline.keys()!=modified.keys():raise ValueError(f'Mismatched workloads for {dataset}')
  for key,b in baseline.items():
   m=modified[key]
+  if len(b)!=len(m):raise ValueError(f'Unpaired samples for {dataset}/{key}: {len(b)} != {len(m)}')
   def us(r):
    return r['p50_ms']*1000 if dataset=='public' else r['elapsed_us']/(r.get('operations') or r['repeats']*r['depth'])
   ratios=[us(y)/us(x) for x,y in zip(b,m)]
