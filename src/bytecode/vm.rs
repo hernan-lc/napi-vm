@@ -150,6 +150,7 @@ fn internal(what: &str) -> VmErr {
     VmErr::Msg(format!("internal error: {what}"))
 }
 
+#[inline]
 fn const_string(function: &BytecodeFunction, index: u16) -> Result<&str, VmErr> {
     match function.constants.get(index as usize) {
         Some(Constant::String(name)) => Ok(name),
@@ -403,11 +404,11 @@ fn run_loop(
                         }
                         _ => return Err(internal("invalid load_const")),
                     };
-                    frame.registers[dst as usize] = value;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::Mov { dst, src } => {
-                    frame.registers[dst as usize] =
-                        frame.registers[src as usize].clone_for_execution();
+                    let value = frame.registers[src as usize].clone_for_execution();
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::LoadLocal { dst, slot } => {
                     let slot_value = &frame.slots[slot as usize];
@@ -450,7 +451,9 @@ fn run_loop(
                     } else {
                         let scope = current_scope(interp, frame);
                         match scope.borrow().lookup(name) {
-                            Lookup::Value(v) => frame.registers[dst as usize] = v,
+                            Lookup::Value(v) => {
+                                frame.registers[dst as usize].assign_for_execution(v)
+                            }
                             Lookup::Uninitialized => {
                                 return Err(VmErr::Msg(format!(
                                     "ReferenceError: Cannot access '{name}' before initialization"
@@ -534,7 +537,8 @@ fn run_loop(
                 Instr::Binary { dst, op, lhs, rhs } => {
                     let l = frame.registers[lhs as usize].clone_for_execution();
                     let r = frame.registers[rhs as usize].clone_for_execution();
-                    frame.registers[dst as usize] = interp.apply_binary(op, &l, &r)?;
+                    let value = interp.apply_binary(op, &l, &r)?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::Unary { dst, op, src } => {
                     let v = frame.registers[src as usize].clone_for_execution();
@@ -548,8 +552,8 @@ fn run_loop(
                     let name = const_string(frame.function, name)?;
                     let rhs = frame.registers[rhs as usize].clone_for_execution();
                     let scope = current_scope(interp, frame);
-                    frame.registers[dst as usize] =
-                        interp.compound_assign_global_in(&scope, name, op, rhs)?;
+                    let value = interp.compound_assign_global_in(&scope, name, op, rhs)?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::CompoundProp {
                     dst,
@@ -592,8 +596,8 @@ fn run_loop(
                 } => {
                     let name = const_string(frame.function, name)?;
                     let scope = current_scope(interp, frame);
-                    frame.registers[dst as usize] =
-                        interp.inc_global_binding_in(&scope, name, delta > 0, prefix)?;
+                    let value = interp.inc_global_binding_in(&scope, name, delta > 0, prefix)?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::IncProp {
                     dst,

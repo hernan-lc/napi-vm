@@ -119,6 +119,7 @@ impl Vars {
         }
     }
 
+    #[inline]
     fn get(&self, n: &str) -> Option<&Binding> {
         match self {
             Vars::Small(v) => v.iter().find(|(k, _)| &**k == n).map(|(_, b)| b),
@@ -126,6 +127,7 @@ impl Vars {
         }
     }
 
+    #[inline]
     fn get_mut(&mut self, n: &str) -> Option<&mut Binding> {
         match self {
             Vars::Small(v) => v.iter_mut().find(|(k, _)| &**k == n).map(|(_, b)| b),
@@ -500,8 +502,12 @@ impl Environment {
             }
             let value = f(binding.value.deref_binding());
             match &binding.value {
-                Value::Binding(cell) => *cell.borrow_mut() = value.clone_for_execution(),
-                _ => binding.value = value.clone_for_execution(),
+                Value::Binding(cell) => cell
+                    .borrow_mut()
+                    .assign_for_execution(value.clone_for_execution()),
+                _ => binding
+                    .value
+                    .assign_for_execution(value.clone_for_execution()),
             }
             return ModifyOutcome::Updated(value);
         }

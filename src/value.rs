@@ -2405,6 +2405,17 @@ impl Value {
         }
     }
 
+    /// Update an unchanged scalar variant in place. All heap-containing
+    /// replacements still run the ordinary assignment and iterative Drop.
+    #[inline(always)]
+    pub(crate) fn assign_for_execution(&mut self, value: Self) {
+        match (&mut *self, &value) {
+            (Self::Number(slot), Self::Number(number)) => *slot = *number,
+            (Self::Bool(slot), Self::Bool(boolean)) => *slot = *boolean,
+            _ => *self = value,
+        }
+    }
+
     /// The shared promise state, if this is a promise.
     ///
     /// A by-reference accessor: `Value` implements `Drop`, so its payloads
