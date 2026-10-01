@@ -1,0 +1,239 @@
+{
+  "created": "/tmp/napi-template-workflows-CnVCKy/ts",
+  "language": "ts"
+}
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+added 8 packages in 6s
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 typecheck
+> tsc --noEmit -p tsconfig.json
+
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 build
+> napi-vm-plugin build . --format js
+
+{
+  "built": true,
+  "format": "js",
+  "directory": "/tmp/napi-template-workflows-CnVCKy/ts",
+  "output": "./dist/main.js",
+  "target": null
+}
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 test:node
+> npm run build && node --test tests/*.node.test.mjs
+
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 build
+> napi-vm-plugin build . --format js
+
+{
+  "built": true,
+  "format": "js",
+  "directory": "/tmp/napi-template-workflows-CnVCKy/ts",
+  "output": "./dist/main.js",
+  "target": null
+}
+✔ greeter logic and validation through the SDK harness (34.704926ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 955.701946
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 test:artifact
+> napi-vm-plugin test . --artifact --runtime node
+
+{
+  "passed": 1,
+  "results": [
+    {
+      "method": "greet",
+      "result": {
+        "message": "Hola, Ana"
+      }
+    }
+  ]
+}
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 dev
+> napi-vm-plugin dev . --runtime node
+
+Development host ready. Watching sources; Ctrl-C stops all owned processes.
+Reloaded successfully
+{
+  "stopped": true
+}
+bun install v1.4.2 (744846f84)
+[1.02ms] migrated lockfile from package-lock.json
+Saved lockfile
+
++ @napi-vm/plugin-protocol@vendor/plugin-protocol
++ @napi-vm/plugin-sdk@vendor/plugin-sdk
++ @napi-vm/plugin-cli@vendor/plugin-cli
+
+5 packages installed [64.00ms]
+$ tsc --noEmit -p tsconfig.json
+bun test v1.4.2 (744846f84)
+
+tests/business.node.test.mjs:
+(pass) greeter logic and validation through the SDK harness [38.19ms]
+
+ 1 pass
+ 0 fail
+Ran 1 test across 1 file. [700.00ms]
+$ napi-vm-plugin build . --format js
+{
+  "built": true,
+  "format": "js",
+  "directory": "/tmp/napi-template-workflows-CnVCKy/ts",
+  "output": "./dist/main.js",
+  "target": null
+}
+$ napi-vm-plugin test . --artifact --runtime bun
+{
+  "passed": 1,
+  "results": [
+    {
+      "method": "greet",
+      "result": {
+        "message": "Hola, Ana"
+      }
+    }
+  ]
+}
+$ napi-vm-plugin dev . --runtime bun
+Development host ready. Watching sources; Ctrl-C stops all owned processes.
+Reloaded successfully
+{
+  "stopped": true
+}
+{
+  "created": "/tmp/napi-template-workflows-CnVCKy/js",
+  "language": "js"
+}
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+added 8 packages in 9s
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 typecheck
+> tsc --noEmit -p tsconfig.json
+
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 build
+> napi-vm-plugin build . --format js
+
+{
+  "built": true,
+  "format": "js",
+  "directory": "/tmp/napi-template-workflows-CnVCKy/js",
+  "output": "./dist/main.js",
+  "target": null
+}
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 test:node
+> npm run build && node --test tests/*.node.test.mjs
+
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 build
+> napi-vm-plugin build . --format js
+
+{
+  "built": true,
+  "format": "js",
+  "directory": "/tmp/napi-template-workflows-CnVCKy/js",
+  "output": "./dist/main.js",
+  "target": null
+}
+✔ greeter logic and validation through the SDK harness (25.004816ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 671.610983
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 test:artifact
+> napi-vm-plugin test . --artifact --runtime node
+
+{
+  "passed": 1,
+  "results": [
+    {
+      "method": "greet",
+      "result": {
+        "message": "Hola, Ana"
+      }
+    }
+  ]
+}
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> trusted-greeter-template@0.1.0 dev
+> napi-vm-plugin dev . --runtime node
+
+Development host ready. Watching sources; Ctrl-C stops all owned processes.
+Reloaded successfully
+{
+  "stopped": true
+}
+bun install v1.4.2 (744846f84)
+[1.73ms] migrated lockfile from package-lock.json
+Saved lockfile
+
++ @napi-vm/plugin-protocol@vendor/plugin-protocol
++ @napi-vm/plugin-sdk@vendor/plugin-sdk
++ @napi-vm/plugin-cli@vendor/plugin-cli
+
+5 packages installed [11.00ms]
+$ tsc --noEmit -p tsconfig.json
+bun test v1.4.2 (744846f84)
+
+tests/business.node.test.mjs:
+(pass) greeter logic and validation through the SDK harness [43.00ms]
+
+ 1 pass
+ 0 fail
+Ran 1 test across 1 file. [311.00ms]
+$ napi-vm-plugin build . --format js
+{
+  "built": true,
+  "format": "js",
+  "directory": "/tmp/napi-template-workflows-CnVCKy/js",
+  "output": "./dist/main.js",
+  "target": null
+}
+$ napi-vm-plugin test . --artifact --runtime bun
+{
+  "passed": 1,
+  "results": [
+    {
+      "method": "greet",
+      "result": {
+        "message": "Hola, Ana"
+      }
+    }
+  ]
+}
+$ napi-vm-plugin dev . --runtime bun
+Development host ready. Watching sources; Ctrl-C stops all owned processes.
+Reloaded successfully
+TEMPLATE_WORKFLOWS_PASS
+TEMPLATE_WORKFLOW_ROOT=/tmp/napi-template-workflows-CnVCKy

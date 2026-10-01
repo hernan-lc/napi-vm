@@ -1,0 +1,62 @@
+    Finished `release` profile [optimized] target(s) in 0.98s
+{
+  "built": true,
+  "format": "executable",
+  "directory": "/tmp/napi-rust-only-jcAX2S/plugin",
+  "output": "./bin/plugin",
+  "target": {
+    "os": "linux",
+    "arch": "x64",
+    "libc": "gnu"
+  }
+}
+{
+  "passed": 1,
+  "results": [
+    {
+      "method": "greet",
+      "result": {
+        "message": "Hola, Ana"
+      }
+    }
+  ]
+}
+{
+  "directory": "/tmp/napi-rust-package-2x4rRF/package",
+  "lock": {
+    "lockVersion": 1,
+    "pluginId": "example.greeter",
+    "pluginVersion": "0.1.0",
+    "artifact": {
+      "profile": "native-executable",
+      "target": {
+        "os": "linux",
+        "arch": "x64",
+        "libc": "gnu"
+      },
+      "runtime": [],
+      "abi": "native-executable",
+      "availability": {
+        "built": true,
+        "distributed": false,
+        "tested": []
+      }
+    },
+    "interfaces": {
+      "example.greeter": {
+        "version": "1.0.0",
+        "digest": "ca8aa1104513e5324f7aaaca699f3c4160f4b35ba934b4c1fc3d236aa77c9824"
+      }
+    },
+    "files": {
+      "bin/plugin": "4e2c434e238ca470fd0a9632ab6bba66dbfd97f728d1f26404b97a6b5efacca2",
+      "contracts/greeter.contract.json": "64c067dfb64208cc7496701ce80ea9e8ae75969f48cb79b04f56c3d4751421ab",
+      "plugin.json": "c79e66b48cf95b0616dcafb2fe0e9cc615ae4b65751ccdac00a7778c36af4268"
+    }
+  }
+}
+{
+  "message": "Hola, Ana"
+}
+
+RUST_TEMPLATE_ARTIFACT_PASS

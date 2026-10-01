@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://napi-vm.invalid/trusted-plugins/descriptor.schema.json",
+  "title": "Trusted process plugin descriptor v1",
+  "type": "object",
+  "properties": {
+    "descriptorVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "types": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^\\./.+$"
+    },
+    "methods": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*:)(?![/\\\\])[^#\\\\]*#/(?:[^~]|~[01])+$"
+          },
+          "output": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*:)(?![/\\\\])[^#\\\\]*#/(?:[^~]|~[01])+$"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "maxItems": 256,
+            "uniqueItems": true
+          },
+          "idempotent": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "input",
+          "output",
+          "errors"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "errors": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*:)(?![/\\\\])[^#\\\\]*#/(?:[^~]|~[01])+$"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "events": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "payload": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*:)(?![/\\\\])[^#\\\\]*#/(?:[^~]|~[01])+$"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "payload"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "state": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^(?![A-Za-z][A-Za-z0-9+.-]*:)(?![/\\\\])[^#\\\\]*#/(?:[^~]|~[01])+$"
+        }
+      },
+      "required": [
+        "contract",
+        "version",
+        "schema"
+      ],
+      "additionalProperties": false
+    },
+    "title": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "descriptorVersion",
+    "id",
+    "version",
+    "types",
+    "methods",
+    "errors",
+    "events"
+  ],
+  "additionalProperties": false
+}

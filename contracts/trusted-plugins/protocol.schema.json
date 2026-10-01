@@ -1,0 +1,1523 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://napi-vm.invalid/trusted-plugins/protocol.schema.json",
+  "title": "Trusted process plugin protocol v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/notification"
+    },
+    {
+      "$ref": "#/$defs/success"
+    },
+    {
+      "$ref": "#/$defs/failure"
+    }
+  ],
+  "$defs": {
+    "jsonValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number",
+          "minimum": -1.7976931348623157e+308,
+          "maximum": 1.7976931348623157e+308
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/jsonValue"
+          }
+        }
+      ]
+    },
+    "hello": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "instanceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^:]+$"
+        },
+        "pluginId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+        },
+        "pluginVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
+        "protocol": {
+          "type": "object",
+          "properties": {
+            "major": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "minMinor": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "maxMinor": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "major",
+            "minMinor",
+            "maxMinor"
+          ],
+          "additionalProperties": false
+        },
+        "interfaces": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+          },
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "version",
+              "digest"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "requiresHost": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+          },
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "version",
+              "digest"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxItems": 32
+        }
+      },
+      "required": [
+        "token",
+        "instanceId",
+        "sessionId",
+        "pluginId",
+        "pluginVersion",
+        "protocol",
+        "interfaces",
+        "requiresHost",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    "helloResult": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "type": "object",
+          "properties": {
+            "major": {
+              "const": 1
+            },
+            "minor": {
+              "const": 0
+            }
+          },
+          "required": [
+            "major",
+            "minor"
+          ],
+          "additionalProperties": false
+        },
+        "interfaces": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+          },
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "version",
+              "digest"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "maxFrameBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "maxDepth": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "maxPendingCalls": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "maxQueuedBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "maxCallChainLength": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "callTimeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "startupTimeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "shutdownTimeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "maxLogBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            "maxEventQueue": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            }
+          },
+          "required": [
+            "maxFrameBytes",
+            "maxDepth",
+            "maxPendingCalls",
+            "maxQueuedBytes",
+            "maxCallChainLength",
+            "callTimeoutMs",
+            "startupTimeoutMs",
+            "shutdownTimeoutMs",
+            "maxLogBytes",
+            "maxEventQueue"
+          ],
+          "additionalProperties": false
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxItems": 32
+        }
+      },
+      "required": [
+        "protocol",
+        "interfaces",
+        "limits",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    "initialize": {
+      "type": "object",
+      "properties": {
+        "configuration": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "context": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/snapshot"
+        }
+      },
+      "required": [
+        "configuration",
+        "context",
+        "snapshot"
+      ],
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "stateVersion": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "contract": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+            },
+            "data": {
+              "$ref": "#/$defs/jsonValue"
+            }
+          },
+          "required": [
+            "stateVersion",
+            "contract",
+            "data"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "invoke": {
+      "type": "object",
+      "properties": {
+        "interface": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "input": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "callChain": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "maxItems": 16
+            }
+          },
+          "required": [
+            "timeoutMs",
+            "callChain"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "interface",
+        "version",
+        "method",
+        "input",
+        "context"
+      ],
+      "additionalProperties": false
+    },
+    "quiesce": {
+      "type": "object",
+      "properties": {
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "timeoutMs"
+      ],
+      "additionalProperties": false
+    },
+    "empty": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "cancel": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 164,
+          "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "properties": {
+        "interface": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
+        "event": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^:]+$"
+        },
+        "sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "payload": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "relatedRequestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 164,
+          "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+        }
+      },
+      "required": [
+        "interface",
+        "version",
+        "event",
+        "sessionId",
+        "sequence",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    "request": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 164,
+              "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+            },
+            "method": {
+              "const": "system.hello"
+            },
+            "params": {
+              "$ref": "#/$defs/hello"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 164,
+              "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+            },
+            "method": {
+              "const": "system.initialize"
+            },
+            "params": {
+              "$ref": "#/$defs/initialize"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 164,
+              "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+            },
+            "method": {
+              "const": "system.invoke"
+            },
+            "params": {
+              "$ref": "#/$defs/invoke"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 164,
+              "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+            },
+            "method": {
+              "const": "system.quiesce"
+            },
+            "params": {
+              "$ref": "#/$defs/quiesce"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 164,
+              "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+            },
+            "method": {
+              "const": "system.snapshot"
+            },
+            "params": {
+              "$ref": "#/$defs/empty"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 164,
+              "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+            },
+            "method": {
+              "const": "system.shutdown"
+            },
+            "params": {
+              "$ref": "#/$defs/empty"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 164,
+              "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+            },
+            "method": {
+              "const": "system.ping"
+            },
+            "params": {
+              "$ref": "#/$defs/empty"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "notification": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "method": {
+              "const": "system.cancel"
+            },
+            "params": {
+              "$ref": "#/$defs/cancel"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "method": {
+              "const": "system.event"
+            },
+            "params": {
+              "$ref": "#/$defs/event"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "method",
+            "params"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "success": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 164,
+          "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+        },
+        "result": {
+          "$ref": "#/$defs/jsonValue"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "failure": {
+      "type": "object",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 164,
+          "pattern": "^[hp]:[^:]{1,128}:[1-9][0-9]{0,30}$"
+        },
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "error": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32700
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "PARSE_ERROR"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32600
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "INVALID_REQUEST"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32601
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "METHOD_NOT_FOUND"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32602
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "INVALID_ARGUMENT"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32603
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "INTERNAL_ERROR"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32001
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "NOT_READY"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32002
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "PROTOCOL_MISMATCH"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32003
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "CONTRACT_MISMATCH"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32004
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "CANCELLED"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32005
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "DEADLINE_EXCEEDED"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32006
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "OVERLOADED"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32007
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "PLUGIN_EXITED"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32008
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "CONNECTION_CLOSED"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32009
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "REENTRANT_CALL"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32010
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "INVALID_RESULT"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32011
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "STATE_INCOMPATIBLE"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": -32012
+            },
+            "message": {
+              "type": "string",
+              "minLength": 0,
+              "maxLength": 2048
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "const": "APPLICATION_ERROR"
+                },
+                "details": {
+                  "$ref": "#/$defs/jsonValue"
+                },
+                "domainCode": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "data": {
+                  "$ref": "#/$defs/jsonValue"
+                }
+              },
+              "required": [
+                "code",
+                "domainCode",
+                "data"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "description": "Length-prefixed UTF-8 JSON, 4-byte big-endian length. JSON arrays/batches are rejected. Duplicate keys use the last value. Depth and byte limits are enforced by the frame codec; business values are validated by negotiated generated contracts. Unknown request methods receive METHOD_NOT_FOUND, unknown notifications are counted and ignored."
+}

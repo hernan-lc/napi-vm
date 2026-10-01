@@ -1,0 +1,33 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> napi-vm@0.1.5 plugins:test:packaged
+> node tools/plugins/package-smoke.mjs
+
+{
+  "results": [
+    {
+      "test": "relocated-node",
+      "status": "pass"
+    },
+    {
+      "test": "relocated-bun",
+      "status": "pass"
+    },
+    {
+      "test": "tampered-byte-rejected",
+      "status": "pass"
+    },
+    {
+      "test": "relocated-greeter-rust-no-JS-or-Cargo-PATH",
+      "status": "pass"
+    },
+    {
+      "test": "relocated-greeter-bun-no-JS-or-Cargo-PATH",
+      "status": "pass"
+    },
+    {
+      "test": "node-only-packed-consumer",
+      "status": "pass"
+    }
+  ]
+}

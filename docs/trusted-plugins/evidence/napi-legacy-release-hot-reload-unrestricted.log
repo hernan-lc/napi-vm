@@ -1,0 +1,29 @@
+bun test v1.4.2 (744846f84)
+
+tests/hot-reload.test.js:
+  [OK] ipc loaded
+[hot-reload] change detected: ipc.js
+  [OK] ipc loaded
+[hot-reload] rebuild complete
+
+475 |     const endpoint = process.platform === "win32"
+476 |       ? `\\\\.\\pipe\\napi-vm-${this.id}-${process.pid}-${this.sessionId}`
+477 |       : path.join(os.tmpdir(), `napi-vm-${this.id}-${process.pid}-${this.sessionId}.sock`);
+478 |     this.address = endpoint;
+479 |     this.server = net.createServer((socket) => this.accept(socket));
+480 |     this.server.listen(endpoint, () => {
+                      ^
+error: Failed to listen at /tmp/napi-vm-e525fdadd6aa8c904893-5-9e7813a3-6402-4a8f-bf63-864ac90d4584.sock
+      at <anonymous> (node:net:2077:34)
+      at listenInCluster (node:net:2192:24)
+      at listen (node:net:2066:20)
+      at start (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/runtime/session.cjs:480:17)
+      at start (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/examples/lib/hot-reload.ts:76:19)
+      at <anonymous> (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/tests/hot-reload.test.js:242:28)
+(fail) HotReloader republishes IPC metadata for each VM generation [213.43ms]
+
+ 0 pass
+ 21 filtered out
+ 1 fail
+ 6 expect() calls
+Ran 1 test across 1 file. [939.00ms]

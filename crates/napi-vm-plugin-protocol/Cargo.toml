@@ -1,0 +1,12 @@
+[package]
+name = "napi-vm-plugin-protocol"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Independent trusted-process plugin wire protocol and validation"
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+sha2 = "0.10"
+serde_json_canonicalizer = "0.3.2"

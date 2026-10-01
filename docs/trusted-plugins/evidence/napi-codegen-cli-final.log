@@ -1,0 +1,25 @@
+✔ create provides real templates and never overwrites (2726.938721ms)
+✔ pack creates relocatable complete inventory and detects tampering (508.183089ms)
+✔ unsafe paths, outside symlinks, directory cycles and secrets fail before output (33.848542ms)
+✔ CLI rejects missing option values and invalid JSON without loading (0.737669ms)
+✔ doctor validates runtime names before probing executables (151.311962ms)
+✔ CLI entrypoint runs through an npm-style bin symlink (896.804759ms)
+✔ native dev launch stages have verified inventories before host startup (420.668127ms)
+✔ checked-in generation is reproducible (273.236839ms)
+✔ canonical nested key ordering (2.551225ms)
+✔ unsupported keyword and recursive refs fail; missing outputs fail check without writes (83.495184ms)
+✔ strict profile rejects conflicting or unrepresentable schemas with a pointer (132.298314ms)
+✔ source object ordering and checkout path do not change identity (91.79533ms)
+✔ stale check preserves existing bytes and generated Rust retains typed wire structures (64.44463ms)
+✔ codegen metadata is explicit, deterministic and supports read-only checking (70.18116ms)
+✔ lone surrogate literals, descriptions and property names are rejected before emission (87.278065ms)
+✔ generated CONTRACT keeps prototype-sensitive properties as owned data (21.433315ms)
+✔ Rust raw and escaped identifiers share the same collision namespace (7.929558ms)
+ℹ tests 17
+ℹ suites 0
+ℹ pass 17
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6037.428174

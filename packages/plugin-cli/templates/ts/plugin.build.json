@@ -1,0 +1,10 @@
+{
+  "language": "ts",
+  "entry": "src/main.ts",
+  "output": "dist/main.js",
+  "runtimes": [
+    "bun",
+    "node"
+  ],
+  "preferredRuntime": "bun"
+}

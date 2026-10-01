@@ -1,0 +1,14 @@
+{
+  "scenarios": [
+    {
+      "interface": "example.greeter",
+      "method": "greet",
+      "input": {
+        "name": "Ana"
+      },
+      "expected": {
+        "message": "Hola, Ana"
+      }
+    }
+  ]
+}

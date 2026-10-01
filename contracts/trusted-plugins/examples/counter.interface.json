@@ -1,0 +1,30 @@
+{
+  "id": "example.counter",
+  "version": "1.0.0",
+  "methods": {
+    "add": {
+      "input": "#/$defs/AddInput",
+      "output": "#/$defs/Count",
+      "errors": []
+    },
+    "get": {
+      "input": "#/$defs/Empty",
+      "output": "#/$defs/Count",
+      "errors": [],
+      "idempotent": true
+    }
+  },
+  "errors": {},
+  "events": {
+    "changed": {
+      "payload": "#/$defs/Count"
+    }
+  },
+  "state": {
+    "contract": "example.counter.state",
+    "version": 1,
+    "schema": "#/$defs/Count"
+  },
+  "descriptorVersion": 1,
+  "types": "./counter.types.schema.json"
+}

@@ -1,0 +1,44 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-process",
+  "id": "example.greeter",
+  "version": "0.1.0",
+  "protocol": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "provides": {
+    "example.greeter": "1.0.0"
+  },
+  "requiresHost": {
+    "app.configuration": "1.0.0"
+  },
+  "profile": "portable-js",
+  "contracts": [
+    "contracts/greeter.contract.json",
+    "contracts/app-configuration.contract.json"
+  ],
+  "launch": {
+    "kind": "javascript",
+    "entry": "./dist/main.mjs",
+    "runtimes": [
+      "bun",
+      "node"
+    ],
+    "preferredRuntime": "bun",
+    "args": []
+  },
+  "development": {
+    "entry": "./src/main.mjs",
+    "runtime": "bun"
+  },
+  "assets": [],
+  "dependencies": {
+    "native": [],
+    "services": [],
+    "capabilities": [
+      "app.configuration"
+    ]
+  }
+}

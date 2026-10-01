@@ -1,0 +1,33 @@
+{
+  "name": "@napi-vm/plugin-codegen",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.mts",
+      "import": "./src/index.mjs"
+    }
+  },
+  "bin": {
+    "napi-vm-plugin-codegen": "./src/index.mjs"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "types": "./src/index.d.mts",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "@types/node": "^22.10.0"
+  },
+  "dependencies": {
+    "@napi-vm/plugin-protocol": "0.1.0"
+  }
+}

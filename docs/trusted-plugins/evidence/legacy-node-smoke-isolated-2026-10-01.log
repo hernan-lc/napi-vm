@@ -1,0 +1,58 @@
+TAP version 13
+# Subtest: the CommonJS entry point loads the native binding
+ok 1 - the CommonJS entry point loads the native binding
+  ---
+  duration_ms: 89.272846
+  type: 'test'
+  ...
+# Subtest: the ESM entry point loads the native binding
+ok 2 - the ESM entry point loads the native binding
+  ---
+  duration_ms: 52.520184
+  type: 'test'
+  ...
+# Subtest: the generated entry points agree on the package version
+ok 3 - the generated entry points agree on the package version
+  ---
+  duration_ms: 1.272654
+  type: 'test'
+  ...
+# Subtest: basic evaluation works
+ok 4 - basic evaluation works
+  ---
+  duration_ms: 27.995454
+  type: 'test'
+  ...
+# Subtest: values marshal in both directions
+ok 5 - values marshal in both directions
+  ---
+  duration_ms: 18.989625
+  type: 'test'
+  ...
+# Subtest: host functions are callable from the guest
+ok 6 - host functions are callable from the guest
+  ---
+  duration_ms: 2.969694
+  type: 'test'
+  ...
+# Subtest: tests/node/smoke.test.js
+not ok 1 - tests/node/smoke.test.js
+  ---
+  duration_ms: 4054.651602
+  type: 'test'
+  location: '/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/tests/node/smoke.test.js:1:1'
+  failureType: 'testCodeFailure'
+  exitCode: ~
+  signal: 'SIGSEGV'
+  error: 'test failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..7
+# tests 7
+# suites 0
+# pass 6
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4119.467708

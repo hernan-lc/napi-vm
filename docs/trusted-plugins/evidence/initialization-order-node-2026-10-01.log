@@ -1,0 +1,22 @@
+✔ initialize success admits READY before a coalesced first event (1469.284029ms)
+✔ initialize premature response cannot admit READY (1555.442027ms)
+✔ initialize invalid response cannot admit READY (1490.382545ms)
+✔ initialize failed response cannot admit READY (1383.581228ms)
+✔ initialize retired response cannot admit READY (1467.121874ms)
+✔ a coalesced malformed event cannot make load report a dead READY session (1468.712205ms)
+✔ event fence preserves initialize reply order while host callbacks remain live (46.419587ms)
+✔ held events are bounded and failed initialization keeps them fenced until close (3.019335ms)
+✔ transport close before initialize reply discards held events (22.639361ms)
+✔ result admission precedes a following event in the same read (0.947655ms)
+✔ invalid or late successful results never admit a pending lifecycle (70.604867ms)
+✔ SDK initialization event task preserves reply order and cleanup: success (1953.688083ms)
+✔ SDK initialization event task preserves reply order and cleanup: initialize-error (1515.083438ms)
+✔ SDK initialization event task preserves reply order and cleanup: disconnect (1074.372764ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10078.581595

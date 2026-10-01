@@ -1,0 +1,72 @@
+   Compiling napi-vm-plugin-protocol v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/crates/napi-vm-plugin-protocol)
+   Compiling napi-vm-plugin-sdk v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/crates/napi-vm-plugin-sdk)
+   Compiling napi-vm-plugin-host v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/crates/napi-vm-plugin-host)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 59s
+     Running unittests src/lib.rs (target/debug/deps/napi_vm_plugin_host-6f603bbb79d8d7cd)
+
+running 9 tests
+test services::tests::service_child ... ignored, controlled sidecar child invoked only by lifecycle test
+test ownership_regressions::ready_never_overwrites_failed_or_wrong_generation ... ok
+test services::tests::target_rejects_mismatch ... ok
+test tests::retention_stays_bounded ... ok
+test tests::target_and_package_paths_are_explicit ... ok
+test services::tests::readiness_checks_http_status ... ok
+test tests::log_redaction_spans_arbitrary_chunks ... ok
+test ownership_regressions::host_owns_author_tasks_until_shutdown ... ok
+test services::tests::starts_only_after_http_readiness_and_reaps_direct_child ... ok
+
+test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 13.86s
+
+     Running unittests src/lib.rs (target/debug/deps/napi_vm_plugin_protocol-0d5b79c251d4ed20)
+
+running 16 tests
+test peer::tests::fragmented_frames_and_bounds ... ok
+test finite_tests::finite_before_optional_serialization ... ok
+test peer::tests::dropped_response_waiter_cannot_run_lifecycle_admission ... ok
+test schema::digest_tests::canonical_profiles_reject_unsupported_union_and_nullable_literals ... ok
+test schema::tests::canonical_adapters ... ok
+test schema::tests::reject_unsupported ... ok
+test schema::tests::semantic_validation ... ok
+test tests::numeric_forms_and_duplicate_keys ... ok
+test tests::missing_is_not_null ... ok
+test peer::tests::held_events_share_budget_and_failure_or_close_discards_them ... ok
+test peer::tests::result_admission_precedes_following_event_without_polling_request ... ok
+test peer::tests::event_fence_orders_reply_first_and_preserves_host_callbacks ... ok
+test schema::digest_tests::authoritative_js_canonical_bytes_and_tamper ... ok
+test peer::tests::requests_out_of_order_and_cancellation ... ok
+test peer::tests::invalid_failed_and_late_results_cannot_admit_a_lifecycle ... ok
+test peer::tests::control_and_business_share_one_reserved_byte_budget ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.73s
+
+     Running unittests src/lib.rs (target/debug/deps/napi_vm_plugin_sdk-139e4222f768bd8a)
+
+running 8 tests
+test dispatch_regressions::old_queued_events_are_purged_without_breaking_subscription ... ok
+test draining_event_regression::inflight_handler_can_emit_while_quiescing_before_snapshot ... ok
+test resource_registration_regression::factory_runs_only_after_tracking_and_quiesce_waits_for_it ... ok
+test tests::saturated_subscriber_observable ... ok
+test tests::uncooperative_managed_task_blocks_snapshot ... ok
+test tests::initialize_task_event_waits_for_reply_without_delaying_ready_or_task_completion ... ok
+test dispatch_regressions::bound_and_independent_callback_cycles_reject_promptly ... ok
+test tests::harness_validates_and_lifecycle ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+   Doc-tests napi_vm_plugin_host
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests napi_vm_plugin_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests napi_vm_plugin_sdk
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

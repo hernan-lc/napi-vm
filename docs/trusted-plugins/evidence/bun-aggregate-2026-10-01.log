@@ -1,0 +1,149 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> napi-vm@0.1.5 plugins:test:bun
+> bun test --timeout 30000 packages/plugin-*/test/*.test.mjs tools/plugins/test/*.test.mjs examples/trusted/*/test/*.test.mjs
+
+bun test v1.4.2 (744846f84)
+
+packages/plugin-protocol/test/protocol.test.mjs:
+(pass) W01/W02 all fragmentation boundaries and coalesced Unicode frames [30.43ms]
+(pass) W03/W04 bounded malformed framing, UTF8, JSON, nesting and truncation [22.90ms]
+(pass) W05 duplicate keys last wins; prototype-sensitive keys are data [0.37ms]
+(pass) D01-D05 data rejects undefined/sparse/class/getter/cycle and preserves finite semantics [18.26ms]
+(pass) D02 runtime contract identities/profile and integer validation [23.49ms]
+(pass) W07 out-of-order responses correlate by ID; control remains live [92.95ms]
+(pass) R07/R08/R09 busy independent chains fail promptly; timeout preserves active slot [31.86ms]
+(pass) R08 pre-aborted calls settle without dispatch [7.25ms]
+(pass) W06 duplicate active IDs terminate without double dispatch; unknown replies ignored [5.36ms]
+(pass) W08 batches, malformed envelopes, and no-ID business calls close deterministically [14.26ms]
+(pass) R10 pending business capacity rejects without losing independent control response [8.54ms]
+(pass) D01/D04/D09/D10 nullable presence, tagged unions, u64, UTC calendar, and literal identities [20.04ms]
+
+packages/plugin-protocol/test/response-order.test.mjs:
+(pass) event fence preserves initialize reply order while host callbacks remain live [6.79ms]
+(pass) held events are bounded and failed initialization keeps them fenced until close [6.74ms]
+(pass) transport close before initialize reply discards held events [0.82ms]
+(pass) result admission precedes a following event in the same read [0.85ms]
+(pass) invalid or late successful results never admit a pending lifecycle [19.90ms]
+
+packages/plugin-cli/test/cli.test.mjs:
+(pass) create provides real templates and never overwrites [3062.58ms]
+(pass) pack creates relocatable complete inventory and detects tampering [338.53ms]
+(pass) unsafe paths, outside symlinks, directory cycles and secrets fail before output [274.81ms]
+(pass) CLI rejects missing option values and invalid JSON without loading [0.85ms]
+(pass) doctor validates runtime names before probing executables [52.36ms]
+(pass) CLI entrypoint runs through an npm-style bin symlink [558.48ms]
+(pass) native dev launch stages have verified inventories before host startup [187.97ms]
+
+packages/plugin-sdk/test/sdk.test.mjs:
+(pass) SDK definition is side-effect-free and harness validates callbacks/domain errors [8.78ms]
+(pass) D06 invalid output and undeclared error are INVALID_RESULT [1.14ms]
+(pass) R11 startup without managed environment fails immediately [5.44ms]
+(pass) tracked background author tasks cancel and drain before snapshot [1.63ms]
+(pass) harness caller cancellation settles promptly while ignored handler retains its slot [1.19ms]
+(pass) harness validates host event injection and drains the event callback before snapshot [6.47ms]
+(pass) wire timeout remaining duration is a positive integer for Rust callbacks [0.60ms]
+
+packages/plugin-sdk/test/initialization-order.test.mjs:
+(pass) SDK initialization event task preserves reply order and cleanup: success [1726.42ms]
+(pass) SDK initialization event task preserves reply order and cleanup: initialize-error [1145.02ms]
+(pass) SDK initialization event task preserves reply order and cleanup: disconnect [1948.64ms]
+
+packages/plugin-host/test/host.test.mjs:
+(pass) real Node host/compiled TS plugin callback, errors, multiple instances, cleanup [3427.63ms]
+(pass) real JS plugin uses same SDK without author TypeScript [1494.81ms]
+(pass) stable generated client, validated event, stateful reload, repeated shutdown [2377.09ms]
+(pass) callback cycle through independent host service fails promptly [1277.26ms]
+(pass) manifest rejects legacy, unknown fields, executable route and wrong runtime before spawn [137.10ms]
+(pass) failed initialization and shutdown hooks reap children and keep registry nonready [3046.91ms]
+(pass) noisy stdout/stderr drains independently and retained memory is bounded [2180.73ms]
+(pass) trusted fixture direct filesystem outside plugin, HTTP, environment, controlled subprocess [2190.27ms]
+(pass) host-to-plugin events validate negotiated service, are delivered outside reader, and acknowledge [1286.91ms]
+(pass) slow subscriber overflow terminates subscription with observable error without corrupting RPC [1621.21ms]
+(pass) failed quiescence preserves owned old process in DRAINING until explicit unload [2043.26ms]
+(pass) failed replacement retains validated snapshot for explicit recovery, no hidden rollback [5013.77ms]
+(pass) bootstrap token is redacted across stdout/stderr chunk boundaries [1779.72ms]
+(pass) wrong-token connection cannot steal the legitimate child slot [1666.48ms]
+(pass) authorized protocol and digest mismatch reject before initialize [3233.32ms]
+(pass) startup deadline, exit before hello, and exit during invocation are bounded and reaped [4251.99ms]
+(pass) missing runtime is preflight failure and plugin startup failure never retries another runtime [1984.06ms]
+(pass) managed Bun missing package fails without runtime registry installation [657.37ms]
+(pass) control parameter validation rejects malformed lifecycle requests without changing READY [2269.11ms]
+(pass) queued old-session events are discarded across reload while in-progress callback can finish [2977.50ms]
+(pass) direct child exit does not hang on a descendant retaining inherited log pipes [2406.34ms]
+(pass) quiescence lets an in-flight handler finish its event and result before snapshot [4071.68ms]
+(pass) a call-bound host callback context cannot invoke a replacement session [4380.21ms]
+
+packages/plugin-host/test/initialization-order.test.mjs:
+(pass) initialize success admits READY before a coalesced first event [1617.16ms]
+(pass) initialize premature response cannot admit READY [1308.98ms]
+(pass) initialize invalid response cannot admit READY [1311.82ms]
+(pass) initialize failed response cannot admit READY [1206.43ms]
+(pass) initialize retired response cannot admit READY [1485.51ms]
+(pass) a coalesced malformed event cannot make load report a dead READY session [1410.89ms]
+
+packages/plugin-codegen/test/codegen.test.mjs:
+(pass) checked-in generation is reproducible [218.11ms]
+(pass) canonical nested key ordering [0.15ms]
+(pass) unsupported keyword and recursive refs fail; missing outputs fail check without writes [69.39ms]
+(pass) strict profile rejects conflicting or unrepresentable schemas with a pointer [107.45ms]
+(pass) source object ordering and checkout path do not change identity [4.25ms]
+(pass) stale check preserves existing bytes and generated Rust retains typed wire structures [20.18ms]
+(pass) codegen metadata is explicit, deterministic and supports read-only checking [1.63ms]
+(pass) lone surrogate literals, descriptions and property names are rejected before emission [2.96ms]
+(pass) generated CONTRACT keeps prototype-sensitive properties as owned data [0.60ms]
+(pass) Rust raw and escaped identifiers share the same collision namespace [0.48ms]
+
+tools/plugins/test/native-dependency.test.mjs:
+(pass) controlled Node-API dependency is target inventoried and injected [2803.51ms]
+
+tools/plugins/test/artifact-assets.test.mjs:
+(pass) relocated package retains declared assets and dynamic imports [2368.06ms]
+
+tools/plugins/test/shared-contracts.test.mjs:
+(pass) safe max [0.31ms]
+(pass) safe min [0.02ms]
+(pass) unsafe max [0.03ms]
+(pass) float integer [0.02ms]
+(pass) i64-decimal 9223372036854775807 [0.03ms]
+(pass) i64-decimal -9223372036854775808 [0.01ms]
+(pass) i64-decimal 9223372036854775808 [0.02ms]
+(pass) i64-decimal -0 [0.01ms]
+(pass) i64-decimal 01 [0.01ms]
+(pass) i64-decimal +1 [0.01ms]
+(pass) u64-decimal 18446744073709551615 [0.02ms]
+(pass) u64-decimal 18446744073709551616 [0.01ms]
+(pass) u64-decimal -1 [0.01ms]
+(pass) bytes-base64  [0.02ms]
+(pass) bytes-base64 YWJj [0.02ms]
+(pass) bytes-base64 YQ==
+(pass) bytes-base64 YQ [0.01ms]
+(pass) bytes-base64 YR== [0.01ms]
+(pass) utc-datetime 2000-02-29T00:00:00.000Z [0.03ms]
+(pass) utc-datetime 1900-02-29T00:00:00.000Z [0.09ms]
+(pass) utc-datetime 0001-01-01T00:00:00.000Z [0.02ms]
+(pass) utc-datetime 0000-01-01T00:00:00.000Z [0.01ms]
+(pass) utc-datetime 2026-01-01T00:00:60.000Z [0.01ms]
+(pass) astral scalar length [0.04ms]
+(pass) two unicode scalars [15.07ms]
+(pass) optional nullable {} [4.98ms]
+(pass) optional nullable {"value": null} [0.04ms]
+(pass) optional nullable {"value": "x"} [0.07ms]
+(pass) optional nullable {"value": 1} [0.04ms]
+(pass) optional nullable {"other": null} [0.02ms]
+(pass) proto sensitive key [0.01ms]
+(pass) codec all header/body boundaries and coalesced last-key-wins [0.90ms]
+(pass) wire rejects invalid JS data without invoking accessors [1.50ms]
+
+examples/trusted/greeter-js/test/plugin.test.mjs:
+(pass) plain JavaScript generated-contract callback, no TS compilation [2.20ms]
+
+examples/trusted/greeter-ts/test/plugin.test.mjs:
+(pass) generated greeter callback [27.27ms]
+
+examples/trusted/counter-ts/test/plugin.test.mjs:
+(pass) counter snapshot and restore [1.78ms]
+
+ 111 pass
+ 0 fail
+Ran 111 tests across 14 files. [80.47s]

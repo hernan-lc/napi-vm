@@ -1,0 +1,57 @@
+name: Trusted process plugins
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.96.0
+          components: rustfmt, clippy
+      - name: Install pinned Bun
+        run: npm install --global bun@1.4.2
+      - run: npm ci --ignore-scripts
+      - run: npm run plugins:check-generated
+      - run: npm run plugins:build
+      - run: npm run plugins:typecheck
+      - run: npm run plugins:test:node
+      - run: npm run plugins:test:bun
+      - run: npm run plugins:test:rust
+      - run: npm run plugins:test:interop
+      - run: npm run plugins:test:rust-interop
+      - run: npm run plugins:test:packaged
+      - run: npm run plugins:lint
+  # Existing runtime-matrix remains authoritative for full native legacy behavior.
+  legacy-boundary:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.96.0
+      - name: Install tested Bun for legacy runtime comparisons
+        run: npm install --global bun@1.4.2
+      - run: npm ci --ignore-scripts
+      - run: npm run lint:ts
+      - run: cargo test -p napi-vm --no-default-features
+      - run: cargo metadata --locked --no-deps --format-version 1
+      - run: cargo metadata --locked --no-deps --format-version 1 --manifest-path tests/fixtures/node-api/napi-rs/Cargo.toml

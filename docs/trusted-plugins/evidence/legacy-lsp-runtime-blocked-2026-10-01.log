@@ -1,0 +1,35 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.89s
+     Running tests/lsp_runtime.rs (target/debug/deps/lsp_runtime-e010499b0403a62c)
+
+running 3 tests
+test percent_encoded_workspace_root_still_finds_the_runtime ... FAILED
+test runtime_global_completion_and_hover_use_declarative_shapes ... FAILED
+test runtime_metadata_survives_idle_and_session_changes ... FAILED
+
+failures:
+
+---- percent_encoded_workspace_root_still_finds_the_runtime stdout ----
+
+thread 'percent_encoded_workspace_root_still_finds_the_runtime' (17) panicked at tests/lsp_runtime.rs:56:52:
+bind unix socket: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- runtime_global_completion_and_hover_use_declarative_shapes stdout ----
+
+thread 'runtime_global_completion_and_hover_use_declarative_shapes' (18) panicked at tests/lsp_runtime.rs:56:52:
+bind unix socket: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- runtime_metadata_survives_idle_and_session_changes stdout ----
+
+thread 'runtime_metadata_survives_idle_and_session_changes' (19) panicked at tests/lsp_runtime.rs:56:52:
+bind unix socket: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+
+failures:
+    percent_encoded_workspace_root_still_finds_the_runtime
+    runtime_global_completion_and_hover_use_declarative_shapes
+    runtime_metadata_survives_idle_and_session_changes
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p napi-vm --test lsp_runtime`

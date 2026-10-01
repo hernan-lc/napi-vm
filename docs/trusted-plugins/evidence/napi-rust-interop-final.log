@@ -1,0 +1,14 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> napi-vm@0.1.5 plugins:test:rust-interop
+> node tools/plugins/test-rust-interop.mjs
+
+
+running 1 test
+test rust_host_actual_process_matrix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.20s
+
+   Compiling napi-vm-plugin-conformance v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/crates/napi-vm-plugin-conformance)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.76s
+     Running tests/interop.rs (target/debug/deps/interop-f2736aea2da281f9)

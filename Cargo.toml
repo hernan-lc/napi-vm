@@ -124,3 +124,10 @@ codegen-units = 1
 # rather than fail the build trying to fetch/run it.
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
+
+# Trusted process SDKs are independent; the legacy VM remains the default member.
+[workspace]
+resolver = "3"
+default-members = ["."]
+members = ["crates/napi-vm-plugin-protocol", "crates/napi-vm-plugin-sdk", "crates/napi-vm-plugin-host", "crates/napi-vm-plugin-conformance", "examples/trusted/greeter-rust", "examples/trusted/counter-rust", "examples/trusted/host-rust"]
+exclude = ["zed-extension", "tests/fixtures/node-api/napi-rs", "examples/plugins/rust-napi-plugin/native", "vendor/rdev-node", "packages/plugin-cli/templates/rust"]

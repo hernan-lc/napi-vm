@@ -1,0 +1,25 @@
+bun test v1.4.2 (744846f84)
+
+packages/plugin-protocol/test/response-order.test.mjs:
+(pass) event fence preserves initialize reply order while host callbacks remain live [128.22ms]
+(pass) held events are bounded and failed initialization keeps them fenced until close [47.34ms]
+(pass) transport close before initialize reply discards held events [0.59ms]
+(pass) result admission precedes a following event in the same read [0.51ms]
+(pass) invalid or late successful results never admit a pending lifecycle [32.66ms]
+
+packages/plugin-sdk/test/initialization-order.test.mjs:
+(pass) SDK initialization event task preserves reply order and cleanup: success [2484.48ms]
+(pass) SDK initialization event task preserves reply order and cleanup: initialize-error [1784.81ms]
+(pass) SDK initialization event task preserves reply order and cleanup: disconnect [1622.62ms]
+
+packages/plugin-host/test/initialization-order.test.mjs:
+(pass) initialize success admits READY before a coalesced first event [1568.03ms]
+(pass) initialize premature response cannot admit READY [2208.70ms]
+(pass) initialize invalid response cannot admit READY [1472.28ms]
+(pass) initialize failed response cannot admit READY [1606.67ms]
+(pass) initialize retired response cannot admit READY [1495.14ms]
+(pass) a coalesced malformed event cannot make load report a dead READY session [1677.49ms]
+
+ 14 pass
+ 0 fail
+Ran 14 tests across 3 files. [17.09s]

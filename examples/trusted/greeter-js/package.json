@@ -1,0 +1,21 @@
+{
+  "name": "@napi-vm/example-greeter-js",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "test:node": "node --test test/*.test.mjs",
+    "dev": "napi-vm-plugin dev .",
+    "test:artifact": "napi-vm-plugin test . --artifact"
+  },
+  "dependencies": {
+    "@napi-vm/plugin-sdk": "0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "@types/node": "^26.1.2"
+  }
+}

@@ -1,0 +1,9 @@
+   Compiling napi-vm-plugin-protocol v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/crates/napi-vm-plugin-protocol)
+   Compiling napi-vm-plugin-sdk v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/crates/napi-vm-plugin-sdk)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.82s
+     Running unittests src/lib.rs (target/debug/deps/napi_vm_plugin_sdk-139e4222f768bd8a)
+
+running 1 test
+test draining_event_regression::inflight_handler_can_emit_while_quiescing_before_snapshot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.01s

@@ -1,0 +1,30 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.13s
+     Running tests/scheduler.rs (target/debug/deps/scheduler-8f14ac3e1e393a9e)
+
+running 24 tests
+test blocking_only_bridge_is_polled_before_the_full_timeout ... ok
+test blocking_only_waits_bound_cancellation_deadlines_timeouts_and_shutdown ... ok
+test cancellation_and_deadlines_interrupt_long_callbacks_and_coroutine_bodies ... ok
+test cancellation_between_readiness_check_and_wait_is_latched ... ok
+test collection_refuses_while_dequeued_native_job_values_are_on_the_stack ... ok
+test future_await_resumes_before_another_due_timer ... ok
+test future_timer_wait_is_capped_by_execution_deadline ... ok
+test hard_job_boundary_keeps_next_job ... ok
+test hard_limits_survive_soft_yields ... ok
+test host_is_sampled_at_checkpoints_not_per_microtask ... ok
+test last_throwing_microtask_clears_checkpoint ... ok
+test nested_await_checkpoints_share_the_hard_job_budget ... ok
+test nested_timers_and_recursive_microtasks_keep_order ... ok
+test notifier_delivery_between_poll_and_sleep_is_latched ... ok
+test opt_in_alternation_prevents_timer_starvation_under_host_flood ... ok
+test oversized_legacy_ingress_reports_backpressure_without_losing_work ... ok
+test published_gc_roots_do_not_retain_a_cancelled_timer ... ok
+test queued_work_counts_as_progress_without_waiting ... ok
+test real_time_waits_only_for_due_timers_and_reports_progress ... ok
+test soft_yield_resumes_microtasks_before_timers_or_new_evaluation ... ok
+test soft_yields_do_not_refill_guest_fuel ... ok
+test throwing_checkpoint_reconciles_state_without_refilling_jobs ... ok
+test virtual_deadlines_and_nested_timers_are_absolute ... ok
+test zero_and_time_budgets_keep_the_next_job ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
