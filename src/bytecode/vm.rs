@@ -718,9 +718,12 @@ fn run_loop(
                     argc,
                 } => {
                     let argv = borrow_range(frame, args, argc)?;
-                    let callee = frame.registers[callee as usize].clone_for_execution();
-                    frame.registers[dst as usize] =
-                        interp.call_this_borrowed(&callee, Value::Undefined, argv)?;
+                    let value = interp.call_this_borrowed(
+                        &frame.registers[callee as usize],
+                        Value::Undefined,
+                        argv,
+                    )?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::CallMethod {
                     dst,
@@ -730,10 +733,10 @@ fn run_loop(
                     argc,
                 } => {
                     let argv = borrow_range(frame, args, argc)?;
-                    let callee = frame.registers[callee as usize].clone_for_execution();
                     let this = frame.registers[this as usize].clone_for_execution();
-                    frame.registers[dst as usize] =
-                        interp.call_this_borrowed(&callee, this, argv)?;
+                    let value =
+                        interp.call_this_borrowed(&frame.registers[callee as usize], this, argv)?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::Construct {
                     dst,
