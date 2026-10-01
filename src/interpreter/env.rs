@@ -119,7 +119,7 @@ impl Vars {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn get(&self, n: &str) -> Option<&Binding> {
         match self {
             Vars::Small(v) => v.iter().find(|(k, _)| &**k == n).map(|(_, b)| b),
@@ -127,7 +127,7 @@ impl Vars {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn get_mut(&mut self, n: &str) -> Option<&mut Binding> {
         match self {
             Vars::Small(v) => v.iter_mut().find(|(k, _)| &**k == n).map(|(_, b)| b),

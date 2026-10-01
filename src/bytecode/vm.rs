@@ -150,7 +150,7 @@ fn internal(what: &str) -> VmErr {
     VmErr::Msg(format!("internal error: {what}"))
 }
 
-#[inline]
+#[inline(always)]
 fn const_string(function: &BytecodeFunction, index: u16) -> Result<&str, VmErr> {
     match function.constants.get(index as usize) {
         Some(Constant::String(name)) => Ok(name),
