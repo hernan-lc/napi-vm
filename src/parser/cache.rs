@@ -1,15 +1,9 @@
 //! Content-addressed parse cache: identical sources share one AST across
 //! every interpreter in the process.
 //!
-//! Plugin modules are read from disk per load but change rarely; without a
-//! cache every restart re-lexes and re-parses every module, and the static
-//! import scan parses each module a second time. The cache keys on source
-//! length plus two 64-bit hashes, so a stale entry needs a 128-bit
-//! collision. Entries are `Arc`-shared ASTs (pure data, safe to share
-//! across threads); failures are never cached. The table is bounded and
-//! clears wholesale when full — simple and starvation-free, since hot
-//! entries re-populate on next use. A poisoned lock fails open to a fresh
-//! parse rather than poisoning execution.
+//! Entries compare exact source contents, retain at most 1024 programs and
+//! 8 MiB of source, and evict least-recently-used entries with bounded periodic recency cleanup. Failures are not
+//! cached. A poisoned lock fails open to a fresh parse.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -41,37 +35,83 @@ impl CachedParseError {
 }
 
 const MAX_CACHED_PROGRAMS: usize = 1024;
+const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 
-/// Source key → shared AST for every identical source in the process.
-type ParseCacheMap = HashMap<(u64, u64, u64), Arc<Vec<Statement>>>;
-
-static PARSE_CACHE: OnceLock<Mutex<ParseCacheMap>> = OnceLock::new();
-
-fn cache() -> &'static Mutex<ParseCacheMap> {
-    PARSE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+struct ParseCacheEntry {
+    source: Arc<str>,
+    statements: Arc<Vec<Statement>>,
+    generation: u64,
 }
-
-fn source_key(source: &str) -> (u64, u64, u64) {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut first = DefaultHasher::new();
-    0u8.hash(&mut first);
-    source.hash(&mut first);
-    let mut second = DefaultHasher::new();
-    1u8.hash(&mut second);
-    source.hash(&mut second);
-    (source.len() as u64, first.finish(), second.finish())
+/// Exact-source LRU. Hash collisions are resolved by HashMap's equality check.
+#[derive(Default)]
+struct ParseCache<S = std::collections::hash_map::RandomState> {
+    entries: HashMap<Arc<str>, ParseCacheEntry, S>,
+    order: std::collections::VecDeque<(Arc<str>, u64)>,
+    source_bytes: usize,
+}
+impl<S: std::hash::BuildHasher> ParseCache<S> {
+    fn get(&mut self, source: &str) -> Option<Arc<Vec<Statement>>> {
+        let entry = self.entries.get_mut(source)?;
+        let result = entry.statements.clone();
+        entry.generation = entry.generation.wrapping_add(1);
+        self.order
+            .push_back((entry.source.clone(), entry.generation));
+        // Hits are O(1); compact only after a bounded batch of accesses.
+        // At most two records per permitted entry survive between cleanups.
+        if self.order.len() > 2 * MAX_CACHED_PROGRAMS {
+            self.order.retain(|(key, generation)| {
+                self.entries
+                    .get(key)
+                    .is_some_and(|entry| entry.generation == *generation)
+            });
+        }
+        Some(result)
+    }
+    fn insert(&mut self, source: &str, statements: Arc<Vec<Statement>>) {
+        if source.len() > MAX_SOURCE_BYTES || self.entries.contains_key(source) {
+            return;
+        }
+        while self.entries.len() >= MAX_CACHED_PROGRAMS
+            || self.source_bytes + source.len() > MAX_SOURCE_BYTES
+        {
+            let Some((key, generation)) = self.order.pop_front() else {
+                break;
+            };
+            if self
+                .entries
+                .get(&key)
+                .is_some_and(|entry| entry.generation == generation)
+            {
+                self.entries.remove(&key);
+                self.source_bytes -= key.len();
+            }
+        }
+        let source: Arc<str> = source.into();
+        self.source_bytes += source.len();
+        self.order.push_back((source.clone(), 0));
+        self.entries.insert(
+            source.clone(),
+            ParseCacheEntry {
+                source,
+                statements,
+                generation: 0,
+            },
+        );
+    }
+}
+static PARSE_CACHE: OnceLock<Mutex<ParseCache>> = OnceLock::new();
+fn cache() -> &'static Mutex<ParseCache> {
+    PARSE_CACHE.get_or_init(|| Mutex::new(ParseCache::default()))
 }
 
 /// Lex + parse `source`, sharing the AST with every identical source in
 /// the process. Hit: no lexer, no parser. Miss: parse once and store.
 /// Errors are re-parsed on every call (cold path, never cached).
 pub(crate) fn parse_cached(source: &str) -> Result<Arc<Vec<Statement>>, CachedParseError> {
-    let key = source_key(source);
-    if let Ok(cache) = cache().lock()
-        && let Some(hit) = cache.get(&key)
+    if let Ok(mut cache) = cache().lock()
+        && let Some(hit) = cache.get(source)
     {
-        return Ok(Arc::clone(hit));
+        return Ok(hit);
     }
     let tokens = Lexer::new(source).tokenize_with_spans();
     let mut parser = Parser::new_with_spans(tokens);
@@ -86,10 +126,7 @@ pub(crate) fn parse_cached(source: &str) -> Result<Arc<Vec<Statement>>, CachedPa
     };
     let shared = Arc::new(statements);
     if let Ok(mut cache) = cache().lock() {
-        if cache.len() >= MAX_CACHED_PROGRAMS {
-            cache.clear();
-        }
-        cache.insert(key, Arc::clone(&shared));
+        cache.insert(source, Arc::clone(&shared));
     }
     Ok(shared)
 }
@@ -101,6 +138,59 @@ mod tests {
 
     fn parse_count() -> u64 {
         PARSE_PROGRAM_COUNT.with(|count| count.get())
+    }
+
+    #[derive(Default)]
+    struct CollidingHasher;
+    impl std::hash::Hasher for CollidingHasher {
+        fn finish(&self) -> u64 {
+            0
+        }
+        fn write(&mut self, _: &[u8]) {}
+    }
+    type CollisionBuilder = std::hash::BuildHasherDefault<CollidingHasher>;
+    #[test]
+    fn exact_contents_resolve_forced_hash_collisions() {
+        let mut cache = ParseCache::<CollisionBuilder>::default();
+        let one = parse_cached("1;").unwrap();
+        let two = parse_cached("2;").unwrap();
+        cache.insert("1;", one.clone());
+        cache.insert("2;", two.clone());
+        assert!(Arc::ptr_eq(&cache.get("1;").unwrap(), &one));
+        assert!(Arc::ptr_eq(&cache.get("2;").unwrap(), &two));
+        assert!(cache.get("3;").is_none());
+    }
+    #[test]
+    fn eviction_preserves_recent_entries_and_bounds_bytes() {
+        let mut cache = ParseCache::<std::collections::hash_map::RandomState>::default();
+        let ast = Arc::new(Vec::new());
+        for i in 0..MAX_CACHED_PROGRAMS {
+            cache.insert(&format!("{i};"), ast.clone());
+        }
+        cache.get("0;");
+        cache.insert("overflow;", ast.clone());
+        assert!(cache.get("0;").is_some());
+        assert!(cache.get("1;").is_none());
+        assert_eq!(cache.entries.len(), MAX_CACHED_PROGRAMS);
+        cache.insert(&" ".repeat(MAX_SOURCE_BYTES + 1), ast);
+        assert!(cache.source_bytes <= MAX_SOURCE_BYTES);
+    }
+
+    #[test]
+    fn hot_hits_keep_recency_storage_bounded() {
+        let mut cache = ParseCache::<std::collections::hash_map::RandomState>::default();
+        let ast = Arc::new(Vec::new());
+        for i in 0..MAX_CACHED_PROGRAMS {
+            cache.insert(&format!("{i};"), ast.clone());
+        }
+        for _ in 0..10_000 {
+            assert!(Arc::ptr_eq(&cache.get("0;").unwrap(), &ast));
+            assert!(cache.order.len() <= 2 * MAX_CACHED_PROGRAMS);
+        }
+        cache.insert("overflow;", ast);
+        assert!(cache.get("0;").is_some());
+        assert!(cache.get("1;").is_none());
+        assert_eq!(cache.entries.len(), MAX_CACHED_PROGRAMS);
     }
 
     #[test]

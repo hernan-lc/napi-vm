@@ -10,6 +10,21 @@ struct ProbeBridge {
     events: RefCell<Vec<HostEvent>>,
 }
 impl HostBridge for ProbeBridge {
+    fn trace_roots(&self, values: &mut Vec<Value>, _: &mut Vec<napi_vm::interpreter::Env>) {
+        for event in self.events.borrow().iter() {
+            match event {
+                HostEvent::Callback(callback) => {
+                    values.extend([callback.callback.clone(), callback.this_value.clone()]);
+                    values.extend(callback.args.iter().cloned());
+                }
+                HostEvent::UncaughtException(value) => values.push(value.clone()),
+                HostEvent::PromiseSettled { promise, value, .. } => {
+                    values.extend([Value::Promise(promise.clone()), value.clone()]);
+                }
+            }
+        }
+    }
+
     fn call_host(&self, _: usize, _: Vec<Value>) -> Result<Value, VmErr> {
         unreachable!()
     }
@@ -259,6 +274,10 @@ struct FloodBridge {
     callback: Value,
 }
 impl HostBridge for FloodBridge {
+    fn trace_roots(&self, values: &mut Vec<Value>, _: &mut Vec<napi_vm::interpreter::Env>) {
+        values.push(self.callback.clone());
+    }
+
     fn call_host(&self, _: usize, _: Vec<Value>) -> Result<Value, VmErr> {
         unreachable!()
     }
@@ -565,6 +584,10 @@ fn blocking_only_bridge_is_polled_before_the_full_timeout() {
         promise: Rc<RefCell<napi_vm::value::PromiseInner>>,
     }
     impl HostBridge for BlockingBridge {
+        fn trace_roots(&self, values: &mut Vec<Value>, _: &mut Vec<napi_vm::interpreter::Env>) {
+            values.push(Value::Promise(self.promise.clone()));
+        }
+
         fn call_host(&self, _: usize, _: Vec<Value>) -> Result<Value, VmErr> {
             unreachable!()
         }
@@ -702,6 +725,10 @@ fn notifier_delivery_between_poll_and_sleep_is_latched() {
         promise: Rc<RefCell<napi_vm::value::PromiseInner>>,
     }
     impl HostBridge for Bridge {
+        fn trace_roots(&self, values: &mut Vec<Value>, _: &mut Vec<napi_vm::interpreter::Env>) {
+            values.push(Value::Promise(self.promise.clone()));
+        }
+
         fn call_host(&self, _: usize, _: Vec<Value>) -> Result<Value, VmErr> {
             unreachable!()
         }

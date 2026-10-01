@@ -31,6 +31,21 @@ struct Events {
     polls: Cell<u64>,
 }
 impl HostBridge for Events {
+    fn trace_roots(&self, values: &mut Vec<Value>, _: &mut Vec<napi_vm::interpreter::Env>) {
+        for event in self.events.borrow().iter() {
+            match event {
+                HostEvent::Callback(callback) => {
+                    values.extend([callback.callback.clone(), callback.this_value.clone()]);
+                    values.extend(callback.args.iter().cloned());
+                }
+                HostEvent::UncaughtException(value) => values.push(value.clone()),
+                HostEvent::PromiseSettled { promise, value, .. } => {
+                    values.extend([Value::Promise(promise.clone()), value.clone()]);
+                }
+            }
+        }
+    }
+
     fn call_host(&self, _: usize, _: Vec<Value>) -> Result<Value, VmErr> {
         unreachable!()
     }

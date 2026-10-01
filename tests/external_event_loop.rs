@@ -14,6 +14,10 @@ struct QueuedCallbackBridge {
 }
 
 impl HostBridge for QueuedCallbackBridge {
+    fn trace_roots(&self, values: &mut Vec<Value>, _: &mut Vec<napi_vm::interpreter::Env>) {
+        values.push(self.callback.clone());
+    }
+
     fn call_host(&self, _id: usize, _args: Vec<Value>) -> Result<Value, VmErr> {
         Err(VmErr::Msg(
             "the test bridge has no synchronous calls".into(),

@@ -1114,11 +1114,8 @@ fn evaluate_commonjs_source(
     let old_source_lines = std::mem::take(&mut interp.source_lines);
     interp.set_source(&wrapped);
     let outcome = (|| {
-        let statements = match crate::parser::parse_cached(&wrapped) {
-            Ok(statements) => statements,
-            Err(failure) => return Err(failure.into_vm_err()),
-        };
-        let factory = interp.run_program_body(&statements)?;
+        let factory = crate::Interpreter::compile(&wrapped)
+            .and_then(|program| interp.execute_prepared_raw(&program))?;
         interp.call_this(
             &factory,
             exports.clone(),
@@ -1186,14 +1183,12 @@ pub(super) fn make_require(
             },
         )?;
         interp.set_source(SOURCE);
-        let statements =
-            crate::parser::parse_cached(SOURCE).map_err(|failure| VmErr::Msg(failure.message))?;
-        let require = interp.run_program_body(&statements)?;
+        let program = crate::Interpreter::compile(SOURCE)?;
+        let require = interp.execute_prepared_raw(&program)?;
 
         interp.set_source(RESOLVE_SOURCE);
-        let statements = crate::parser::parse_cached(RESOLVE_SOURCE)
-            .map_err(|failure| VmErr::Msg(failure.message))?;
-        let resolve = interp.run_program_body(&statements)?;
+        let program = crate::Interpreter::compile(RESOLVE_SOURCE)?;
+        let resolve = interp.execute_prepared_raw(&program)?;
         require.set_prop("resolve".to_string(), resolve)?;
         Ok(require)
     })();

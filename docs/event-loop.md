@@ -93,7 +93,7 @@ Each session has one persistent owner thread. Guest values, interpreter state, a
 coroutine stacks are constructed, used, and dropped there. Only owned wire data,
 commands, cancellation tokens, and completion handles cross threads. Host JavaScript
 and Node-value marshalling run on the Node environment thread through TSFNs.
-Existing synchronous `Vm` APIs and the legacy per-execution `runAsync` remain available.
+Existing synchronous `Vm` APIs and the persistent-worker `runAsync` remain available.
 No new blanket unsafe `Send`/`Sync` implementation is used.
 
 `run` evaluates and drains eligible work, returning the existing string result
@@ -206,3 +206,5 @@ empty returns sleep for the remainder of the slice, avoiding busy spinning.
 declare `Notifications` when threaded ingress is present. Every wake is followed
 by readiness and interrupt checks. Browser/WASM execution performs only
 nonblocking polling, regardless of the bridge capability.
+
+See [Runtime improvements](runtime-improvements.md) for the current ownership, evaluation, collection, cache bounds, polling limits, and benchmark methodology.

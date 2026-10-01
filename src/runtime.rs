@@ -220,6 +220,7 @@ mod tests {
         let program =
             Interpreter::compile("let s = 0; for (let i = 0; i < 5; i++) { s += i; } s;").unwrap();
         let mut interp = RuntimeBuilder::new().build().unwrap();
+        interp.set_tier_tracking(crate::jit::TierTracking::CountersOnly);
         interp.execute(&program).unwrap();
         let stats = program
             .stats()
@@ -237,5 +238,47 @@ mod tests {
         // already minted shapes for them; exact counts don't matter.
         assert!(stats.heap_tracked > 0, "got {stats:?}");
         assert!(stats.shapes_created > 0, "got {stats:?}");
+    }
+}
+
+/// Owner-local runtime state, detached from native TLS outside its lease.
+#[derive(Default)]
+#[cfg(feature = "napi")]
+pub(crate) struct OwnerContext {
+    heap: crate::heap::HeapContext,
+    shapes: crate::shape::ShapeContext,
+    symbols: crate::builtins::SymbolContext,
+    collections: crate::builtins::CollectionContext,
+}
+#[cfg(feature = "napi")]
+impl OwnerContext {
+    /// Reuse only an empty, bounded registry. Guest identities and shape
+    /// counters start fresh; no live graph or root survives this reset.
+    pub(crate) fn reset_empty(&mut self) -> bool {
+        if !self.heap.reusable() {
+            return false;
+        }
+        self.shapes = Default::default();
+        self.symbols = Default::default();
+        true
+    }
+
+    pub(crate) fn enter(&mut self) -> OwnerLease<'_> {
+        self.swap();
+        OwnerLease(self)
+    }
+    fn swap(&mut self) {
+        self.heap.swap_active();
+        self.shapes.swap_active();
+        self.symbols.swap_active();
+        self.collections.swap_active();
+    }
+}
+#[cfg(feature = "napi")]
+pub(crate) struct OwnerLease<'a>(&'a mut OwnerContext);
+#[cfg(feature = "napi")]
+impl Drop for OwnerLease<'_> {
+    fn drop(&mut self) {
+        self.0.swap();
     }
 }

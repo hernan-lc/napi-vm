@@ -63,8 +63,8 @@ pub struct BytecodeFunction {
     /// frame environment; arrows never seed (they would shadow the
     /// captured one) and pass the need outward to their definer instead.
     pub captures_arguments: bool,
-    /// Per-instruction property inline caches, parallel to `code`: only
-    /// `GetProp`/`SetProp` sites use their slot, the rest stay empty.
+    pub needs_frame_environment: bool,
+    /// Compact property inline caches, indexed by `GetProp`/`SetProp` sites.
     /// Cells only, so the VM probes and fills with plain loads and stores
     /// and no borrow can span a re-entrant slow path.
     pub caches: Box<[crate::shape::PropCache]>,
@@ -112,6 +112,24 @@ impl FunctionStats {
 }
 
 impl BytecodeFunction {
+    /// Fork immutable code into a new owner, resetting every function's
+    /// shape guards, feedback and compiled artifacts. Nested functions must
+    /// also be forked: a shallow clone would share their mutable counters.
+    #[cfg(feature = "napi")]
+    pub(crate) fn fork_for_owner(&self) -> Self {
+        let mut fresh = self.clone();
+        fresh.caches = (0..self.caches.len())
+            .map(|_| crate::shape::PropCache::empty())
+            .collect();
+        fresh.tiers = Default::default();
+        for constant in &mut fresh.constants {
+            if let Constant::Function(function) = constant {
+                *function = std::rc::Rc::new(function.fork_for_owner());
+            }
+        }
+        fresh
+    }
+
     /// Render the instruction stream with addresses, for tests and debugging.
     pub fn disassemble(&self) -> String {
         let mut out = String::new();
@@ -132,14 +150,8 @@ impl BytecodeFunction {
             stats.compiled = 1;
             stats.deopts = code.deopts.get();
         }
-        for (index, instr) in self.code.iter().enumerate() {
-            if !matches!(instr, Instr::GetProp { .. } | Instr::SetProp { .. }) {
-                continue;
-            }
+        for cache in &self.caches {
             stats.ic_sites += 1;
-            let Some(cache) = self.caches.get(index) else {
-                continue;
-            };
             let (hits, misses) = cache.stats();
             stats.ic_hits = stats.ic_hits.saturating_add(hits);
             stats.ic_misses = stats.ic_misses.saturating_add(misses);

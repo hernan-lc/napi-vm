@@ -31,6 +31,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 smallvec = "1"
+# Binding maps use explicit seeds derived from std's randomized hasher, including
+# on wasm; no platform-specific entropy dependency is needed here.
+ahash = { version = "0.8.12", default-features = false, features = ["std"] }
 stacker = "0.1.25"
 regex-syntax = "0.8"
 # `file://` URI parsing for the language server and for module file URLs
@@ -69,6 +72,7 @@ corosensei = "0.3.4"
 corosensei = "0.3.4"
 
 [dev-dependencies]
+static_assertions = "1.1"
 criterion = "0.5"
 tokio = { version = "1", features = ["rt", "time"] }
 

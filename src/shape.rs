@@ -47,10 +47,40 @@ pub(crate) struct Shape {
 thread_local! {
     /// The canonical empty layout. Every object starts here conceptually;
     /// every rebuild replays from here.
-    static SHAPE_ROOT: Rc<Shape> = Shape::fresh(Vec::new());
+    static SHAPE_ROOT: RefCell<Rc<Shape>> = RefCell::new(Shape::fresh(Vec::new()));
     /// Shape id counter. Resetting per thread is fine: shapes never cross
     /// threads (values have a single owner thread).
     static NEXT_SHAPE_ID: Cell<u32> = const { Cell::new(1) };
+}
+
+#[cfg(feature = "napi")]
+pub(crate) struct ShapeContext {
+    root: Rc<Shape>,
+    next: u32,
+}
+#[cfg(feature = "napi")]
+impl Default for ShapeContext {
+    fn default() -> Self {
+        // Constructing a detached owner must not consume the active owner's
+        // shape IDs. Its counter starts independently when it is leased.
+        let root = Rc::new(Shape {
+            id: 1,
+            keys: Vec::new(),
+            index: HashMap::new(),
+            transitions: RefCell::new(HashMap::new()),
+        });
+        Self { root, next: 2 }
+    }
+}
+#[cfg(feature = "napi")]
+impl ShapeContext {
+    pub(crate) fn swap_active(&mut self) {
+        SHAPE_ROOT.with(|root| std::mem::swap(&mut *root.borrow_mut(), &mut self.root));
+        NEXT_SHAPE_ID.with(|next| {
+            let previous = next.replace(self.next);
+            self.next = previous;
+        });
+    }
 }
 
 impl Shape {
@@ -77,7 +107,7 @@ impl Shape {
 
     /// The canonical empty layout.
     pub fn root() -> Rc<Shape> {
-        SHAPE_ROOT.with(Rc::clone)
+        SHAPE_ROOT.with(|root| root.borrow().clone())
     }
 
     /// Slot index of `key` in this layout, if present.
@@ -94,11 +124,10 @@ impl Shape {
             return child.clone();
         }
         let mut keys = self.keys.clone();
-        keys.push(Rc::from(key));
+        let key: Rc<str> = Rc::from(key);
+        keys.push(key.clone());
         let child = Self::fresh(keys);
-        self.transitions
-            .borrow_mut()
-            .insert(Rc::from(key), child.clone());
+        self.transitions.borrow_mut().insert(key, child.clone());
         child
     }
 
@@ -234,21 +263,50 @@ mod tests {
     use crate::interpreter::Interpreter;
     use crate::value::Value;
 
-    fn eval(src: &str) -> Value {
+    struct PinnedValue {
+        value: Value,
+        _pin: crate::heap::RootPin,
+    }
+    impl std::ops::Deref for PinnedValue {
+        type Target = Value;
+        fn deref(&self) -> &Value {
+            &self.value
+        }
+    }
+    struct PinnedCell {
+        cell: Rc<crate::value::ObjectCell>,
+        _pin: crate::heap::RootPin,
+    }
+    impl std::ops::Deref for PinnedCell {
+        type Target = crate::value::ObjectCell;
+        fn deref(&self) -> &Self::Target {
+            &self.cell
+        }
+    }
+    fn eval(src: &str) -> PinnedValue {
         let mut interp = Interpreter::with_builtins();
-        interp.eval_source(src).expect("test source must run")
+        let value = interp.eval_source(src).expect("test source must run");
+        let pin = crate::heap::RootPin::new(value.clone());
+        drop(interp);
+        // Host-owned results (including earlier cells in the same test)
+        // stay pinned while unreachable builtin cycles are reclaimed.
+        assert_eq!(crate::heap::collect().skipped, None);
+        PinnedValue { value, _pin: pin }
     }
 
-    fn cell_of(value: &Value) -> Rc<crate::value::ObjectCell> {
+    fn cell_of(value: &Value) -> PinnedCell {
         match value {
-            Value::Object { props } => props.clone(),
+            Value::Object { props } => PinnedCell {
+                cell: props.clone(),
+                _pin: crate::heap::RootPin::new(value.clone()),
+            },
             other => panic!("expected object, got {other:?}"),
         }
     }
 
     /// Read `key` twice so the cell builds its layout, then return the id.
     /// Shapes build lazily; comparing unbuilt cells would pass vacuously.
-    fn built_id(cell: &Rc<crate::value::ObjectCell>, key: &str) -> u32 {
+    fn built_id(cell: &crate::value::ObjectCell, key: &str) -> u32 {
         cell.own_index(key);
         cell.own_index(key);
         cell.shape_id().expect("two reads build the layout")
@@ -257,8 +315,8 @@ mod tests {
     #[test]
     fn shared_layout_shared_shape() {
         let pair = eval("[{x: 1, y: 2}, {x: 3, y: 4}]");
-        let Value::Array(items) = &pair else {
-            panic!("expected array, got {pair:?}")
+        let Value::Array(items) = &*pair else {
+            panic!("expected array, got {:?}", pair.value)
         };
         let items = items.borrow();
         assert_eq!(

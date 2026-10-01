@@ -344,9 +344,8 @@ pub(super) fn compile_guest_function(
     source: &str,
 ) -> Result<Value, VmErr> {
     interp.set_source(source);
-    let statements =
-        crate::parser::parse_cached(source).map_err(|failure| VmErr::Msg(failure.message))?;
-    interp.run_program_body(&statements)
+    let program = crate::Interpreter::compile(source)?;
+    interp.execute_prepared_raw(&program)
 }
 
 pub(super) fn node_gyp_build_resolve(

@@ -44,3 +44,5 @@ time is bounded per execution but synchronous code blocks the Node event loop,
 and allocation caps are not an aggregate heap quota. For strict CPU or memory
 limits, run the VM in a worker or disposable child process with a watchdog and
 OS limits such as cgroups or `ulimit`.
+
+See [Runtime improvements](runtime-improvements.md) for the current ownership, evaluation, collection, cache bounds, polling limits, and benchmark methodology.

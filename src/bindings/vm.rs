@@ -64,20 +64,99 @@ fn is_export_identifier(key: &str) -> bool {
         )
 }
 
+// Unexecuted code templates contain no guest Value/Env or owner-local shape
+// guards. Keep this cache thread-local (Rc code is not Send), bounded, and
+// fork all feedback before running a template in a fresh owner.
+#[derive(Default)]
+struct FreshProgramCache {
+    programs: HashMap<Arc<str>, (crate::interpreter::PreparedProgram, bool)>,
+    order: std::collections::VecDeque<Arc<str>>,
+    bytes: usize,
+}
+impl FreshProgramCache {
+    #[cfg(test)]
+    fn prepare(&mut self, source: &str) -> Result<crate::interpreter::PreparedProgram, VmErr> {
+        self.prepare_for(source, false)
+    }
+    fn prepare_for(
+        &mut self,
+        source: &str,
+        feedback_disabled: bool,
+    ) -> Result<crate::interpreter::PreparedProgram, VmErr> {
+        if let Some((program, no_guards)) = self.programs.get(source) {
+            return Ok(if feedback_disabled && *no_guards {
+                program.clone()
+            } else {
+                program.fork_for_owner()
+            });
+        }
+        let program = Interpreter::compile(source)?;
+        // Only misses walk the tree. Without feedback or property sites,
+        // verified code contains no mutable owner-specific state.
+        let no_guards = program.stats().is_none_or(|stats| stats.ic_sites == 0);
+        const MAX_BYTES: usize = 2 * 1024 * 1024;
+        if source.len() <= MAX_BYTES {
+            while self.programs.len() >= 64 || self.bytes + source.len() > MAX_BYTES {
+                let old = self.order.pop_front().expect("cached program");
+                self.programs.remove(&old);
+                self.bytes -= old.len();
+            }
+            let key: Arc<str> = source.into();
+            self.bytes += key.len();
+            self.order.push_back(key.clone());
+            self.programs.insert(key, (program.clone(), no_guards));
+        }
+        Ok(if feedback_disabled && no_guards {
+            program
+        } else {
+            program.fork_for_owner()
+        })
+    }
+}
+thread_local! {
+    static FRESH_PROGRAMS: std::cell::RefCell<FreshProgramCache> = Default::default();
+    static EMPTY_OWNER: std::cell::RefCell<Option<crate::runtime::OwnerContext>> = const { std::cell::RefCell::new(None) };
+}
+
 pub fn run_source(source: &str, is_main: bool) -> Result<String, VmErr> {
-    let mut interp = Interpreter::with_builtins();
-    interp.is_main = is_main;
-    execute_source(&mut interp, source).and_then(|value| try_to_string(&value))
+    let mut context = EMPTY_OWNER
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_default();
+    let lease = context.enter();
+    let result = {
+        let mut interp = Interpreter::with_builtins();
+        interp.is_main = is_main;
+        let result = FRESH_PROGRAMS
+            .with(|cache| {
+                cache
+                    .borrow_mut()
+                    .prepare_for(source, interp.feedback_disabled())
+            })
+            .and_then(|program| interp.execute(&program))
+            .and_then(|value| try_to_string(&value))
+            .map_err(|error| VmErr::Msg(interp.enrich_error(error, None).to_string()));
+        // Only a formatted string leaves this fresh runtime. Sever its
+        // discarded global edges before sweeping the remaining cycles.
+        interp.global.borrow_mut().clear_edges();
+        result
+    };
+    let collected = crate::heap::collect_after_interpreter_drop();
+    drop(lease);
+    if collected.skipped.is_none() && context.reset_empty() {
+        EMPTY_OWNER.with(|slot| *slot.borrow_mut() = Some(context));
+    }
+    result
 }
 
 /// All interpreter and bridge state lives here. It is never cloned or exposed
 /// independently of the runtime gate.
 pub(super) struct VmRuntime {
     pub(super) interp: Interpreter,
-    modules: HashMap<String, String>,
+    modules: HashMap<String, Arc<str>>,
     /// VM functions handed to the host, indexed by the id their host-side
     /// wrapper carries. A slot is `None` once its wrapper is collected.
-    exports: Vec<Option<Value>>,
+    pub(super) exports: super::export_slots::ExportSlots,
+    export_releases: std::sync::mpsc::Receiver<super::export_slots::ExportId>,
     /// Bridge globals generated per `registerHostModule` name, so they can be
     /// revoked when the module is replaced or removed.
     host_module_globals: HashMap<String, Vec<String>>,
@@ -86,28 +165,39 @@ pub(super) struct VmRuntime {
 
 /// A mutex-backed owner for a non-`Send` interpreter.
 ///
-/// `Rc` values are safe to use here because the `UnsafeCell` is accessed only
-/// while `gate` is held. No `Rc` from `runtime` is stored outside this cell;
-/// the worker owns an `Arc<RuntimeCell>`, and all Node entry points reject a
-/// busy VM before trying to access it. This is the narrow ownership boundary
-/// that replaces the previous raw `*mut Interpreter` transfer.
+/// Every operation holds the gate and leases the VM's detached runtime arena.
+/// The busy guard covers host marshalling too. Neither another VM nor a TLS
+/// registry can concurrently reach this arena's guest graphs.
 struct RuntimeCell {
     gate: Mutex<()>,
-    runtime: UnsafeCell<VmRuntime>,
+    runtime: UnsafeCell<Option<VmRuntime>>,
+    context: UnsafeCell<crate::runtime::OwnerContext>,
 }
 
-// SAFETY: `runtime` is never accessed without locking `gate`. The `VMState`
-// owns the only `Arc` to this cell used by the worker, and all public methods
-// use the same lock. The N-API bridge's cross-thread data is a separate
-// `Arc<BridgeState>` containing only integer handles and synchronized maps.
+// SAFETY: `gate` grants an exclusive lease over the runtime AND its heap,
+// shapes, symbols and collection caches. `with_mut` installs that arena only
+// for the lease, then detaches it (including during unwinding). No guest Rc
+// remains in a native thread's TLS after the lease. Node methods and the
+// persistent executor use the same gate; public busy guards also cover guest
+// arguments/results during marshalling outside the gate. Finalizers enqueue
+// integer export IDs and never touch guest values. The N-API bridge transfers
+// only wire values and integer handles. VM does not install the in-process
+// native-addon backend (its NAPI environment registry is owner-affine).
+// This is a narrow arena migration boundary, not a Send impl for guest values.
 unsafe impl Send for RuntimeCell {}
 unsafe impl Sync for RuntimeCell {}
 
 impl RuntimeCell {
-    fn new(runtime: VmRuntime) -> Self {
+    fn new(make: impl FnOnce() -> VmRuntime) -> Self {
+        let mut context = crate::runtime::OwnerContext::default();
+        let runtime = {
+            let _lease = context.enter();
+            make()
+        };
         Self {
             gate: Mutex::new(()),
-            runtime: UnsafeCell::new(runtime),
+            runtime: UnsafeCell::new(Some(runtime)),
+            context: UnsafeCell::new(context),
         }
     }
 
@@ -117,16 +207,39 @@ impl RuntimeCell {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         // SAFETY: the mutex guard above excludes every other access.
-        unsafe { f(&mut *self.runtime.get()) }
+        unsafe {
+            let _lease = (&mut *self.context.get()).enter();
+            let runtime = (&mut *self.runtime.get())
+                .as_mut()
+                .expect("live VM runtime");
+            runtime.drain_export_releases();
+            f(runtime)
+        }
+    }
+}
+
+impl Drop for RuntimeCell {
+    fn drop(&mut self) {
+        let _lease = self.context.get_mut().enter();
+        drop(self.runtime.get_mut().take());
+        let _ = crate::heap::collect_after_interpreter_drop();
     }
 }
 
 impl VmRuntime {
     /// The value an exported function id refers to, if it is still live.
-    pub(super) fn export(&self, index: usize) -> Option<Value> {
-        self.exports.get(index).cloned().flatten()
+    pub(super) fn export(&self, index: super::export_slots::ExportId) -> Option<Value> {
+        self.exports.get(index)
+    }
+    fn drain_export_releases(&mut self) {
+        while let Ok(id) = self.export_releases.try_recv() {
+            self.exports.release(id);
+        }
     }
 }
+
+type ExecutorJob = Box<dyn FnOnce() + Send>;
+type ExecutorSender = std::sync::mpsc::Sender<ExecutorJob>;
 
 pub(super) struct VMState {
     runtime: RuntimeCell,
@@ -134,6 +247,8 @@ pub(super) struct VMState {
     /// Kept outside `RuntimeCell` so `VM::drop` can release N-API resources
     /// without waiting for a worker that may currently be awaiting Node.
     bridge_state: Mutex<Option<Arc<super::bridge::BridgeState>>>,
+    release_tx: std::sync::mpsc::Sender<super::export_slots::ExportId>,
+    executor: Mutex<Option<ExecutorSender>>,
 }
 
 impl VMState {
@@ -141,24 +256,56 @@ impl VMState {
     ///
     /// Called while the runtime gate is *not* held — the marshalling that
     /// needs it runs inside `with_mut` — so it takes the gate itself.
-    pub(super) fn register_export(&self, value: Value) -> usize {
-        self.runtime.with_mut(|runtime| {
-            runtime.exports.push(Some(value));
-            runtime.exports.len() - 1
-        })
+    pub(super) fn register_export(&self, value: Value) -> super::export_slots::ExportId {
+        self.runtime
+            .with_mut(|runtime| runtime.exports.insert(value))
+    }
+    #[cfg(test)]
+    pub(super) fn assert_no_queued_export_releases(&self) {
+        let _guard = self.runtime.gate.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: the production gate excludes every runtime access. Only
+        // integer release messages are inspected; no guest value leaves it.
+        let runtime = unsafe { &*self.runtime.runtime.get() }.as_ref().unwrap();
+        assert!(matches!(
+            runtime.export_releases.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
     }
 
-    /// Drop the value behind an exported id, once its host wrapper is gone.
-    pub(super) fn release_export(&self, index: usize) {
-        self.runtime.with_mut(|runtime| {
-            if let Some(slot) = runtime.exports.get_mut(index) {
-                *slot = None;
-            }
-        });
+    /// Failed export setup rolls back its pin before returning to the host.
+    pub(super) fn rollback_export(&self, index: super::export_slots::ExportId) {
+        self.runtime
+            .with_mut(|runtime| runtime.exports.release(index));
+    }
+
+    /// Finalizers enqueue only an ID and never acquire the runtime gate.
+    pub(super) fn release_export(&self, index: super::export_slots::ExportId) {
+        let _ = self.release_tx.send(index);
     }
 
     pub(super) fn with_runtime<R>(&self, f: impl FnOnce(&mut VmRuntime) -> R) -> R {
         self.runtime.with_mut(f)
+    }
+
+    fn dispatch_async(&self, job: ExecutorJob) -> std::io::Result<()> {
+        let mut executor = self.executor.lock().unwrap_or_else(|e| e.into_inner());
+        if executor.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<ExecutorJob>();
+            std::thread::Builder::new()
+                .name("napi-vm-owner".into())
+                .stack_size(8 * 1024 * 1024)
+                .spawn(move || {
+                    while let Ok(job) = rx.recv() {
+                        job();
+                    }
+                })?;
+            *executor = Some(tx);
+        }
+        executor
+            .as_ref()
+            .expect("initialized executor")
+            .send(job)
+            .map_err(|_| std::io::Error::other("VM executor stopped"))
     }
 
     pub(super) fn try_start(&self) -> napi::Result<BusyGuard> {
@@ -210,17 +357,21 @@ impl Default for VM {
 }
 
 impl VM {
-    fn new_state() -> Arc<VMState> {
+    pub(super) fn new_state() -> Arc<VMState> {
+        let (release_tx, export_releases) = std::sync::mpsc::channel();
         Arc::new(VMState {
-            runtime: RuntimeCell::new(VmRuntime {
+            runtime: RuntimeCell::new(|| VmRuntime {
                 interp: Interpreter::with_builtins(),
                 modules: HashMap::new(),
-                exports: Vec::new(),
+                exports: super::export_slots::ExportSlots::default(),
+                export_releases,
                 host_module_globals: HashMap::new(),
                 bridge: None,
             }),
             busy: Arc::new(AtomicBool::new(false)),
             bridge_state: Mutex::new(None),
+            executor: Mutex::new(None),
+            release_tx,
         })
     }
 
@@ -297,11 +448,13 @@ impl VM {
         let _busy = self.state.try_start()?;
         let state = self.state.clone();
         state.runtime.with_mut(|runtime| {
-            execute_source(&mut runtime.interp, &source)
+            let result = execute_source(&mut runtime.interp, &source)
                 .and_then(|value| try_to_string(&value))
                 .map_err(|error| {
                     napi::Error::from_reason(runtime.interp.enrich_error(error, None).to_string())
-                })
+                });
+            runtime.interp.maybe_collect_cycles();
+            result
         })
     }
 
@@ -330,7 +483,8 @@ impl VM {
     pub fn define_module(&mut self, name: String, source: String) -> napi::Result<()> {
         let _busy = self.state.try_start()?;
         self.state.runtime.with_mut(|runtime| {
-            runtime.interp.define_module(&name, source.clone());
+            let source: Arc<str> = source.into();
+            runtime.interp.define_module_shared(&name, source.clone());
             runtime.modules.insert(name, source);
         });
         Ok(())
@@ -358,7 +512,8 @@ impl VM {
                     runtime.interp.commit_module();
                     // Keep the source too, so a module registered eagerly can
                     // still take part in a cycle that `defineModule` links.
-                    runtime.interp.define_module(&name, source.clone());
+                    let source: Arc<str> = source.into();
+                    runtime.interp.define_module_shared(&name, source.clone());
                     runtime.modules.insert(name, source);
                     Ok(())
                 }
@@ -560,7 +715,7 @@ impl VM {
                 runtime
                     .host_module_globals
                     .insert(name.clone(), created.clone());
-                runtime.modules.insert(name, source);
+                runtime.modules.insert(name, source.into());
                 Ok(created)
             })?;
 
@@ -591,6 +746,36 @@ impl VM {
         {
             bridge.shutdown_on_main();
         }
+    }
+
+    #[napi]
+    pub fn evaluation_stats(&self) -> napi::Result<String> {
+        let _busy = self.state.try_start()?;
+        Ok(self
+            .state
+            .runtime
+            .with_mut(|r| r.interp.evaluation_diagnostics()))
+    }
+
+    /// Collect unreachable cycles at a quiescent VM boundary.
+    #[napi]
+    pub fn collect_cycles(&self) -> napi::Result<u32> {
+        let _busy = self.state.try_start()?;
+        Ok(self
+            .state
+            .runtime
+            .with_mut(|r| r.interp.collect_cycles().collected.min(u32::MAX as usize) as u32))
+    }
+    #[napi]
+    pub fn heap_stats(&self) -> napi::Result<String> {
+        let _busy = self.state.try_start()?;
+        Ok(self.state.runtime.with_mut(|r| {
+            let stats = r.interp.runtime_stats();
+            format!(
+                "{{\"tracked\":{},\"collectedTotal\":{}}}",
+                stats.heap_tracked, stats.heap_collected_total
+            )
+        }))
     }
 
     #[napi]
@@ -631,9 +816,9 @@ impl VM {
     #[napi]
     pub fn set_global(&mut self, env: Env, name: String, value: Unknown) -> napi::Result<()> {
         let _busy = self.state.try_start()?;
-        let value = from_napi(env.raw(), value.raw())
-            .map_err(|error| napi::Error::from_reason(error.to_string()))?;
         self.state.runtime.with_mut(|runtime| -> napi::Result<()> {
+            let value = from_napi(env.raw(), value.raw())
+                .map_err(|error| napi::Error::from_reason(error.to_string()))?;
             if let Some(id) = runtime
                 .interp
                 .global_value(&name)
@@ -791,51 +976,53 @@ impl VM {
         let done_handle = done_tsfn as usize;
         let source_for_worker = source.clone();
         let worker_state = state.clone();
-        let spawn = std::thread::Builder::new()
-            .name("napi-vm-async".into())
-            .stack_size(8 * 1024 * 1024)
-            .spawn(move || {
-                let _busy = busy;
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    worker_state.runtime.with_mut(|runtime| {
-                        match execute_source(&mut runtime.interp, &source_for_worker) {
-                            Ok(value) => async_result_string(value),
-                            Err(error) => Err(runtime.interp.enrich_error(error, None).to_string()),
-                        }
-                    })
-                }))
-                .unwrap_or_else(|_| Err("Error: VM execution panicked".to_string()));
-
+        let spawn = state.dispatch_async(Box::new(move || {
+            let _busy = busy;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 worker_state.runtime.with_mut(|runtime| {
-                    if let Some(bridge) = runtime.bridge.as_ref() {
-                        bridge.finish_async_worker();
-                    }
-                });
+                    let result = match execute_source(&mut runtime.interp, &source_for_worker) {
+                        Ok(value) => async_result_string(value),
+                        Err(error) => Err(runtime.interp.enrich_error(error, None).to_string()),
+                    };
+                    runtime.interp.maybe_collect_cycles();
+                    result
+                })
+            }))
+            .unwrap_or_else(|_| Err("Error: VM execution panicked".to_string()));
 
-                let message = Box::new(result);
-                let raw_message = Box::into_raw(message) as *mut std::ffi::c_void;
-                let tsfn = done_handle as sys::napi_threadsafe_function;
-                let status = unsafe {
-                    sys::napi_call_threadsafe_function(
-                        tsfn,
-                        raw_message,
-                        sys::ThreadsafeFunctionCallMode::nonblocking,
-                    )
-                };
-                if status != sys::Status::napi_ok {
-                    drop(unsafe { Box::from_raw(raw_message as *mut Result<String, String>) });
-                }
-                let release_status = unsafe {
-                    sys::napi_release_threadsafe_function(
-                        tsfn,
-                        sys::ThreadsafeFunctionReleaseMode::release,
-                    )
-                };
-                if release_status != sys::Status::napi_ok {
-                    // The environment is already closing; the returned
-                    // Promise cannot be observed after teardown.
+            worker_state.runtime.with_mut(|runtime| {
+                if let Some(bridge) = runtime.bridge.as_ref() {
+                    bridge.finish_async_worker();
                 }
             });
+
+            // Completion may immediately resume Node and admit the next operation.
+            // Release admission only after guest access and bridge cleanup finish.
+            drop(_busy);
+            let message = Box::new(result);
+            let raw_message = Box::into_raw(message) as *mut std::ffi::c_void;
+            let tsfn = done_handle as sys::napi_threadsafe_function;
+            let status = unsafe {
+                sys::napi_call_threadsafe_function(
+                    tsfn,
+                    raw_message,
+                    sys::ThreadsafeFunctionCallMode::nonblocking,
+                )
+            };
+            if status != sys::Status::napi_ok {
+                drop(unsafe { Box::from_raw(raw_message as *mut Result<String, String>) });
+            }
+            let release_status = unsafe {
+                sys::napi_release_threadsafe_function(
+                    tsfn,
+                    sys::ThreadsafeFunctionReleaseMode::release,
+                )
+            };
+            if release_status != sys::Status::napi_ok {
+                // The environment is already closing; the returned
+                // Promise cannot be observed after teardown.
+            }
+        }));
 
         if let Err(error) = spawn {
             state.runtime.with_mut(|runtime| {
@@ -947,15 +1134,15 @@ impl VM {
                 "RangeError: Maximum argument count exceeded",
             ));
         }
-        let mut vm_args = Vec::with_capacity(args.len());
-        for arg in &args {
-            vm_args.push(
-                from_napi(raw_env, arg.raw())
-                    .map_err(|error| napi::Error::from_reason(error.to_string()))?,
-            );
-        }
         let state = self.state.clone();
         let result = self.state.runtime.with_mut(|runtime| {
+            let mut vm_args = Vec::with_capacity(args.len());
+            for arg in &args {
+                vm_args.push(
+                    from_napi(raw_env, arg.raw())
+                        .map_err(|e| napi::Error::from_reason(e.to_string()))?,
+                );
+            }
             let callee = runtime.interp.global_value(&name).ok_or_else(|| {
                 napi::Error::from_reason(format!("callFunction: '{}' is not defined", name))
             })?;
@@ -995,38 +1182,25 @@ fn execute_module_source(
 ) -> Result<Value, VmErr> {
     let scope = interp.module_scope(name);
     let outer = interp.take_scope(scope);
-    let result = execute_source(interp, source);
+    let result = interp.eval_module_with_options(
+        source,
+        crate::interpreter::EvaluationOptions {
+            resume_pending_checkpoint: true,
+            ..Default::default()
+        },
+    );
     interp.take_scope(outer);
     result
 }
 
 pub(super) fn execute_source(interp: &mut Interpreter, source: &str) -> Result<Value, VmErr> {
-    // Resume the old checkpoint with its remaining hard budget before admission.
-    if interp.jobs.borrow().checkpoint_pending {
-        interp.drain_microtasks()?;
-    }
-    interp.ensure_can_evaluate()?;
-    interp.set_source(source);
-    interp.begin_execution();
-    // Refuse to execute a program that did not parse. Recovering from a
-    // syntax error and running whatever statements survived is worse than
-    // reporting where the source broke.
-    let statements = match crate::parser::parse_cached(source) {
-        Ok(statements) => statements,
-        Err(failure) => return Err(failure.into_vm_err()),
-    };
-    let completion = interp.run_program_body(&statements);
-    // The event loop runs to completion before the entry point returns:
-    // promise reactions and timer callbacks scheduled by the program are part
-    // of running it, not work left for a caller that has nowhere to put it.
-    // A drain error only surfaces when the program itself succeeded.
-    match completion {
-        Ok(value) => interp.drain_jobs().map(|()| value),
-        Err(error) => {
-            let _ = interp.drain_jobs();
-            Err(error)
-        }
-    }
+    interp.eval_source_with_options(
+        source,
+        crate::interpreter::EvaluationOptions {
+            resume_pending_checkpoint: true,
+            ..Default::default()
+        },
+    )
 }
 
 /// Parse module source without touching interpreter state.
@@ -1116,4 +1290,328 @@ pub fn debug_parse(source: String) -> napi::Result<String> {
         ));
     }
     Ok(format!("{:?}", statements))
+}
+
+// Exercise the production gate and detached arena without creating a Node
+// environment or calling any N-API function. The same suite runs under Miri.
+#[cfg(test)]
+mod owner_migration_tests {
+    use super::*;
+    use std::rc::Rc;
+
+    #[test]
+    fn owner_migration_empty_registry_reuse_is_isolated() {
+        fn first_symbol(context: &mut crate::runtime::OwnerContext) -> u64 {
+            let _lease = context.enter();
+            let mut interp = Interpreter::with_builtins();
+            let value = interp.eval_source("Symbol('first')").unwrap();
+            let Value::Symbol(ref symbol) = value else {
+                panic!("symbol")
+            };
+            let id = symbol.id;
+            drop(value);
+            interp.global.borrow_mut().clear_edges();
+            drop(interp);
+            assert_eq!(crate::heap::collect_after_interpreter_drop().skipped, None);
+            id
+        }
+        // Initialize the ambient shape arena before taking its counters: a
+        // first lease otherwise initializes TLS while installing the owner.
+        let outer_shape = shape_identity();
+        let outer_heap = crate::heap::counters();
+        let outer_shapes = crate::shape::Shape::created_count();
+        let expected = first_symbol(&mut crate::runtime::OwnerContext::default());
+        assert_eq!(
+            run_source(
+                "var privateName=42;Map.prototype.extra=42;for(var i=0;i<50;i++)Symbol('old');42;",
+                false
+            )
+            .unwrap(),
+            "42"
+        );
+        let mut recycled = EMPTY_OWNER
+            .with(|slot| slot.borrow_mut().take())
+            .expect("empty registry retained");
+        assert_eq!(first_symbol(&mut recycled), expected);
+        assert_eq!(
+            run_source("typeof privateName;", false).unwrap(),
+            "undefined"
+        );
+        assert_eq!(
+            run_source("Map.prototype.extra;", false).unwrap(),
+            "undefined"
+        );
+        assert_eq!(crate::heap::counters(), outer_heap);
+        assert_eq!(crate::shape::Shape::created_count(), outer_shapes);
+        assert_eq!(shape_identity(), outer_shape);
+    }
+
+    #[test]
+    fn owner_migration_prepared_templates_reset_feedback() {
+        let source = "function f(o){return o.x;} var o={x:42}; f(o);f(o);f(o);";
+        let mut cache = FreshProgramCache::default();
+        let first = cache.prepare(source).unwrap();
+        assert_eq!(first.tier(), crate::interpreter::ExecutionTier::Bytecode);
+        let mut owner = crate::runtime::OwnerContext::default();
+        {
+            let _lease = owner.enter();
+            let mut interp = Interpreter::with_builtins();
+            interp.set_tier_tracking(crate::jit::TierTracking::CountersOnly);
+            assert!(matches!(
+                interp.execute(&first).unwrap(),
+                Value::Number(42.)
+            ));
+            assert!(first.stats().unwrap().calls > 0);
+            assert!(first.stats().unwrap().ic_hits > 0);
+            interp.global.borrow_mut().clear_edges();
+            drop(interp);
+            assert_eq!(crate::heap::collect_after_interpreter_drop().skipped, None);
+        }
+        let second = cache.prepare(source).unwrap();
+        let stats = second.stats().unwrap();
+        assert_eq!(stats.calls, 0);
+        assert_eq!(stats.loop_iters, 0);
+        assert_eq!(stats.ic_hits, 0);
+        assert_eq!(stats.ic_misses, 0);
+        assert_eq!(stats.compiled, 0);
+        assert_eq!(
+            cache.programs.get(source).unwrap().0.stats().unwrap().calls,
+            0
+        );
+        assert_eq!(
+            run_source("Map.prototype.marker=42;42;", false).unwrap(),
+            "42"
+        );
+        assert_eq!(
+            run_source("Map.prototype.marker;", false).unwrap(),
+            "undefined"
+        );
+        assert_eq!(run_source(source, false).unwrap(), "42");
+        assert_eq!(run_source(source, false).unwrap(), "42");
+        let scalar = "function f(){return 42;} f();";
+        let shared = cache.prepare_for(scalar, true).unwrap();
+        let tracked = cache.prepare_for(scalar, false).unwrap();
+        {
+            let _lease = owner.enter();
+            let mut interp = Interpreter::with_builtins();
+            assert!(interp.feedback_disabled());
+            assert!(matches!(
+                interp.execute(&shared).unwrap(),
+                Value::Number(42.)
+            ));
+            assert_eq!(shared.stats().unwrap().calls, 0);
+            interp.set_tier_tracking(crate::jit::TierTracking::CountersOnly);
+            assert!(matches!(
+                interp.execute(&tracked).unwrap(),
+                Value::Number(42.)
+            ));
+            assert!(tracked.stats().unwrap().calls > 0);
+            assert_eq!(shared.stats().unwrap().calls, 0);
+            assert_eq!(
+                cache.programs.get(scalar).unwrap().0.stats().unwrap().calls,
+                0
+            );
+            interp.global.borrow_mut().clear_edges();
+            drop(interp);
+            assert_eq!(crate::heap::collect_after_interpreter_drop().skipped, None);
+        }
+        for index in 0..70 {
+            cache.prepare(&format!("{index};")).unwrap();
+        }
+        assert_eq!(cache.programs.len(), 64);
+        assert_eq!(cache.order.len(), 64);
+        assert!(!cache.programs.contains_key(source));
+        assert_eq!(
+            cache.bytes,
+            cache.order.iter().map(|s| s.len()).sum::<usize>()
+        );
+    }
+
+    fn shape_identity() -> usize {
+        Rc::as_ptr(&crate::shape::Shape::root()) as usize
+    }
+    fn arena_identity(runtime: &mut VmRuntime) -> (usize, usize, usize, usize) {
+        let symbol = runtime
+            .interp
+            .eval_source("Symbol.for('owner-probe')")
+            .unwrap();
+        let Value::Symbol(ref symbol) = symbol else {
+            panic!("symbol")
+        };
+        let proto = runtime
+            .interp
+            .eval_source("Object.getPrototypeOf(new Map())")
+            .unwrap();
+        let Value::Object { ref props } = proto else {
+            panic!("prototype")
+        };
+        (
+            shape_identity(),
+            Rc::as_ptr(symbol) as usize,
+            Rc::as_ptr(props) as usize,
+            crate::heap::pin_count(),
+        )
+    }
+    #[test]
+    fn owner_migration_thread_handoffs_and_drop() {
+        let outer_shape = shape_identity();
+        let outer_shapes_created = crate::shape::Shape::created_count();
+        let outer_heap = crate::heap::counters();
+        let state = VM::new_state();
+        let (expected, pinned) = state.with_runtime(|runtime| {
+            let object = runtime
+                .interp
+                .eval_source("var rooted={answer:42};rooted.self=rooted;rooted;")
+                .unwrap();
+            let pinned = runtime.exports.insert(object);
+            runtime.interp.eval_source("rooted=undefined;").unwrap();
+            (arena_identity(runtime), pinned)
+        });
+        assert_eq!(shape_identity(), outer_shape);
+        assert_eq!(crate::shape::Shape::created_count(), outer_shapes_created);
+        assert_eq!(crate::heap::counters(), outer_heap);
+        for _ in 0..8 {
+            let transferred = state.clone();
+            std::thread::spawn(move || {
+                let outer = shape_identity();
+                let outer_count = crate::shape::Shape::created_count();
+                transferred.with_runtime(|runtime| {
+                    assert_eq!(arena_identity(runtime), expected);
+                    assert_eq!(runtime.interp.collect_cycles().skipped, None);
+                    assert!(matches!(
+                        runtime.export(pinned).unwrap().get_prop("answer"),
+                        Some(Value::Number(42.))
+                    ));
+                });
+                assert_eq!(shape_identity(), outer);
+                assert_eq!(crate::shape::Shape::created_count(), outer_count);
+            })
+            .join()
+            .unwrap();
+            assert_eq!(state.with_runtime(arena_identity), expected);
+            let transferred = state.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            state
+                .dispatch_async(Box::new(move || {
+                    tx.send(transferred.with_runtime(arena_identity)).unwrap();
+                }))
+                .unwrap();
+            assert_eq!(rx.recv().unwrap(), expected);
+        }
+        // No bridge exists: destruction here exercises only Rust state.
+        std::thread::spawn(move || drop(state)).join().unwrap();
+        assert_eq!(shape_identity(), outer_shape);
+        assert_eq!(crate::shape::Shape::created_count(), outer_shapes_created);
+        assert_eq!(crate::heap::counters(), outer_heap);
+    }
+    #[test]
+    fn owner_migration_panic_nested_contexts_restore_tls() {
+        let mut ambient = crate::runtime::OwnerContext::default();
+        let _ambient = ambient.enter();
+        let ambient_shapes_created = crate::shape::Shape::created_count();
+        let first = VM::new_state();
+        let second = VM::new_state();
+        assert_eq!(crate::shape::Shape::created_count(), ambient_shapes_created);
+        let first_identity = first.with_runtime(arena_identity);
+        let second_identity = second.with_runtime(arena_identity);
+        assert_ne!(first_identity.0, second_identity.0);
+        assert_ne!(first_identity.1, second_identity.1);
+        assert_ne!(first_identity.2, second_identity.2);
+        let ambient_shape = shape_identity();
+        let ambient_heap = crate::heap::counters();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            first.with_runtime(|runtime| {
+                assert_eq!(arena_identity(runtime), first_identity);
+                second.with_runtime(|runtime| {
+                    assert_eq!(arena_identity(runtime), second_identity);
+                    panic!("lease probe");
+                });
+            });
+        }));
+        assert!(panic.is_err());
+        assert_eq!(shape_identity(), ambient_shape);
+        assert_eq!(crate::shape::Shape::created_count(), ambient_shapes_created);
+        assert_eq!(crate::heap::counters(), ambient_heap);
+        assert_eq!(first.with_runtime(arena_identity), first_identity);
+        assert_eq!(second.with_runtime(arena_identity), second_identity);
+    }
+}
+
+#[cfg(test)]
+mod runtime_profile {
+    use super::*;
+    #[test]
+    #[ignore = "serialized diagnostic profile; run with --ignored --nocapture"]
+    fn runtime_phase_profile() {
+        for (name, source) in [
+            ("tiny", "function f(x,y){return x+y;}f(20,22);"),
+            ("arithmetic", "var n=0;for(var i=0;i<1000;i++)n+=i;n;"),
+        ] {
+            let mut nanos = [0_u128; 6];
+            for iteration in 0..1050 {
+                let started = std::time::Instant::now();
+                let mut context = crate::runtime::OwnerContext::default();
+                let lease = context.enter();
+                let owner = started.elapsed().as_nanos();
+                let started = std::time::Instant::now();
+                let mut interp = Interpreter::with_builtins();
+                let builtins = started.elapsed().as_nanos();
+                let started = std::time::Instant::now();
+                let program = FRESH_PROGRAMS
+                    .with(|cache| {
+                        cache
+                            .borrow_mut()
+                            .prepare_for(source, interp.feedback_disabled())
+                    })
+                    .unwrap();
+                let value = interp.execute(&program).unwrap();
+                let execution = started.elapsed().as_nanos();
+                let started = std::time::Instant::now();
+                std::hint::black_box(try_to_string(&value).unwrap());
+                drop(value);
+                interp.global.borrow_mut().clear_edges();
+                drop(interp);
+                let teardown = started.elapsed().as_nanos();
+                let started = std::time::Instant::now();
+                crate::heap::collect_after_interpreter_drop();
+                let collection = started.elapsed().as_nanos();
+                let started = std::time::Instant::now();
+                drop(lease);
+                drop(context);
+                let detach = started.elapsed().as_nanos();
+                if iteration >= 50 {
+                    for (total, sample) in nanos
+                        .iter_mut()
+                        .zip([owner, builtins, execution, teardown, collection, detach])
+                    {
+                        *total += sample;
+                    }
+                }
+            }
+            println!(
+                "{}",
+                serde_json::json!({"profile": "runCode", "workload":name,"operations":1000,"phase_ns":nanos})
+            );
+        }
+        let state = VM::new_state();
+        let started = std::time::Instant::now();
+        for _ in 0..100_000 {
+            state.with_runtime(|runtime| {
+                std::hint::black_box(runtime.interp.prepared_cache_stats())
+            });
+        }
+        println!(
+            "{}",
+            serde_json::json!({"profile":"runtime_lease", "operations":100000,"elapsed_ns":started.elapsed().as_nanos()})
+        );
+        let program = Interpreter::compile("var n=0;for(var i=0;i<1000;i++)n+=i;n;").unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..100_000 {
+            std::hint::black_box(program.clone());
+        }
+        println!(
+            "{}",
+            serde_json::json!({"profile":"prepared_clone", "operations":100000,"elapsed_ns":started.elapsed().as_nanos()})
+        );
+    }
 }
