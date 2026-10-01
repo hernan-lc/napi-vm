@@ -21,6 +21,15 @@ jobs:
         with:
           toolchain: 1.96.0
           components: rustfmt, clippy
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ matrix.node }}
@@ -31,6 +40,14 @@ jobs:
       - run: npm run build:all
       - run: npm run test:node
       - run: npm test
+      # The napi-rs fixture has its own lockfile (it pins e.g. bitflags
+      # v2.13.2 while the main crate pins v2.13.1), and the tests build it
+      # with `--offline` into a separate target dir. Without this fetch the
+      # fixture-only crates are missing from a cold cache and those tests
+      # fail with "failed to download ... but --offline was specified".
+      - name: Fetch napi-rs fixture dependencies
+        if: matrix.node == 22
+        run: cargo fetch --locked --manifest-path tests/fixtures/node-api/napi-rs/Cargo.toml
       - name: Feature combinations and generated sources
         if: matrix.node == 22
         shell: bash

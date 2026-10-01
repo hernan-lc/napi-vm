@@ -58,7 +58,11 @@ fn napi_prebuild_package_roots_stay_inside_the_plugin_directory() {
 
     let inside =
         plugin_napi_package_root(&plugin.0, Path::new("node_modules/example-addon")).unwrap();
-    assert_eq!(inside, plugin.0.join("node_modules/example-addon"));
+    // The helper returns a canonical path; the temp dir itself may live
+    // under a symlink (macOS: `/var` → `/private/var`), so canonicalize the
+    // expectation too instead of comparing against the raw join.
+    let expected = fs::canonicalize(plugin.0.join("node_modules/example-addon")).unwrap();
+    assert_eq!(inside, expected);
 
     let error = plugin_napi_package_root(&plugin.0, &outside.0).unwrap_err();
     assert!(error.to_string().contains("outside the plugin directory"));

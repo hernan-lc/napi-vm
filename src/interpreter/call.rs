@@ -1981,14 +1981,25 @@ pub(crate) fn generator_next(
         {
             let mut inner = inner_rc.borrow_mut();
             if !inner.started {
+                // Same cap as the stackful path: `yield*` delegation runs
+                // inline here, so without this a self-delegating generator
+                // recurses natively until the host stack overflows instead of
+                // failing with a catchable RangeError.
+                if interp.gen_depth >= super::MAX_GENERATOR_DEPTH {
+                    return Err(crate::value::limit_err(
+                        "Maximum generator nesting exceeded",
+                    ));
+                }
                 inner.started = true;
                 let body = inner.body.clone();
                 let closure = inner.closure.clone();
                 let params = inner.params.clone();
                 let args = inner.args.clone();
                 drop(inner);
-                let (produced, returned) =
-                    run_buffered_generator(interp, body, closure, params, args)?;
+                interp.gen_depth += 1;
+                let outcome = run_buffered_generator(interp, body, closure, params, args);
+                interp.gen_depth -= 1;
+                let (produced, returned) = outcome?;
                 let mut inner = inner_rc.borrow_mut();
                 inner.buffered = produced;
                 inner.return_value = Some(returned);
@@ -1996,11 +2007,11 @@ pub(crate) fn generator_next(
         }
         let mut inner = inner_rc.borrow_mut();
         match inner.buffered.pop_front() {
-            Some(value) => return Ok(iter_result(value, false)),
+            Some(value) => Ok(iter_result(value, false)),
             None => {
                 inner.done = true;
                 let returned = inner.return_value.clone().unwrap_or(Value::Undefined);
-                return Ok(iter_result(returned, true));
+                Ok(iter_result(returned, true))
             }
         }
     }

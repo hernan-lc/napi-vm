@@ -5,6 +5,13 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const runnerDir = resolve(root, "tests/compat/runners");
 
+// The harness itself runs under Bun, so `process.execPath` is the Bun binary.
+// Spawning a bare `bun` fails on Windows (ENOENT): the globally installed
+// `bun` there is a `.cmd` shim, which `spawn` cannot execute without a shell,
+// while `process.execPath` is the real executable. Fall back to PATH lookup
+// only when this file is somehow not running under Bun.
+const bunExe = /bun(\.exe)?$/i.test(process.execPath) ? process.execPath : "bun";
+
 // Bun on Windows fails to load backslash-spelled script paths handed over via
 // `spawn` (ENOENT on files that exist — the same argv works under Node), so
 // every path crossing the spawn boundary uses forward slashes, which both
@@ -83,8 +90,8 @@ export async function runDifferentialFixture(fixture, { timeout = 5000 } = {}) {
   const path = forSpawn(resolve(fixture));
   const runs = await Promise.all([
     execute("node", "node", [forSpawn(resolve(runnerDir, "node.mjs")), path], timeout),
-    execute("bun", "bun", [forSpawn(resolve(runnerDir, "bun.mjs")), path], timeout),
-    execute("napi-vm", "bun", [forSpawn(resolve(runnerDir, "napi-vm.mjs")), path], timeout),
+    execute("bun", bunExe, [forSpawn(resolve(runnerDir, "bun.mjs")), path], timeout),
+    execute("napi-vm", bunExe, [forSpawn(resolve(runnerDir, "napi-vm.mjs")), path], timeout),
   ]);
   return Object.fromEntries(runs.map((result) => [result.runtime, result]));
 }

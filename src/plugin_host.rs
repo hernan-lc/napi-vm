@@ -1090,7 +1090,11 @@ fn plugin_napi_package_root(
     let canonical = fs::canonicalize(&candidate).map_err(|error| {
         PluginHostError::Load(format!("cannot resolve configured native package: {error}"))
     })?;
-    if !canonical.is_dir() || !canonical.starts_with(plugin_root) {
+    // Compare canonical against canonical: the candidate above resolves
+    // symlinks (notably the `/var` → `/private/var` temp-dir link on macOS),
+    // so a raw `plugin_root` would never be a prefix of it.
+    let root = fs::canonicalize(plugin_root).unwrap_or_else(|_| plugin_root.to_path_buf());
+    if !canonical.is_dir() || !canonical.starts_with(&root) {
         return Err(PluginHostError::Load(
             "configured native package root is outside the plugin directory".into(),
         ));

@@ -277,47 +277,31 @@ impl Marker {
             Value::HostPending { id } => {
                 self.host_calls.insert(*id);
             }
-            Value::Object { props } => {
-                if self.marked.insert(id_of(props)) {
-                    self.work.push(MarkItem::Object(props.clone()));
-                }
+            Value::Object { props } if self.marked.insert(id_of(props)) => {
+                self.work.push(MarkItem::Object(props.clone()));
             }
-            Value::Array(cell) => {
-                if self.marked.insert(id_of(cell)) {
-                    self.work.push(MarkItem::Array(cell.clone()));
-                }
+            Value::Array(cell) if self.marked.insert(id_of(cell)) => {
+                self.work.push(MarkItem::Array(cell.clone()));
             }
-            Value::Function(fd) => {
-                if self.marked.insert(id_of(fd)) {
-                    self.work.push(MarkItem::Function(fd.clone()));
-                }
+            Value::Function(fd) if self.marked.insert(id_of(fd)) => {
+                self.work.push(MarkItem::Function(fd.clone()));
             }
-            Value::HostFunction { properties, .. } => {
-                if self.marked.insert(id_of(properties)) {
-                    self.work.push(MarkItem::Object(properties.clone()));
-                }
+            Value::HostFunction { properties, .. } if self.marked.insert(id_of(properties)) => {
+                self.work.push(MarkItem::Object(properties.clone()));
             }
             // Boxed, so identity-less: trace through to the shared cells.
             Value::Class(cd) => self.mark_class(cd),
-            Value::Promise(inner) => {
-                if self.marked.insert(id_of(inner)) {
-                    self.work.push(MarkItem::Promise(inner.clone()));
-                }
+            Value::Promise(inner) if self.marked.insert(id_of(inner)) => {
+                self.work.push(MarkItem::Promise(inner.clone()));
             }
-            Value::Generator { inner } => {
-                if self.marked.insert(id_of(inner)) {
-                    self.work.push(MarkItem::Generator(inner.clone()));
-                }
+            Value::Generator { inner } if self.marked.insert(id_of(inner)) => {
+                self.work.push(MarkItem::Generator(inner.clone()));
             }
-            Value::Proxy(data) => {
-                if self.marked.insert(id_of(data)) {
-                    self.work.push(MarkItem::Proxy(data.clone()));
-                }
+            Value::Proxy(data) if self.marked.insert(id_of(data)) => {
+                self.work.push(MarkItem::Proxy(data.clone()));
             }
-            Value::Binding(cell) => {
-                if self.marked.insert(id_of(cell)) {
-                    self.work.push(MarkItem::Binding(cell.clone()));
-                }
+            Value::Binding(cell) if self.marked.insert(id_of(cell)) => {
+                self.work.push(MarkItem::Binding(cell.clone()));
             }
             #[cfg(stackful_coroutines)]
             Value::AsyncTask(inner) if self.marked.insert(id_of(inner)) => {

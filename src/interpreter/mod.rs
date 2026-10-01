@@ -261,8 +261,8 @@ pub struct Interpreter {
     last_evaluation_tier: Option<&'static str>,
     /// How many generator bodies are executing beneath this interpreter.
     /// Zero for the driver; one more than its parent inside a generator body.
-    /// Unused where there are no coroutines to nest (see `build.rs`).
-    #[cfg_attr(not(stackful_coroutines), expect(dead_code))]
+    /// Where coroutines are unavailable (see `build.rs`) the buffered driver
+    /// bumps this around each inline body run, so it still measures nesting.
     pub(crate) gen_depth: u32,
     /// Configured per-execution loop-iteration cap.
     loop_budget: u64,
