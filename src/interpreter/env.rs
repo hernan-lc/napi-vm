@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::rc::Rc;
 
 use smallvec::SmallVec;
@@ -21,6 +22,23 @@ const INLINE_CAP: usize = 8;
 /// Binding key: `Rc<str>` so parameter names shared across millions of calls
 /// are cloned with a refcount bump instead of a heap allocation.
 type Key = Rc<str>;
+
+thread_local! {
+    // Retain randomized, secret keys while avoiding SipHash on every global
+    // name lookup. This holds no guest data and is independent of owner TLS.
+    static BINDING_HASHER: ahash::RandomState = {
+        let seed = std::collections::hash_map::RandomState::new();
+        ahash::RandomState::with_seeds(
+            seed.hash_one(0_u64), seed.hash_one(1_u64),
+            seed.hash_one(2_u64), seed.hash_one(3_u64),
+        )
+    };
+}
+
+/// Keyed runtime-map hashing without retaining any owner or guest data.
+pub(super) fn randomized_hasher() -> ahash::RandomState {
+    BINDING_HASHER.with(Clone::clone)
+}
 
 /// How a binding was declared. This drives assignment and redeclaration
 /// rules, and whether the binding has a temporal dead zone.
@@ -95,7 +113,7 @@ pub enum ModifyOutcome {
 #[derive(Clone)]
 enum Vars {
     Small(SmallVec<[(Key, Binding); INLINE_CAP]>),
-    Large(HashMap<Key, Binding>),
+    Large(HashMap<Key, Binding, ahash::RandomState>),
 }
 
 impl Vars {
@@ -106,6 +124,7 @@ impl Vars {
         }
     }
 
+    #[inline(always)]
     fn get(&self, n: &str) -> Option<&Binding> {
         match self {
             Vars::Small(v) => v.iter().find(|(k, _)| &**k == n).map(|(_, b)| b),
@@ -113,6 +132,7 @@ impl Vars {
         }
     }
 
+    #[inline(always)]
     fn get_mut(&mut self, n: &str) -> Option<&mut Binding> {
         match self {
             Vars::Small(v) => v.iter_mut().find(|(k, _)| &**k == n).map(|(_, b)| b),
@@ -126,7 +146,7 @@ impl Vars {
     fn try_set(&mut self, n: &str, v: Value) -> Result<(), Value> {
         match self.get_mut(n) {
             Some(binding) => {
-                binding.value = v;
+                binding.value.assign_for_execution(v);
                 binding.initialized = true;
                 Ok(())
             }
@@ -167,7 +187,9 @@ impl Vars {
         match self {
             Vars::Small(vars) => {
                 if vars.len() >= PROMOTE_AT {
-                    let mut map: HashMap<Key, Binding> = vars.drain(..).collect();
+                    let mut map =
+                        HashMap::with_capacity_and_hasher(vars.len() + 1, randomized_hasher());
+                    map.extend(vars.drain(..));
                     map.insert(Rc::from(n), b);
                     *self = Vars::Large(map);
                 } else {
@@ -240,7 +262,9 @@ impl Environment {
             .into_iter()
             .map(|(k, v)| (k, Binding::initialized(v, BindKind::Var)));
         let vars = if vars.len() > PROMOTE_AT {
-            Vars::Large(vars.collect())
+            let mut map = HashMap::with_hasher(randomized_hasher());
+            map.extend(vars);
+            Vars::Large(map)
         } else {
             Vars::Small(vars.collect())
         };
@@ -479,8 +503,16 @@ impl Environment {
             if !binding.initialized {
                 return ModifyOutcome::Uninitialized;
             }
-            binding.value = f(binding.value.clone());
-            return ModifyOutcome::Updated(binding.value.clone());
+            let value = f(binding.value.deref_binding());
+            match &binding.value {
+                Value::Binding(cell) => cell
+                    .borrow_mut()
+                    .assign_for_execution(value.clone_for_execution()),
+                _ => binding
+                    .value
+                    .assign_for_execution(value.clone_for_execution()),
+            }
+            return ModifyOutcome::Updated(value);
         }
         match self.parent {
             Some(ref p) => p.borrow_mut().modify(n, f),

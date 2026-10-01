@@ -2,7 +2,7 @@
 //! the interpreter, bridge facade, guest values and coroutine stacks locally.
 //! Only owned strings, wire values, tokens, and integer N-API handles cross.
 use super::bridge::{AsyncState, BridgeState, NapiHostBridge};
-use super::marshal::{WireValue, chk, from_napi, make_str, to_napi};
+use super::marshal::{WireValue, chk, make_str, to_napi};
 use crate::host::WakeSignal;
 use crate::{
     CancellationToken, ClockMode, EventLoopOptions, Fairness, Interpreter, RealTimeClock,
@@ -111,6 +111,8 @@ struct Reply {
     result: Result<WireValue, String>,
 }
 enum Operation {
+    Diagnostics,
+    Collect,
     Run(String, bool),
     Expose {
         name: String,
@@ -324,6 +326,12 @@ fn owner(
                             return Err(error.clone());
                         }
                         match operation {
+                            Operation::Diagnostics => {
+                                Ok(WireValue::String(vm.evaluation_diagnostics()))
+                            }
+                            Operation::Collect => {
+                                Ok(WireValue::Number(vm.collect_cycles().collected as f64))
+                            }
                             Operation::Run(source, drain) => {
                                 vm.ensure_can_evaluate().map_err(|e| e.to_string())?;
                                 if !vm.has_active_execution() {
@@ -345,11 +353,13 @@ fn owner(
                                 let value = if drain {
                                     super::vm::execute_source(&mut vm, &source)
                                 } else {
-                                    vm.begin_execution();
-                                    vm.set_source(&source);
-                                    crate::parser::parse_cached(&source)
-                                        .map_err(|e| e.into_vm_err())
-                                        .and_then(|s| vm.run_program_body(&s))
+                                    vm.eval_source_with_options(
+                                        &source,
+                                        crate::interpreter::EvaluationOptions {
+                                            drain: crate::interpreter::DrainPolicy::None,
+                                            ..Default::default()
+                                        },
+                                    )
                                 }
                                 .map_err(|e| vm.enrich_error(e, None).to_string())?;
                                 super::vm::async_result_string(value).map(WireValue::String)
@@ -408,6 +418,7 @@ fn owner(
                     result
                 };
                 vm.retire_completed_execution();
+                vm.maybe_collect_cycles();
                 bridge.set_owner_execution_active(vm.has_active_execution());
                 bridge.prune_owner_results(&vm);
                 drop(admission);
@@ -463,6 +474,7 @@ fn owner(
     }
     // Drop all guest values/stacks on the owner, then relinquish its handles.
     drop(vm);
+    crate::heap::collect_after_interpreter_drop();
 }
 
 #[napi]
@@ -616,6 +628,14 @@ impl AsyncSession {
         })
     }
     #[napi(ts_return_type = "Promise<string>")]
+    pub fn evaluation_stats(&self, env: Env) -> napi::Result<Unknown<'_>> {
+        self.submit(env, Operation::Diagnostics)
+    }
+    #[napi(ts_return_type = "Promise<number>")]
+    pub fn collect_cycles(&self, env: Env) -> napi::Result<Unknown<'_>> {
+        self.submit(env, Operation::Collect)
+    }
+    #[napi(ts_return_type = "Promise<string>")]
     pub fn run(&self, env: Env, source: String) -> napi::Result<Unknown<'_>> {
         self.submit(env, Operation::Run(source, true))
     }
@@ -656,8 +676,7 @@ impl AsyncSession {
     }
     #[napi(ts_return_type = "Promise<void>")]
     pub fn set_global(&self, env: Env, name: String, value: Unknown) -> napi::Result<Unknown<'_>> {
-        let value = from_napi(env.raw(), value.raw())
-            .and_then(|v| WireValue::from_value(&v))
+        let value = WireValue::from_napi(env.raw(), value.raw())
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
         self.submit(env, Operation::SetGlobal(name, value))
     }

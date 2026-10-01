@@ -284,6 +284,7 @@ mod tests {
             is_arrow: false,
             is_constructor: false,
             captures_arguments: false,
+            needs_frame_environment: false,
             caches: Vec::new().into_boxed_slice(),
             tiers: TierCounters::default(),
         }
@@ -486,4 +487,13 @@ mod tests {
         };
         assert!(!other.check(std::slice::from_ref(&obj)));
     }
+}
+
+/// Feedback is opt-in when there is no executable backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TierTracking {
+    #[default]
+    Disabled,
+    CountersOnly,
+    BackendEnabled,
 }

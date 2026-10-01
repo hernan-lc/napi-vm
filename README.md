@@ -7,7 +7,7 @@ IPC-style command/event bridge for deterministic tests.
 
 ## Quick start
 
-Prerequisites: **Rust** (1.96+), **Node.js** (18+) and **[Bun](https://bun.sh)**.
+Prerequisites: **Rust** (1.96+), **Node.js** (22+) and **[Bun](https://bun.sh)**.
 Bun runs the main test suite; the library itself has no Bun dependency at
 runtime.
 
@@ -503,3 +503,5 @@ regression suite. Run `npm test` to see the current verified count.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Runtime ownership, bytecode evaluation, collection APIs, and cache bounds are documented in [Runtime improvements](docs/runtime-improvements.md).

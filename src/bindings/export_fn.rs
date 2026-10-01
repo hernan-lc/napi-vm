@@ -25,7 +25,7 @@ use crate::value::Value;
 struct ExportedFunction {
     state: Arc<VMState>,
     /// Index into the runtime's export table.
-    index: usize,
+    index: super::export_slots::ExportId,
 }
 
 /// Is this a value that must cross as a callable rather than as data?
@@ -42,6 +42,39 @@ pub(super) fn export(
     state: &Arc<VMState>,
     value: &Value,
 ) -> Result<sys::napi_value, VmErr> {
+    export_with_setup(
+        state,
+        value,
+        |context, function| unsafe {
+            sys::napi_create_function(
+                env,
+                c"vmFunction".as_ptr(),
+                10,
+                Some(call_into_vm),
+                context.cast(),
+                function,
+            )
+        },
+        |context, function| unsafe {
+            let mut ignored = ptr::null_mut();
+            sys::napi_add_finalizer(
+                env,
+                function,
+                context.cast(),
+                Some(finalize_export),
+                ptr::null_mut(),
+                &mut ignored,
+            )
+        },
+    )
+}
+
+fn export_with_setup(
+    state: &Arc<VMState>,
+    value: &Value,
+    create: impl FnOnce(*mut ExportedFunction, &mut sys::napi_value) -> sys::napi_status,
+    finalize: impl FnOnce(*mut ExportedFunction, sys::napi_value) -> sys::napi_status,
+) -> Result<sys::napi_value, VmErr> {
     let index = state.register_export(value.clone());
     let context = Box::new(ExportedFunction {
         state: state.clone(),
@@ -50,17 +83,9 @@ pub(super) fn export(
     let context_ptr = Box::into_raw(context);
 
     let mut function = ptr::null_mut();
-    let create = unsafe {
-        sys::napi_create_function(
-            env,
-            c"vmFunction".as_ptr(),
-            10,
-            Some(call_into_vm),
-            context_ptr as *mut c_void,
-            &mut function,
-        )
-    };
+    let create = create(context_ptr, &mut function);
     if create != sys::Status::napi_ok {
+        state.rollback_export(index);
         drop(unsafe { Box::from_raw(context_ptr) });
         return Err(VmErr::Msg(format!(
             "failed to export a VM function (status {})",
@@ -68,22 +93,11 @@ pub(super) fn export(
         )));
     }
 
-    // N-API owns the function object from here; the finalizer reclaims the
-    // context when it becomes unreachable. A rejected finalizer (an
-    // environment already tearing down) leaves a bounded leak, never a
-    // use-after-free.
-    let mut ignored = ptr::null_mut();
-    let finalize = unsafe {
-        sys::napi_add_finalizer(
-            env,
-            function,
-            context_ptr as *mut c_void,
-            Some(finalize_export),
-            ptr::null_mut(),
-            &mut ignored,
-        )
-    };
+    // Only a successfully installed finalizer owns the context. Failed
+    // setup releases the export synchronously before returning an error.
+    let finalize = finalize(context_ptr, function);
     if finalize != sys::Status::napi_ok {
+        state.rollback_export(index);
         drop(unsafe { Box::from_raw(context_ptr) });
         return Err(VmErr::Msg(format!(
             "failed to register the export finalizer (status {})",
@@ -177,12 +191,11 @@ impl ExportedFunction {
             .try_start()
             .map_err(|_| VmErr::Msg("VM is busy with another execution".to_string()))?;
 
-        let mut args = Vec::with_capacity(argv.len());
-        for raw in argv {
-            args.push(from_napi(env, *raw)?);
-        }
-
         let result = self.state.with_runtime(|runtime| {
+            let mut args = Vec::with_capacity(argv.len());
+            for raw in argv {
+                args.push(from_napi(env, *raw)?);
+            }
             let Some(callee) = runtime.export(self.index) else {
                 return Err(VmErr::Msg(
                     "this VM function is no longer available".to_string(),
@@ -198,5 +211,46 @@ impl ExportedFunction {
         // Outside the gate, so a function among the results can be exported in
         // turn; the busy guard still holds.
         super::marshal::exporting_from(&self.state, || to_napi(env, &result))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_export_setup_releases_slot_and_pin_synchronously() {
+        for fail_create in [true, false] {
+            let state = super::super::vm::VM::new_state();
+            let value = state.with_runtime(|runtime| {
+                runtime
+                    .interp
+                    .eval_source("(()=>{let obj={x:42};return ()=>obj.x;})()")
+                    .unwrap()
+            });
+            let error = export_with_setup(
+                &state,
+                &value,
+                |_, _| {
+                    if fail_create {
+                        sys::Status::napi_generic_failure
+                    } else {
+                        sys::Status::napi_ok
+                    }
+                },
+                |_, _| {
+                    assert!(
+                        !fail_create,
+                        "finalizer setup must not follow failed creation"
+                    );
+                    sys::Status::napi_generic_failure
+                },
+            );
+            assert!(error.is_err());
+            state.assert_no_queued_export_releases();
+            state.with_runtime(|runtime| runtime.exports.assert_empty());
+            // A reused slot has a fresh generation, and the failed setup's
+            // ID cannot release the new pin.
+            state.with_runtime(|runtime| runtime.exports.assert_reuse_safe());
+        }
     }
 }

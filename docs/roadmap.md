@@ -250,7 +250,7 @@ Reported as errors rather than silently mis-executed:
 ## Known boundaries
 
 - The interpreter is not a replacement for a full JavaScript engine.
-- `runAsync` creates one OS thread per invocation and is not intended for
+- `runAsync` reuses one sleeping worker per VM; AsyncSession is preferred for
   high-frequency events. Call `dispose()` when finished with such a VM.
 - The in-process sandbox needs worker/process isolation for strict untrusted-code
   CPU and memory limits.
@@ -266,3 +266,5 @@ Reported as errors rather than silently mis-executed:
 
 Contributions should add or update a regression test with each language or
 bridge feature, then run the quality gate from `docs/development.md`.
+
+See [Runtime improvements](runtime-improvements.md) for the current ownership, evaluation, collection, cache bounds, polling limits, and benchmark methodology.

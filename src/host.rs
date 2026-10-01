@@ -147,6 +147,11 @@ pub enum HostWaitMode {
 /// thread that drives the VM. Implementations marshal `Value`s into their
 /// host representation and invoke the registered function synchronously.
 pub trait HostBridge {
+    /// Values retained by a bridge outside interpreter/module/job roots.
+    /// Custom callbacks that capture opaque guest values must pin them with
+    /// `heap::RootPin`, or report them here before enabling collection.
+    fn trace_roots(&self, _values: &mut Vec<Value>, _envs: &mut Vec<crate::interpreter::Env>) {}
+
     /// Invoke the host function registered under `id` with `args`, returning
     /// the marshalled result back into the VM.
     fn call_host(&self, id: usize, args: Vec<Value>) -> Result<Value, VmErr>;

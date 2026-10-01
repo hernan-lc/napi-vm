@@ -37,7 +37,7 @@ pub enum KeySrc {
 }
 
 /// One executable instruction with typed operands.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Instr {
     // -- data movement --------------------------------------------------
     /// `dst = constants[cst]` (fresh runtime value per execution).
@@ -240,12 +240,14 @@ pub enum Instr {
     // -- properties, calls, allocation -----------------------------------
     /// `dst = obj[key]` through the full lookup chain (proxies included).
     GetProp {
+        cache: u32,
         dst: Reg,
         obj: Reg,
         key: Reg,
     },
     /// `obj[key] = val` through the full assignment path.
     SetProp {
+        cache: u32,
         obj: Reg,
         key: Reg,
         val: Reg,
@@ -688,6 +690,7 @@ impl Instr {
     /// Fuel cost of one execution, per the §22 budget table. Plain moves
     /// are free; allocation and calls cost more. Exact numbers are a
     /// starting point for benchmark tuning, not a final schedule.
+    #[inline(always)]
     pub fn cost(&self) -> u64 {
         match self.opcode() {
             Opcode::Call | Opcode::CallMethod | Opcode::CallSpread | Opcode::MethodSpread => 5,
@@ -802,8 +805,8 @@ impl fmt::Display for Instr {
             Instr::Return { src } => write!(f, "RETURN r{src}"),
             Instr::ReturnUndefined => write!(f, "RETURN_UNDEFINED"),
             Instr::Throw { src } => write!(f, "THROW r{src}"),
-            Instr::GetProp { dst, obj, key } => write!(f, "GET_PROP r{dst}, r{obj}, r{key}"),
-            Instr::SetProp { obj, key, val } => write!(f, "SET_PROP r{obj}, r{key}, r{val}"),
+            Instr::GetProp { dst, obj, key, .. } => write!(f, "GET_PROP r{dst}, r{obj}, r{key}"),
+            Instr::SetProp { obj, key, val, .. } => write!(f, "SET_PROP r{obj}, r{key}, r{val}"),
             Instr::Call {
                 dst,
                 callee,

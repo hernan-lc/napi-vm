@@ -1153,6 +1153,15 @@ impl NativeAddonLoader for NodeAddonSidecar {
 }
 
 impl HostBridge for NodeAddonSidecar {
+    fn trace_roots(&self, values: &mut Vec<Value>, _envs: &mut Vec<super::Env>) {
+        let state = self.state.borrow();
+        values.extend(state.object_proxies.values().cloned());
+        values.extend(state.guest_callbacks.values().cloned());
+        values.extend(state.guest_graph_nodes.values().cloned());
+        values.extend(state.host_symbols.values().cloned());
+        values.extend(state.native_promises.values().cloned().map(Value::Promise));
+    }
+
     fn set_execution_context(&self, token: crate::CancellationToken, timeout: Option<Duration>) {
         token.register_wake(&self.response_wake);
         *self.cancellation.borrow_mut() = token;

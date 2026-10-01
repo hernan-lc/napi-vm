@@ -1020,7 +1020,7 @@ extern "C" fn tsfn_callback(
     }
 
     if then_type != sys::ValueType::napi_function {
-        match from_napi(env, result).and_then(|value| WireValue::from_value(&value)) {
+        match WireValue::from_napi(env, result) {
             Ok(value) => {
                 let _ = msg.reply_tx.send(Ok(value));
             }
@@ -1217,7 +1217,7 @@ extern "C" fn promise_resolve_cb(
     }
     let context = unsafe { &*(data as *mut SettlementContext) };
     let value = if argc > 0 && !argv[0].is_null() {
-        match from_napi(env, argv[0]).and_then(|value| WireValue::from_value(&value)) {
+        match WireValue::from_napi(env, argv[0]) {
             Ok(value) => value,
             Err(error) => {
                 context

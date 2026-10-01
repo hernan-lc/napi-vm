@@ -17,18 +17,40 @@ use crate::parser::{AssignOp, BinOp, UnOp};
 /// One structural defect found in a compiled function.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyError {
+    BadCache {
+        address: usize,
+        index: u32,
+    },
+    CacheTableMismatch,
     /// `slots.len() != local_count`.
-    SlotTableMismatch { slots: usize, local_count: u16 },
+    SlotTableMismatch {
+        slots: usize,
+        local_count: u16,
+    },
     /// Parameters must occupy the leading slots.
-    ParametersExceedLocals { parameters: u16, locals: u16 },
+    ParametersExceedLocals {
+        parameters: u16,
+        locals: u16,
+    },
     /// Nonzero upvalues need Phase F's capture machinery.
-    UpvaluesUnsupported { count: u16 },
+    UpvaluesUnsupported {
+        count: u16,
+    },
     /// Register operand outside `0..register_count`.
-    BadRegister { address: usize, register: u16 },
+    BadRegister {
+        address: usize,
+        register: u16,
+    },
     /// Slot operand outside `0..local_count`.
-    BadSlot { address: usize, slot: u16 },
+    BadSlot {
+        address: usize,
+        slot: u16,
+    },
     /// Constant-pool operand outside the pool.
-    BadConstant { address: usize, index: u16 },
+    BadConstant {
+        address: usize,
+        index: u16,
+    },
     /// Constant of the wrong variant for the instruction.
     ConstantTypeMismatch {
         address: usize,
@@ -37,7 +59,10 @@ pub enum VerifyError {
     /// Jump target outside `0..=code.len()`. Landing exactly on
     /// `code.len()` is falling off the end, which the VM defines
     /// (completion value at top level, `undefined` in functions).
-    BadJumpTarget { address: usize, target: u32 },
+    BadJumpTarget {
+        address: usize,
+        target: u32,
+    },
     /// Call/array operand range outside the register file.
     BadOperandRange {
         address: usize,
@@ -45,13 +70,24 @@ pub enum VerifyError {
         count: u16,
     },
     /// `&&`/`||`/`??`/`,` must lower to jumps, never reach the VM.
-    ShortCircuitInBinary { address: usize, op: BinOp },
+    ShortCircuitInBinary {
+        address: usize,
+        op: BinOp,
+    },
     /// `++`/`--`/`delete` must use their dedicated instructions.
-    TargetedUnary { address: usize, op: UnOp },
+    TargetedUnary {
+        address: usize,
+        op: UnOp,
+    },
     /// Plain `=` must use a store, never a compound instruction.
-    PlainAssignInCompound { address: usize },
+    PlainAssignInCompound {
+        address: usize,
+    },
     /// `++`/`--` delta must be +1 or -1.
-    BadIncDelta { address: usize, delta: i8 },
+    BadIncDelta {
+        address: usize,
+        delta: i8,
+    },
     /// Template quasi count must be the hole count plus one.
     TemplateArityMismatch {
         address: usize,
@@ -59,12 +95,22 @@ pub enum VerifyError {
         argc: u16,
     },
     /// A defect inside a nested compiled function.
-    NestedFunction { index: u16, error: Box<VerifyError> },
+    NestedFunction {
+        index: u16,
+        error: Box<VerifyError>,
+    },
 }
 
 impl std::fmt::Display for VerifyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            VerifyError::BadCache { address, index } => write!(
+                f,
+                "bytecode verify failed at {address}: cache {index} out of range"
+            ),
+            VerifyError::CacheTableMismatch => {
+                write!(f, "bytecode verify failed: property cache table mismatch")
+            }
             VerifyError::SlotTableMismatch { slots, local_count } => write!(
                 f,
                 "bytecode verify failed: {slots} slot infos for {local_count} locals"
@@ -143,6 +189,15 @@ impl std::error::Error for VerifyError {}
 
 /// Verify one compiled function and, recursively, its nested functions.
 pub fn verify_function(function: &BytecodeFunction) -> Result<(), VerifyError> {
+    let sites = function
+        .code
+        .iter()
+        .filter(|i| matches!(i, Instr::GetProp { .. } | Instr::SetProp { .. }))
+        .count();
+    if sites != function.caches.len() {
+        return Err(VerifyError::CacheTableMismatch);
+    }
+
     if function.slots.len() != function.local_count as usize {
         return Err(VerifyError::SlotTableMismatch {
             slots: function.slots.len(),
@@ -429,12 +484,34 @@ impl Checker<'_> {
             Instr::Return { src } | Instr::Throw { src } => {
                 self.check_reg(address, *src)?;
             }
-            Instr::GetProp { dst, obj, key } => {
+            Instr::GetProp {
+                dst,
+                obj,
+                key,
+                cache,
+            } => {
+                if *cache as usize >= self.function.caches.len() {
+                    return Err(VerifyError::BadCache {
+                        address,
+                        index: *cache,
+                    });
+                }
                 self.check_reg(address, *dst)?;
                 self.check_reg(address, *obj)?;
                 self.check_reg(address, *key)?;
             }
-            Instr::SetProp { obj, key, val } => {
+            Instr::SetProp {
+                obj,
+                key,
+                val,
+                cache,
+            } => {
+                if *cache as usize >= self.function.caches.len() {
+                    return Err(VerifyError::BadCache {
+                        address,
+                        index: *cache,
+                    });
+                }
                 self.check_reg(address, *obj)?;
                 self.check_reg(address, *key)?;
                 self.check_reg(address, *val)?;

@@ -120,3 +120,5 @@ tests/                      JavaScript regression suite
 The implementation is intentionally modular: parser expression/statement
 families, interpreter operations, builtins, language analysis, NAPI bindings,
 runtime sessions, and LSP transport each have separate responsibilities.
+
+See [Runtime improvements](runtime-improvements.md) for the current ownership, evaluation, collection, cache bounds, polling limits, and benchmark methodology.

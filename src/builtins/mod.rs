@@ -709,3 +709,8 @@ fn console_dir(_interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Val
     println!("{}", output.finish());
     Ok(Value::Undefined)
 }
+
+#[cfg(feature = "napi")]
+pub(crate) use collections::{CollectionContext, clear_collection_cache};
+#[cfg(feature = "napi")]
+pub(crate) use symbol::SymbolContext;

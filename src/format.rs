@@ -309,7 +309,14 @@ pub fn number_string(n: f64) -> String {
         return "NaN".to_string();
     }
     if n.fract() == 0.0 && n.abs() < 1e15 {
-        format!("{:.0}", n)
+        // This range is exactly representable by i64. Keep the historical
+        // signed-zero output while avoiding float decimal conversion for
+        // the common integral result.
+        if n == 0.0 && n.is_sign_negative() {
+            "-0".to_string()
+        } else {
+            (n as i64).to_string()
+        }
     } else {
         n.to_string()
     }
@@ -672,4 +679,33 @@ fn write_quoted(output: &mut BoundedOutput, value: &str) -> Result<(), VmErr> {
         }
     }
     output.push_char('\'')
+}
+
+#[cfg(test)]
+mod number_rendering_tests {
+    #[test]
+    fn integral_results_keep_previous_decimal_rendering() {
+        for integer in -1024..=1024 {
+            let number = f64::from(integer);
+            assert_eq!(super::number_string(number), format!("{number:.0}"));
+        }
+        for number in [-999_999_999_999_999.0, 999_999_999_999_999.0, -0.0] {
+            assert_eq!(super::number_string(number), format!("{number:.0}"));
+        }
+        for number in [
+            -1e15,
+            1e15,
+            999_999_999_999_999.5,
+            -0.5,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+        ] {
+            assert_eq!(super::number_string(number), number.to_string());
+        }
+        assert_eq!(super::number_string(-0.0), "-0");
+        assert_eq!(super::number_string(0.0), "0");
+        assert_eq!(super::number_string(f64::INFINITY), "Infinity");
+        assert_eq!(super::number_string(f64::NEG_INFINITY), "-Infinity");
+        assert_eq!(super::number_string(f64::NAN), "NaN");
+    }
 }

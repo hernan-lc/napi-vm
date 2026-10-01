@@ -68,9 +68,15 @@ struct HandlerEntry {
 }
 
 impl<'a> CallFrame<'a> {
-    fn setup(function: &'a BytecodeFunction, this_value: Value, args: &[Value]) -> Self {
-        let registers = vec![Value::Undefined; function.register_count as usize];
-        let mut slots = Vec::with_capacity(function.local_count as usize);
+    fn setup(
+        interp: &mut Interpreter,
+        function: &'a BytecodeFunction,
+        this_value: Value,
+        args: &[Value],
+    ) -> Self {
+        let (mut registers, mut slots) = interp.activation_pool.pop().unwrap_or_default();
+        registers.resize(function.register_count as usize, Value::Undefined);
+        slots.reserve(function.local_count as usize);
         for (index, info) in function.slots.iter().enumerate() {
             // Captured slots live in the frame environment (boxed at call
             // time); the slot stays an untouched placeholder.
@@ -118,6 +124,17 @@ impl<'a> CallFrame<'a> {
     }
 }
 
+fn recycle_activation(interp: &mut Interpreter, mut frame: CallFrame<'_>) {
+    frame.registers.clear();
+    frame.slots.clear();
+    if interp.activation_pool.len() < 16
+        && frame.registers.capacity() <= 4096
+        && frame.slots.capacity() <= 4096
+    {
+        interp.activation_pool.push((frame.registers, frame.slots));
+    }
+}
+
 /// The environment global-family instructions read and write: the
 /// innermost pushed block scope, or the running scope when none is pushed.
 /// Pushed scopes chain to the running scope, so one lookup covers both.
@@ -133,6 +150,7 @@ fn internal(what: &str) -> VmErr {
     VmErr::Msg(format!("internal error: {what}"))
 }
 
+#[inline(always)]
 fn const_string(function: &BytecodeFunction, index: u16) -> Result<&str, VmErr> {
     match function.constants.get(index as usize) {
         Some(Constant::String(name)) => Ok(name),
@@ -150,8 +168,13 @@ pub(crate) fn run_module(
     // Top-level programs tier up like functions: compile once, execute
     // many times is exactly the shape repeated `execute` calls take.
     tier_check(interp, &module.main, &[]);
-    let mut frame = CallFrame::setup(&module.main, Value::Undefined, &[]);
-    run_loop(interp, &mut frame, true)
+    let mut frame = CallFrame::setup(interp, &module.main, Value::Undefined, &[]);
+    interp.check_execution()?;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_loop(interp, &mut frame, true)
+    }));
+    recycle_activation(interp, frame);
+    result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 /// Count one entry and apply the tier-up decision (JIT seam). No
@@ -181,19 +204,29 @@ pub(crate) fn run_function(
     code: &BytecodeFunction,
     parent_env: Env,
     this_value: Value,
-    args: Vec<Value>,
+    args: &[Value],
 ) -> Result<Value, VmErr> {
-    tier_check(interp, code, &args);
-    let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
-    if !code.is_arrow {
-        fe.borrow_mut().set("this", this_value.clone());
+    interp.check_execution()?;
+    tier_check(interp, code, args);
+    let fe = if code.needs_frame_environment {
+        Rc::new(RefCell::new(Environment::child(parent_env)))
+    } else {
+        parent_env
+    };
+    if code.needs_frame_environment {
+        if !code.is_arrow {
+            fe.borrow_mut().set("this", this_value.clone());
+        }
+        seed_captured(&fe, code, args)?;
     }
-    seed_captured(&fe, code, &args)?;
     let saved = std::mem::replace(&mut interp.global, fe);
-    let mut frame = CallFrame::setup(code, this_value, &args);
-    let result = run_loop(interp, &mut frame, false);
+    let mut frame = CallFrame::setup(interp, code, this_value, args);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_loop(interp, &mut frame, false)
+    }));
     interp.global = saved;
-    result
+    recycle_activation(interp, frame);
+    result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 /// Box the captured slots into a fresh frame environment, mirroring
@@ -340,7 +373,7 @@ fn run_loop(
 ) -> Result<Value, VmErr> {
     loop {
         let instr = match frame.function.code.get(frame.ip) {
-            Some(instr) => instr.clone(),
+            Some(instr) => *instr,
             // Falling off the end is legitimate (a body without `return`);
             // jumping past it is a compiler bug and fails loudly.
             None if frame.ip == frame.function.code.len() => {
@@ -371,10 +404,11 @@ fn run_loop(
                         }
                         _ => return Err(internal("invalid load_const")),
                     };
-                    frame.registers[dst as usize] = value;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::Mov { dst, src } => {
-                    frame.registers[dst as usize] = frame.registers[src as usize].clone();
+                    let value = frame.registers[src as usize].clone_for_execution();
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::LoadLocal { dst, slot } => {
                     let slot_value = &frame.slots[slot as usize];
@@ -384,11 +418,11 @@ fn run_loop(
                             frame.function.slots[slot as usize].name
                         )));
                     }
-                    frame.registers[dst as usize] = slot_value.value.clone();
+                    frame.registers[dst as usize] = slot_value.value.clone_for_execution();
                 }
                 Instr::StoreLocal { slot, src } => {
                     check_slot_writable(frame, slot)?;
-                    let value = frame.registers[src as usize].clone();
+                    let value = frame.registers[src as usize].clone_for_execution();
                     let slot = &mut frame.slots[slot as usize];
                     slot.value = value;
                     slot.initialized = true;
@@ -405,19 +439,27 @@ fn run_loop(
                     };
                 }
                 Instr::InitLocal { slot, src } => {
-                    let value = frame.registers[src as usize].clone();
+                    let value = frame.registers[src as usize].clone_for_execution();
                     let slot = &mut frame.slots[slot as usize];
                     slot.value = value;
                     slot.initialized = true;
                 }
                 Instr::LoadGlobal { dst, name } => {
-                    let name = const_string(frame.function, name)?.to_string();
+                    let name = const_string(frame.function, name)?;
                     if name == "undefined" {
                         frame.registers[dst as usize] = Value::Undefined;
                     } else {
-                        let scope = current_scope(interp, frame);
-                        match scope.borrow().lookup(&name) {
-                            Lookup::Value(v) => frame.registers[dst as usize] = v,
+                        // Lookup cannot run guest code or change the active
+                        // scope. Borrow its existing root instead of bumping
+                        // the environment's Rc count for every global read.
+                        let lookup = {
+                            let scope = frame.scopes.last().unwrap_or(&interp.global);
+                            scope.borrow().lookup(name)
+                        };
+                        match lookup {
+                            Lookup::Value(v) => {
+                                frame.registers[dst as usize].assign_for_execution(v)
+                            }
                             Lookup::Uninitialized => {
                                 return Err(VmErr::Msg(format!(
                                     "ReferenceError: Cannot access '{name}' before initialization"
@@ -432,10 +474,10 @@ fn run_loop(
                     }
                 }
                 Instr::StoreGlobal { name, src } => {
-                    let name = const_string(frame.function, name)?.to_string();
-                    let value = frame.registers[src as usize].clone();
+                    let name = const_string(frame.function, name)?;
+                    let value = frame.registers[src as usize].clone_for_execution();
                     let scope = current_scope(interp, frame);
-                    interp.assign_or_set_binding_in(&scope, &name, value)?;
+                    interp.assign_or_set_binding_in(&scope, name, value)?;
                 }
                 Instr::DefineGlobal {
                     name,
@@ -443,27 +485,21 @@ fn run_loop(
                     kind,
                     initialized,
                 } => {
-                    let name = const_string(frame.function, name)?.to_string();
-                    let value = frame.registers[src as usize].clone();
+                    let name = const_string(frame.function, name)?;
+                    let value = frame.registers[src as usize].clone_for_execution();
                     let scope = current_scope(interp, frame);
-                    interp.declare_binding_in(
-                        &scope,
-                        &name,
-                        value,
-                        bind_kind(kind),
-                        initialized,
-                    )?;
+                    interp.declare_binding_in(&scope, name, value, bind_kind(kind), initialized)?;
                 }
                 Instr::InitGlobal { name, src } => {
-                    let name = const_string(frame.function, name)?.to_string();
-                    let value = frame.registers[src as usize].clone();
+                    let name = const_string(frame.function, name)?;
+                    let value = frame.registers[src as usize].clone_for_execution();
                     let scope = current_scope(interp, frame);
-                    interp.set_binding_in(&scope, &name, value)?;
+                    interp.set_binding_in(&scope, name, value)?;
                 }
                 Instr::HoistVarGlobal { name } => {
-                    let name = const_string(frame.function, name)?.to_string();
-                    if !interp.global.borrow().has(&name) {
-                        interp.declare_binding(&name, Value::Undefined, BindKind::Var, true)?;
+                    let name = const_string(frame.function, name)?;
+                    if !interp.global.borrow().has(name) {
+                        interp.declare_binding(name, Value::Undefined, BindKind::Var, true)?;
                     }
                 }
                 Instr::BareVarLocal { slot } => {
@@ -475,9 +511,9 @@ fn run_loop(
                     }
                 }
                 Instr::BareVarGlobal { name } => {
-                    let name = const_string(frame.function, name)?.to_string();
-                    if interp.global.borrow().get(&name).is_none() {
-                        interp.assign_or_set_binding(&name, Value::Undefined)?;
+                    let name = const_string(frame.function, name)?;
+                    if interp.global.borrow().get(name).is_none() {
+                        interp.assign_or_set_binding(name, Value::Undefined)?;
                     }
                 }
                 Instr::LoadThis { dst } => {
@@ -489,15 +525,15 @@ fn run_loop(
                         scope.borrow().get("this").unwrap_or(Value::Undefined);
                 }
                 Instr::TypeofGlobal { dst, name } => {
-                    let name = const_string(frame.function, name)?.to_string();
+                    let name = const_string(frame.function, name)?;
                     let scope = current_scope(interp, frame);
-                    let value = scope.borrow().get(&name).unwrap_or(Value::Undefined);
+                    let value = scope.borrow().get(name).unwrap_or(Value::Undefined);
                     frame.registers[dst as usize] =
                         interp.un_op(crate::parser::UnOp::Typeof, &value)?;
                 }
                 Instr::TypeofLocal { dst, slot } => {
                     let value = if frame.slots[slot as usize].initialized {
-                        frame.slots[slot as usize].value.clone()
+                        frame.slots[slot as usize].value.clone_for_execution()
                     } else {
                         Value::Undefined
                     };
@@ -505,12 +541,13 @@ fn run_loop(
                         interp.un_op(crate::parser::UnOp::Typeof, &value)?;
                 }
                 Instr::Binary { dst, op, lhs, rhs } => {
-                    let l = frame.registers[lhs as usize].clone();
-                    let r = frame.registers[rhs as usize].clone();
-                    frame.registers[dst as usize] = interp.apply_binary(op, &l, &r)?;
+                    let l = frame.registers[lhs as usize].clone_for_execution();
+                    let r = frame.registers[rhs as usize].clone_for_execution();
+                    let value = interp.apply_binary(op, &l, &r)?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::Unary { dst, op, src } => {
-                    let v = frame.registers[src as usize].clone();
+                    let v = frame.registers[src as usize].clone_for_execution();
                     frame.registers[dst as usize] = interp.un_op(op, &v)?;
                 }
                 Instr::CompoundLocal { dst, slot, op, rhs } => {
@@ -518,11 +555,11 @@ fn run_loop(
                     frame.registers[dst as usize] = value;
                 }
                 Instr::CompoundGlobal { dst, name, op, rhs } => {
-                    let name = const_string(frame.function, name)?.to_string();
-                    let rhs = frame.registers[rhs as usize].clone();
+                    let name = const_string(frame.function, name)?;
+                    let rhs = frame.registers[rhs as usize].clone_for_execution();
                     let scope = current_scope(interp, frame);
-                    frame.registers[dst as usize] =
-                        interp.compound_assign_global_in(&scope, &name, op, rhs)?;
+                    let value = interp.compound_assign_global_in(&scope, name, op, rhs)?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::CompoundProp {
                     dst,
@@ -534,9 +571,9 @@ fn run_loop(
                     let Some(bin) = op.bin_op() else {
                         return Err(internal("plain `=` in compound prop"));
                     };
-                    let obj = frame.registers[obj as usize].clone();
-                    let key = frame.registers[key as usize].clone();
-                    let rhs = frame.registers[rhs as usize].clone();
+                    let obj = frame.registers[obj as usize].clone_for_execution();
+                    let key = frame.registers[key as usize].clone_for_execution();
+                    let rhs = frame.registers[rhs as usize].clone_for_execution();
                     frame.registers[dst as usize] =
                         interp.compound_assign_prop(&obj, &key, bin, rhs)?;
                 }
@@ -547,7 +584,7 @@ fn run_loop(
                     prefix,
                 } => {
                     check_slot_writable(frame, slot)?;
-                    let current = frame.slots[slot as usize].value.clone();
+                    let current = frame.slots[slot as usize].value.clone_for_execution();
                     let updated = Value::Number(if delta > 0 {
                         interp.tn(&current) + 1.0
                     } else {
@@ -563,10 +600,10 @@ fn run_loop(
                     delta,
                     prefix,
                 } => {
-                    let name = const_string(frame.function, name)?.to_string();
+                    let name = const_string(frame.function, name)?;
                     let scope = current_scope(interp, frame);
-                    frame.registers[dst as usize] =
-                        interp.inc_global_binding_in(&scope, &name, delta > 0, prefix)?;
+                    let value = interp.inc_global_binding_in(&scope, name, delta > 0, prefix)?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::IncProp {
                     dst,
@@ -575,20 +612,23 @@ fn run_loop(
                     delta,
                     prefix,
                 } => {
-                    let obj = frame.registers[obj as usize].clone();
-                    let key = frame.registers[key as usize].clone();
-                    frame.registers[dst as usize] =
-                        interp.inc_prop_value(&obj, &key, delta > 0, prefix)?;
+                    let value = interp.inc_prop_value(
+                        &frame.registers[obj as usize],
+                        &frame.registers[key as usize],
+                        delta > 0,
+                        prefix,
+                    )?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::DelProp { dst, obj, key } => {
-                    let obj = frame.registers[obj as usize].clone();
-                    let key = frame.registers[key as usize].clone();
+                    let obj = frame.registers[obj as usize].clone_for_execution();
+                    let key = frame.registers[key as usize].clone_for_execution();
                     frame.registers[dst as usize] = interp.delete_member(&obj, &key)?;
                 }
                 Instr::DelGlobal { dst, name } => {
-                    let name = const_string(frame.function, name)?.to_string();
+                    let name = const_string(frame.function, name)?;
                     let scope = current_scope(interp, frame);
-                    let bound = scope.borrow().get(&name).is_some();
+                    let bound = scope.borrow().get(name).is_some();
                     frame.registers[dst as usize] = Value::Bool(!bound);
                 }
                 Instr::Jump { target } => {
@@ -622,33 +662,54 @@ fn run_loop(
                 }
                 Instr::LoopHead => {
                     interp.consume_loop()?;
-                    crate::jit::note_loop_iter(&frame.function.tiers);
+                    interp.note_loop_iter(&frame.function.tiers);
                 }
                 // `return` signals through `Ret`, like the evaluator's bodies:
                 // `call_this` maps it to a value, `ctor` maps object returns to
                 // the returned object. Only falling off the end yields `Ok`.
                 Instr::Return { src } => {
-                    return Err(VmErr::Ret(frame.registers[src as usize].clone()));
+                    return Err(VmErr::Ret(
+                        frame.registers[src as usize].clone_for_execution(),
+                    ));
                 }
                 Instr::ReturnUndefined => {
                     return Err(VmErr::Ret(Value::Undefined));
                 }
                 Instr::Throw { src } => {
-                    return Err(VmErr::Throw(frame.registers[src as usize].clone()));
+                    return Err(VmErr::Throw(
+                        frame.registers[src as usize].clone_for_execution(),
+                    ));
                 }
-                Instr::GetProp { dst, obj, key } => {
-                    let site = frame.ip - 1;
-                    let obj = frame.registers[obj as usize].clone();
-                    let key = frame.registers[key as usize].clone();
-                    frame.registers[dst as usize] =
-                        get_prop_cached(interp, frame.function, site, &obj, &key)?;
+                Instr::GetProp {
+                    dst,
+                    obj,
+                    key,
+                    cache,
+                } => {
+                    let value = get_prop_cached(
+                        interp,
+                        frame.function,
+                        cache as usize,
+                        &frame.registers[obj as usize],
+                        &frame.registers[key as usize],
+                    )?;
+                    frame.registers[dst as usize] = value;
                 }
-                Instr::SetProp { obj, key, val } => {
-                    let site = frame.ip - 1;
-                    let obj = frame.registers[obj as usize].clone();
-                    let key = frame.registers[key as usize].clone();
-                    let val = frame.registers[val as usize].clone();
-                    set_prop_cached(interp, frame.function, site, &obj, &key, val)?;
+                Instr::SetProp {
+                    obj,
+                    key,
+                    val,
+                    cache,
+                } => {
+                    let val = frame.registers[val as usize].clone_for_execution();
+                    set_prop_cached(
+                        interp,
+                        frame.function,
+                        cache as usize,
+                        &frame.registers[obj as usize],
+                        &frame.registers[key as usize],
+                        val,
+                    )?;
                 }
                 Instr::Call {
                     dst,
@@ -656,10 +717,13 @@ fn run_loop(
                     args,
                     argc,
                 } => {
-                    let argv = take_range(frame, args, argc)?;
-                    let callee = frame.registers[callee as usize].clone();
-                    frame.registers[dst as usize] =
-                        interp.call_this(&callee, Value::Undefined, argv)?;
+                    let argv = borrow_range(frame, args, argc)?;
+                    let value = interp.call_this_borrowed(
+                        &frame.registers[callee as usize],
+                        Value::Undefined,
+                        argv,
+                    )?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::CallMethod {
                     dst,
@@ -668,10 +732,11 @@ fn run_loop(
                     args,
                     argc,
                 } => {
-                    let argv = take_range(frame, args, argc)?;
-                    let callee = frame.registers[callee as usize].clone();
-                    let this = frame.registers[this as usize].clone();
-                    frame.registers[dst as usize] = interp.call_this(&callee, this, argv)?;
+                    let argv = borrow_range(frame, args, argc)?;
+                    let this = frame.registers[this as usize].clone_for_execution();
+                    let value =
+                        interp.call_this_borrowed(&frame.registers[callee as usize], this, argv)?;
+                    frame.registers[dst as usize].assign_for_execution(value);
                 }
                 Instr::Construct {
                     dst,
@@ -680,13 +745,13 @@ fn run_loop(
                     argc,
                 } => {
                     let argv = take_range(frame, args, argc)?;
-                    let callee = frame.registers[callee as usize].clone();
+                    let callee = frame.registers[callee as usize].clone_for_execution();
                     frame.registers[dst as usize] = interp.ctor(&callee, argv)?;
                 }
                 Instr::CallSpread { dst, callee, tmpl } => {
                     let template = spread_template(frame, tmpl)?;
                     let argv = spread_argv(frame, &template)?;
-                    let callee = frame.registers[callee as usize].clone();
+                    let callee = frame.registers[callee as usize].clone_for_execution();
                     frame.registers[dst as usize] =
                         interp.call_this(&callee, Value::Undefined, argv)?;
                 }
@@ -698,8 +763,8 @@ fn run_loop(
                 } => {
                     let template = spread_template(frame, tmpl)?;
                     let argv = spread_argv(frame, &template)?;
-                    let callee = frame.registers[callee as usize].clone();
-                    let this = frame.registers[this as usize].clone();
+                    let callee = frame.registers[callee as usize].clone_for_execution();
+                    let this = frame.registers[this as usize].clone_for_execution();
                     frame.registers[dst as usize] = interp.call_this(&callee, this, argv)?;
                 }
                 Instr::BuildArray { dst, tmpl } => {
@@ -729,9 +794,9 @@ fn run_loop(
                     keys,
                     taken,
                 } => {
-                    let source = frame.registers[src as usize].clone();
-                    let keys = frame.registers[keys as usize].clone();
-                    let taken = frame.registers[taken as usize].clone();
+                    let source = frame.registers[src as usize].clone_for_execution();
+                    let keys = frame.registers[keys as usize].clone_for_execution();
+                    let taken = frame.registers[taken as usize].clone_for_execution();
                     frame.registers[dst as usize] = rest_object(interp, &source, &keys, &taken)?;
                 }
                 Instr::NewObject { .. } | Instr::SetOwnProp { .. } => {
@@ -756,7 +821,7 @@ fn run_loop(
                 }
                 Instr::LoadLocalSoft { dst, slot } => {
                     frame.registers[dst as usize] = if frame.slots[slot as usize].initialized {
-                        frame.slots[slot as usize].value.clone()
+                        frame.slots[slot as usize].value.clone_for_execution()
                     } else {
                         Value::Undefined
                     };
@@ -803,13 +868,13 @@ fn run_loop(
                     frame.registers[dst as usize] = rendered;
                 }
                 Instr::EnumKeys { dst, src } => {
-                    let source = frame.registers[src as usize].clone();
+                    let source = frame.registers[src as usize].clone_for_execution();
                     let keys = interp.keys_with_proxy_trap(&source)?;
                     frame.registers[dst as usize] =
                         Value::array(keys.into_iter().map(Value::String).collect());
                 }
                 Instr::ForOfInit { iter, next, src } => {
-                    let source = frame.registers[src as usize].clone();
+                    let source = frame.registers[src as usize].clone_for_execution();
                     let iterator = interp.iterator_for(&source)?;
                     let next_fn = interp.prop_str(&iterator, "next")?;
                     if matches!(next_fn, Value::Undefined) {
@@ -824,8 +889,8 @@ fn run_loop(
                     iter,
                     next,
                 } => {
-                    let iterator = frame.registers[iter as usize].clone();
-                    let next_fn = frame.registers[next as usize].clone();
+                    let iterator = frame.registers[iter as usize].clone_for_execution();
+                    let next_fn = frame.registers[next as usize].clone_for_execution();
                     let result = interp.call_this(&next_fn, iterator, vec![])?;
                     let finished = result
                         .get_prop("done")
@@ -884,7 +949,7 @@ fn run_loop(
                             "'super' used outside a derived class".to_string(),
                         ));
                     };
-                    let key = frame.registers[key as usize].clone();
+                    let key = frame.registers[key as usize].clone_for_execution();
                     frame.registers[dst as usize] = interp.get_prop_value(&proto, &key)?;
                 }
                 Instr::SuperCall { dst, args, argc } => {
@@ -909,7 +974,7 @@ fn run_loop(
                         build_class_from_template(interp, frame, &template)?;
                 }
                 Instr::PropertyKey { dst, src } => {
-                    let key = frame.registers[src as usize].clone();
+                    let key = frame.registers[src as usize].clone_for_execution();
                     let key = interp.property_key(&key)?;
                     frame.registers[dst as usize] = Value::String(key);
                 }
@@ -926,7 +991,7 @@ fn run_loop(
                     )?;
                 }
                 Instr::ExportDefault { src } => {
-                    let value = frame.registers[src as usize].clone();
+                    let value = frame.registers[src as usize].clone_for_execution();
                     interp.stmt_export_default(value)?;
                 }
                 Instr::ExportNamed { tmpl } => {
@@ -944,7 +1009,7 @@ fn run_loop(
                     interp.stmt_export_all(&template.source, template.alias.as_deref())?;
                 }
                 Instr::DynamicImport { dst, src } => {
-                    let specifier = frame.registers[src as usize].clone();
+                    let specifier = frame.registers[src as usize].clone_for_execution();
                     frame.registers[dst as usize] = interp.eval_dynamic_import(specifier)?;
                 }
                 Instr::ImportMeta { dst } => {
@@ -1044,14 +1109,14 @@ fn compound_slot(
     let Some(bin) = op.bin_op() else {
         return Err(internal("plain `=` in compound slot"));
     };
-    let rhs = frame.registers[rhs as usize].clone();
+    let rhs = frame.registers[rhs as usize].clone_for_execution();
     let rhs = if matches!(op, crate::parser::AssignOp::Add) {
         interp.coerce_for_concat(&rhs)?
     } else {
         rhs
     };
     check_slot_writable(frame, slot)?;
-    let mut current = frame.slots[slot as usize].value.clone();
+    let mut current = frame.slots[slot as usize].value.clone_for_execution();
     if matches!(bin, crate::parser::BinOp::Add) && Interpreter::needs_concat_coercion(&current) {
         current = interp.coerce_for_concat(&current)?;
     }
@@ -1097,7 +1162,7 @@ fn build_class_from_template(
     };
     let super_cls = template
         .superclass
-        .map(|reg| frame.registers[reg as usize].clone());
+        .map(|reg| frame.registers[reg as usize].clone_for_execution());
     let super_proto = interp.super_proto_for(&super_cls)?;
     let member_closure = Interpreter::member_closure_env(&def_scope, &super_proto);
 
@@ -1117,7 +1182,7 @@ fn build_class_from_template(
         let key = match &member.name {
             ClassNameTemplate::Static(name) => name.clone(),
             ClassNameTemplate::Computed(reg) => {
-                computed = frame.registers[*reg as usize].clone();
+                computed = frame.registers[*reg as usize].clone_for_execution();
                 interp.property_key(&computed)?
             }
         };
@@ -1178,7 +1243,7 @@ fn build_class_from_template(
                 let reg = member
                     .value
                     .ok_or_else(|| internal("field without value"))?;
-                let value = frame.registers[reg as usize].clone();
+                let value = frame.registers[reg as usize].clone_for_execution();
                 statics.push((key.clone(), value));
                 static_attrs.push((key, PropAttrs::default()));
             }
@@ -1194,7 +1259,7 @@ fn build_class_from_template(
                 env.borrow_mut().set("__super_ctor", target);
             }
             for (index, reg) in template.ctor_computed_keys.iter().enumerate() {
-                let key = frame.registers[*reg as usize].clone();
+                let key = frame.registers[*reg as usize].clone_for_execution();
                 env.borrow_mut()
                     .set(&super::constants::class_key_name(index), key);
             }
@@ -1235,7 +1300,11 @@ fn super_call(
 ) -> Result<Value, VmErr> {
     let current = current_scope(interp, frame);
     let scope = current.borrow();
-    let this_val = scope.get("this").unwrap_or(Value::Undefined);
+    let this_val = if frame.function.is_arrow {
+        scope.get("this").unwrap_or(Value::Undefined)
+    } else {
+        frame.this_value.clone()
+    };
     let super_ctor = scope
         .get("__super_ctor")
         .ok_or_else(|| VmErr::Msg("super used outside a derived class".to_string()))?;
@@ -1244,6 +1313,17 @@ fn super_call(
 }
 
 /// Clone one verified operand range out of the register file.
+fn borrow_range<'a>(
+    frame: &'a CallFrame<'_>,
+    start: Reg,
+    count: u16,
+) -> Result<&'a [Value], VmErr> {
+    frame
+        .registers
+        .get(start as usize..start as usize + count as usize)
+        .ok_or_else(|| internal("bad argument range"))
+}
+
 fn take_range(frame: &CallFrame, start: Reg, count: u16) -> Result<Vec<Value>, VmErr> {
     let start = start as usize;
     let end = start.saturating_add(count as usize);
@@ -1268,7 +1348,7 @@ fn build_object(
     let mut symbol_keys = Vec::new();
     for entry in template {
         if entry.kind == PropKind::Spread {
-            let src = frame.registers[entry.val as usize].clone();
+            let src = frame.registers[entry.val as usize].clone_for_execution();
             interp.for_each_spread_entry(&src, |key, value| {
                 insert_object_property(
                     &mut object,
@@ -1299,7 +1379,7 @@ fn build_object(
                     _ => continue,
                 },
             };
-            let value = frame.registers[entry.val as usize].clone();
+            let value = frame.registers[entry.val as usize].clone_for_execution();
             let kind = match entry.kind {
                 PropKind::Data => None,
                 PropKind::Getter => Some(ObjectAccessorKind::Getter),
@@ -1345,7 +1425,7 @@ fn spread_template(frame: &CallFrame, tmpl: u16) -> Result<Vec<SpreadEntry>, VmE
 fn spread_argv(frame: &CallFrame, template: &[SpreadEntry]) -> Result<Vec<Value>, VmErr> {
     let mut argv = Vec::new();
     for entry in template {
-        let value = frame.registers[entry.reg as usize].clone();
+        let value = frame.registers[entry.reg as usize].clone_for_execution();
         if !entry.spread {
             push_call_arg(&mut argv, value)?;
             continue;
@@ -1374,7 +1454,7 @@ fn spread_array(
 ) -> Result<Value, VmErr> {
     let mut items = Vec::new();
     for entry in template {
-        let value = frame.registers[entry.reg as usize].clone();
+        let value = frame.registers[entry.reg as usize].clone_for_execution();
         if !entry.spread {
             items.push(value);
         } else {
@@ -1580,6 +1660,7 @@ mod tests {
         let module = compile_program(&statements).expect("test must reach the bytecode tier");
         verify_module(&module).expect("compiler output must verify");
         let mut interp = Interpreter::with_builtins();
+        interp.set_tier_tracking(crate::jit::TierTracking::CountersOnly);
         interp.begin_execution();
         interp.set_source(src);
         let result = interp.run_bytecode_module(&module);
@@ -1594,13 +1675,13 @@ mod tests {
         let mut misses = 0;
         let mut mega = 0;
         let mut sites = 0;
-        for (index, instr) in module.main.code.iter().enumerate() {
-            if matches!(instr, Instr::GetProp { .. } | Instr::SetProp { .. }) {
+        for instr in &module.main.code {
+            if let Instr::GetProp { cache, .. } | Instr::SetProp { cache, .. } = instr {
                 sites += 1;
-                let (h, m) = module.main.caches[index].stats();
+                let (h, m) = module.main.caches[*cache as usize].stats();
                 hits += h;
                 misses += m;
-                mega += usize::from(module.main.caches[index].is_megamorphic());
+                mega += usize::from(module.main.caches[*cache as usize].is_megamorphic());
             }
         }
         (hits, misses, mega, sites)

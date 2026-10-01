@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Node.js 16 or newer
+- Node.js 22 or newer
 - Rust toolchain
 - Bun is useful for the JavaScript and playground smoke tests
 
@@ -73,7 +73,7 @@ const result = await vm.runAsync(`
 `runAsync(source)` returns `Promise<string>`. It runs the interpreter on a
 dedicated thread and dispatches async host callbacks to Node through a
 ThreadsafeFunction. Do not call `run` and `runAsync` concurrently on the same
-VM. Each `runAsync` call creates an OS thread, so high-frequency handlers
+VM. Each VM lazily starts one persistent worker, so high-frequency handlers
 should use synchronous `run()` or a worker pool instead.
 
 ### Modules

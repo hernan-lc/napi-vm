@@ -169,6 +169,9 @@ impl Default for RustPluginHostOptions {
 }
 
 /// A trusted Rust host callback exposed through one capability module.
+/// Guest values captured by a callback must be pinned with [`crate::heap::RootPin`]
+/// for the callback's lifetime, under the same owner context. Rust closure
+/// captures are opaque to the bridge's garbage collector.
 /// Receives the calling interpreter for value conversion and guest calls.
 pub type RustPluginFunction = Rc<dyn Fn(&mut Interpreter, Vec<Value>) -> Result<Value, VmErr>>;
 
@@ -222,6 +225,7 @@ pub struct RustLoadedPlugin {
     /// dispatch if the guest rebinds them), but no global lookup or parsing
     /// happens on the steady-state path again.
     plugin_instance: Value,
+    _instance_pin: crate::heap::RootPin,
     interpreter: Interpreter,
     plugin_bridge: Rc<PluginHostBridge>,
     module_ids: Vec<String>,
@@ -284,7 +288,13 @@ impl RustLoadedPlugin {
                 "TypeError: Plugin call must return a result object".to_string(),
             )));
         }
-        crate::convert::value_to_json(&mut self.interpreter, &result).map_err(PluginHostError::from)
+        let converted = crate::convert::value_to_json(&mut self.interpreter, &result)
+            .map_err(PluginHostError::from);
+        drop(result);
+        if converted.is_ok() {
+            self.interpreter.maybe_collect_cycles();
+        }
+        converted
     }
 }
 
@@ -872,6 +882,7 @@ impl RustPluginHost {
             status: RustPluginStatus::Loaded,
             load_result: None,
             capabilities: active_capabilities,
+            _instance_pin: crate::heap::RootPin::new(plugin_instance.clone()),
             plugin_instance,
             interpreter,
             plugin_bridge: bridge,
