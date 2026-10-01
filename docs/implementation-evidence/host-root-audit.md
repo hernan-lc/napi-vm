@@ -11,5 +11,8 @@ Review of the required-fixes checkout based on PR #8 head `71a9bb314724cf4e2ad03
 | `NapiHostBridge` | N-API references, wire messages, integer pending IDs | Contains no retained guest `Value` or guest `Env`; pending wire values are reconstructed inside an owner lease. Runtime exports have explicit heap pins. |
 | `WasmBridge` | `js_sys::Function` handles | Contains no retained guest `Value` or guest `Env`. |
 | `QueuedCallbackBridge` (integration fixture) | Guest callback | Added `trace_roots` for its callback. |
+| Scheduler `ProbeBridge`, `FloodBridge`, `BlockingBridge`, and callback-bearing local `Bridge` fixtures | Guest callbacks, promises, queued events | Added `trace_roots` for retained values. Barrier and blocking-wait-only fixtures retain only host channels and need no guest roots. |
+| Scheduler benchmark `Events` | Queued `HostEvent` callbacks, receivers, arguments, promises and exceptions | Added `trace_roots` for every event variant. |
+| Call benchmark `Bridge`, scheduler metrics `TimingBridge`, and evaluation fixture `PanickingBridge` | None; timing metrics retain a host clock and numeric samples | No guest roots required. |
 
 Host closures that retain guest objects remain responsible for explicit owner-local pins. Opaque host closures do not become implicit collector roots; guest values gain no new `Send`/`Sync` implementation.

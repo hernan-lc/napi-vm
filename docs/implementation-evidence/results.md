@@ -1,46 +1,85 @@
-# Measured results and remaining release gates
+# PR #8 implementation evidence
 
-The twelve implementation workstreams are present, with VM.run/runAsync compatibility retained. Local correctness gates pass. **Performance acceptance and remote release gates are not complete.** Do not treat this patch as release approved.
+Local correctness, ownership, Miri, and measured performance gates passed for code head `dc612735aaa2eb10dd33201d32d24c6ba677a72a`. PR #8 remains draft: the remote OS/architecture/Node matrix is blocked because repository Actions are disabled, and the user explicitly directed that they remain disabled. No remote pass or merge approval is claimed.
 
-The reviewed baseline is `cf9d240a99747e29d94b970c30483d14ad831e9f`. The table uses seven interleaved process pairs on this Linux x64 machine. Times are medians in microseconds per operation (per scheduled timer for queue workloads). Change and 95% confidence intervals use the median of paired ratios and 10,000 paired bootstrap resamples. Ratios of the two displayed medians can differ from the paired estimator. Intervals spanning zero are inconclusive. These intervals describe this small local sample, not all supported systems.
+Final-source measurements were taken at 2026-10-01T02:12:46Z against pinned main `cf9d240a99747e29d94b970c30483d14ad831e9f` on Linux x64, AMD BC-250, v26.10.0. Documentation-only commits after this code head do not change the measured source or binaries. SHA-256 hashes are recorded in [measurement context](pr8-final-performance/measurement-context.json) and [build metadata](pr8-final-validation/current-build-metadata.json).
 
-| Workload | Baseline µs | Modified µs | Paired change | 95% interval |
+## Correctness and ownership
+
+| Finding | Fix and regression |
+| --- | --- |
+| Sidecar guest roots | `NodeAddonSidecar::trace_roots` visits proxies, callbacks, graph nodes, symbols and promises. The collection regression drops guest-visible references, collects, and successfully uses retained objects/callbacks and settles the promise. [HostBridge audit](host-root-audit.md) covers every implementation and callback-bearing fixture. |
+| Owner-affine pins | `RootPin` carries `PhantomData<Rc<()>>`; static assertions reject `Send` and `Sync`. Pins must be created and dropped in the same owner context. |
+| Arrow super receiver | Arrows resolve lexical `this`; ordinary functions use the call-frame receiver. AST/bytecode regressions cover constructor super, super methods, nested arrows and ordinary nested-function receiver isolation, preserving AST behavior. |
+| Pending checkpoints | Resume the existing checkpoint with its original hard budget, check admissibility, then parse/compile new source. Valid, syntax-error, exhausted-budget and error-precedence regressions pass. |
+| Failed export setup | Function creation and finalizer-registration failures synchronously release the slot through the runtime gate. Only the actual finalizer queues a release. Fault injection proves no slot, pin or stale reusable ID remains. |
+| Owner migration | Production `OwnerContext` and `RuntimeCell` compile under Miri with `napi`, without live Node FFI. Tests cover thread A/B leasing, panic/nested TLS restoration, cross-thread destruction, repeated sync/async handoffs, and isolated roots/shapes/symbols/collection prototypes. |
+| Hot-path scans | `PreparedProgram::tier()` is O(1). Exact-source parse-cache hits append generation records in O(1), with bounded periodic cleanup and unchanged byte/entry limits. |
+
+The [before-fix logs](pr8-final-validation/README.md) reproduce the original callback-root, arrow-super, checkpoint, pin-trait, creation rollback and finalizer rollback failures. No parity, execution-budget or ownership assertion was removed.
+
+## Local validation
+
+Every requested command passed:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --release --all-features
+cargo test --no-default-features
+npm run build:all
+npm run check:generated
+npm run lint
+npm run test:node
+npm test
+npm run test:wasm
+git diff --check
+cargo test --release --test compiler_memory -- --test-threads=1
+cargo test --release --test gc_public_lifecycle
+cargo test --release --test evaluation_modes
+```
+
+The JavaScript suite preserves all 1,487 assertions: 1,432 Bun, 46 Node and 9 Wasm tests, with dedicated runners for each environment. Explicit Linux x64 Node 22.23.3 and 24.21.0 runs also passed; the default Node 26 run passed. [Complete command records](pr8-final-validation/current-results.json) link to raw logs.
+
+Expanded Miri passed with leak detection enabled:
+
+```text
+cargo +nightly miri test --no-default-features --features napi --lib owner_migration       # 4 passed
+cargo +nightly miri test --no-default-features --features napi --lib failed_export_setup  # 1 passed
+cargo +nightly miri test --no-default-features --lib shape::tests                         # 6 passed
+```
+
+[Miri records](pr8-final-validation/miri-results.json) and [machine/source context](pr8-final-validation/machine-context.json) retain versions, features and raw output.
+
+## Final-source performance
+
+The existing interleaved harness ran all 21 alternating baseline/modified pairs. Instrumentation sources are identical in both checkouts. Every pair is included. The reported change is the median of paired p50 ratios; confidence intervals use 10,000 paired bootstrap resamples with a fixed seed. Absolute times are medians and their quotient can differ from the paired estimate. Compiler/Miri activity was monitored; none overlapped the accepted trial. Other desktop activity is retained in the process log, so these are local observations, not a universal performance guarantee.
+
+| Required public gate | Baseline µs | Modified µs | Paired change | 95% interval |
 | --- | ---: | ---: | ---: | --- |
-| call_metrics / global-loop | 39.621 | 34.262 | -17.3% | -19.1% to -12.7% |
-| call_metrics / zero | 0.549 | 0.541 | -7.5% | -10.8% to -0.4% |
-| call_metrics / two | 0.840 | 0.746 | -12.9% | -14.8% to -4.9% |
-| call_metrics / method | 0.885 | 0.781 | -10.4% | -14.2% to -7.8% |
-| call_metrics / recursive | 7.389 | 5.992 | -19.3% | -24.7% to -14.7% |
-| timer_queue_matrix / drain / 1 timers | 0.113 | 0.062 | -47.1% | -48.5% to -38.3% |
-| timer_queue_matrix / drain / 10 timers | 0.124 | 0.062 | -49.9% | -51.6% to -45.9% |
-| timer_queue_matrix / drain / 32 timers | 0.140 | 0.092 | -34.2% | -40.1% to -33.9% |
-| timer_queue_matrix / drain / 64 timers | 0.148 | 0.125 | -13.9% | -19.0% to -4.3% |
-| timer_queue_matrix / drain / 100 timers | 0.166 | 0.162 | -5.9% | -30.2% to +1.7% |
-| timer_queue_matrix / drain / 1000 timers | 0.214 | 0.225 | +9.2% | -4.6% to +9.6% |
-| timer_queue_matrix / drain / 10000 timers | 0.313 | 0.334 | +3.2% | -7.4% to +17.1% |
-| public / runCode / tiny | 150.006 | 201.022 | +35.0% | +28.1% to +36.5% |
-| public / VM.run / tiny | 3.195 | 3.145 | -1.9% | -3.7% to -1.5% |
-| public / VM.runAsync / tiny | 29.414 | 18.447 | -36.2% | -58.7% to -6.0% |
-| public / AsyncSession.run / tiny | 18.488 | 18.187 | -1.1% | -34.2% to -0.5% |
-| public / AsyncSession.evaluate / tiny | 18.067 | 18.057 | +0.3% | -1.7% to +1.1% |
-| public / runCode / arithmetic | 400.583 | 527.254 | +34.5% | +28.6% to +39.1% |
-| public / VM.run / arithmetic | 218.719 | 306.772 | +40.4% | +39.0% to +42.4% |
-| public / VM.runAsync / arithmetic | 293.692 | 344.960 | +19.7% | +12.2% to +23.2% |
-| public / AsyncSession.run / arithmetic | 255.735 | 346.262 | +36.4% | +33.5% to +40.3% |
-| public / AsyncSession.evaluate / arithmetic | 254.022 | 342.255 | +35.1% | +31.5% to +38.6% |
+| runCode/tiny | 235.088 | 233.692 | +0.95% | [+0.14%, +2.45%] |
+| runCode/arithmetic | 581.607 | 561.474 | -3.97% | [-6.28%, -2.39%] |
+| VM.run/arithmetic | 323.917 | 316.054 | -2.32% | [-3.14%, -1.82%] |
+| VM.runAsync/arithmetic | 384.159 | 333.847 | -12.95% | [-15.79%, -10.78%] |
+| AsyncSession.run/arithmetic | 338.717 | 334.881 | -0.84% | [-1.80%, -0.22%] |
+| AsyncSession.evaluate/arithmetic | 338.636 | 332.519 | -1.32% | [-2.01%, -0.77%] |
 
-Prepared bytecode calls reduce measured allocations per execution: zero-argument calls 13 to 6, two-argument calls 15 to 6, and the global-loop workload 415 to 6. These figures exclude preparation and are not allocation counts for public JS entrypoints. Borrowing global names and property operands improves the prepared tier; switching public evaluation from the old AST route to bytecode still exposes a global-loop dispatch regression.
+| Timer depth | Drain change | Cancel change | Partial-cancel change |
+| ---: | ---: | ---: | ---: |
+| 1 | -44.98% | -56.47% | -56.89% |
+| 10 | -52.48% | -65.33% | -57.33% |
+| 32 | -45.02% | -55.61% | -48.22% |
+| 64 | -29.28% | -42.08% | -36.02% |
+| 100 | -15.85% | -31.41% | -25.78% |
+| 1000 | -15.79% | -10.78% | -13.35% |
+| 10000 | -12.25% | -9.83% | -13.76% |
 
-The final existing Criterion property canaries report monomorphic access 882.11 to 710.17 µs, megamorphic access 1.6616 to 1.3352 ms, and shape churn 796.19 to 730.16 µs. These are one interleaved baseline/modified pair with 30 Criterion measurements each; see the raw confidence intervals. Four interleaved tiny-call pairs also improve. Criterion's printed “change” compares its own previous saved run, so it must not be read as the baseline/modified comparison.
+All 38 public workloads and all 21 timer cases have paired median regressions within 5%. The largest public estimate is callFunction/callFunction: +3.48%; the largest timer estimate is cancel/10000: -9.83%. No estimate above 5% is approved.
 
-The compiler RSS regression fails the original revision (4,040 to 75,396 KiB after 20,000 warmed synthesized compilations) and passes the implementation's 4 MiB growth limit. Node lifecycle tests cover 20,000 persistent cyclic workloads, exported-function finalization, alternating synchronous/asynchronous state, and owner teardown.
+5 intervals extend above 5%; passing point estimates do not prove a strict 5% upper bound. Full intervals and allocation counts are in the [comparison summary](pr8-final-performance/comparison-summary.json); [required gates](pr8-final-performance/required-gates.json) and all raw samples are alongside it.
 
-## Release blockers
+Profiles preceded optimization: fresh-owner setup/collection, global dispatch, fuel accounting, prepared-code copies, parser-cache access and lease swaps were investigated. Changes reduce scalar teardown/cloning, share only guard-free feedback-disabled verified code, reuse bounded empty owner registries only after full collection, avoid property-name formatting, borrow existing frame operands and use keyed runtime-map hashing. Fuel costs, instruction checkpoints, full collection, exact source equality and AST/bytecode semantics remain intact. No unsafe `Send`/`Sync` boundary was expanded. Diagnostic profiles are explicitly labeled by earlier code head in [profile context](pr8-final-validation/profile-context.txt); they are not acceptance timings.
 
-- Cold `runCode` is slower, and public global arithmetic loops regress across execution modes. Fresh calls now pay isolated owner setup, preparation, and teardown collection; public global loops also expose bytecode dispatch costs. The prepared bytecode improvement does not satisfy the separate public API performance gate. Further optimization and fresh comparisons are required before accepting regressions beyond the specification's 3–5% threshold.
-- Large timer workloads have wide intervals: depth 1,000 and 10,000 do not establish a within-5% result. The selected threshold is 128, with bounded empty storage reuse; repeat longer measurements on stable machines before release. Do not infer a speedup at those depths.
-- The new platform/Node CI matrix and focused Miri workflow are configured but have no remote results from this task. Local success covers Linux x64 only. At measurement closeout the configured CLI GitHub token was invalid, so no PR stack was published and no remote CI was dispatched. Subsequent PR publication uses the authenticated connector; remote results must still be reviewed.
+## Remote gate
 
-Raw final samples are at the root of this directory. Earlier timing rounds are retained in `pre-timer-reuse/` and `before-global-name-borrowing/`; they do not represent the final implementation. `closeout-results.json` records the latest eleven passing local commands. `closeout-release-all-features.log` records the additional final full release Rust test run.
-
-The final `cargo test --release --all-features` completed successfully: 479 passing tests across its library, integration, and documentation suites.
+Linux, macOS, Windows, x64, ARM64 and Node 22/24/26 remote jobs have **not run**. [Remote gate record](pr8-final-validation/remote-gate.json) confirms Actions are disabled. The workflow contains the full matrix and expanded Miri commands, but local Linux checks cannot satisfy the remote gate. PR #8 stays draft until that gate is satisfied.
