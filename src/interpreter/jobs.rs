@@ -213,9 +213,10 @@ impl TimerQueue {
         debug_assert!(ids.is_empty());
         // Empty cached storage retains no jobs/guest roots. A small-only queue
         // never allocates an ID index. Cap reuse after unusually large queues.
+        let empty_ids = HashMap::with_hasher(ids.hasher().clone());
         let spare = (ids.capacity() <= Self::MAX_RETAINED_IDS).then(|| TreeTimers {
             entries: std::mem::take(entries),
-            ids: std::mem::take(ids),
+            ids: std::mem::replace(ids, empty_ids),
         });
         let entries = std::mem::take(small);
         *self = Self::Small { entries, spare };
