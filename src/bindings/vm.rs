@@ -1315,6 +1315,9 @@ mod owner_migration_tests {
             assert_eq!(crate::heap::collect_after_interpreter_drop().skipped, None);
             id
         }
+        // Initialize the ambient shape arena before taking its counters: a
+        // first lease otherwise initializes TLS while installing the owner.
+        let outer_shape = shape_identity();
         let outer_heap = crate::heap::counters();
         let outer_shapes = crate::shape::Shape::created_count();
         let expected = first_symbol(&mut crate::runtime::OwnerContext::default());
@@ -1340,6 +1343,7 @@ mod owner_migration_tests {
         );
         assert_eq!(crate::heap::counters(), outer_heap);
         assert_eq!(crate::shape::Shape::created_count(), outer_shapes);
+        assert_eq!(shape_identity(), outer_shape);
     }
 
     #[test]
