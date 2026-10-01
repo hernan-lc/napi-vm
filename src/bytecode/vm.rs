@@ -449,8 +449,14 @@ fn run_loop(
                     if name == "undefined" {
                         frame.registers[dst as usize] = Value::Undefined;
                     } else {
-                        let scope = current_scope(interp, frame);
-                        match scope.borrow().lookup(name) {
+                        // Lookup cannot run guest code or change the active
+                        // scope. Borrow its existing root instead of bumping
+                        // the environment's Rc count for every global read.
+                        let lookup = {
+                            let scope = frame.scopes.last().unwrap_or(&interp.global);
+                            scope.borrow().lookup(name)
+                        };
+                        match lookup {
                             Lookup::Value(v) => {
                                 frame.registers[dst as usize].assign_for_execution(v)
                             }
