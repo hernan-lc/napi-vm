@@ -1,9 +1,0 @@
-npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
-
-> napi-vm@0.1.5 plugins:build:rust
-> cargo build -p napi-vm-plugin-protocol -p napi-vm-plugin-sdk -p napi-vm-plugin-host -p napi-vm-plugin-conformance -p trusted-greeter-rust -p trusted-counter-rust -p trusted-host-rust
-
-   Compiling trusted-greeter-rust v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/examples/trusted/greeter-rust)
-   Compiling trusted-counter-rust v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/examples/trusted/counter-rust)
-   Compiling trusted-host-rust v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/examples/trusted/host-rust)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.47s

@@ -1,4 +1,0 @@
-    Checking napi-vm-plugin-protocol v0.1.0 (/tmp/napi-rust-only-jcAX2S/plugin/vendor/napi-vm-plugin-protocol)
-    Checking napi-vm-plugin-sdk v0.1.0 (/tmp/napi-rust-only-jcAX2S/plugin/vendor/napi-vm-plugin-sdk)
-    Checking trusted-greeter-template v0.1.0 (/tmp/napi-rust-only-jcAX2S/plugin)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.46s

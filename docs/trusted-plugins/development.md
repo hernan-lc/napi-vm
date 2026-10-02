@@ -134,4 +134,4 @@ node packages/plugin-cli/scripts/test-templates.mjs
 
 This creates fresh TS and JS projects and executes their actual install/package scripts. It checks cached offline npm installation; Node typecheck/build/logic/artifact tests and watched reload; then Bun's offline migration of that npm lock, typecheck/source tests/build/artifact tests and watched reload. Temporary projects are removed in `finally`; add `--keep` to retain them for inspection. This is not a claim that Bun's separate cache was populated by a fresh Bun-only installation.
 
-The recorded [template verification](evidence/template-verification-2026-10-01.md) includes final Cargo-only check/test/release, real native artifact invocation and the watched Rust reload/interrupt cycle. See [testing.md](testing.md) and [implementation-status.md](implementation-status.md) for broader command outcomes and platform-specific limits.
+See [testing](testing.md) for broader reproduction and [evidence provenance](evidence/README.md) for historical observations.

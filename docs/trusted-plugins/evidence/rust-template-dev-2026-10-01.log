@@ -1,9 +1,0 @@
-    Finished `release` profile [optimized] target(s) in 0.26s
-Development host ready. Watching sources; Ctrl-C stops all owned processes.
-   Compiling trusted-greeter-template v0.1.0 (/tmp/napi-rust-only-jcAX2S/plugin)
-    Finished `release` profile [optimized] target(s) in 1m 15s
-Reloaded successfully
-{
-  "stopped": true
-}
-NATIVE_DEV_WORKFLOW_PASS

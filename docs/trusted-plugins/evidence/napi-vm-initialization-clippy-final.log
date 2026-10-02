@@ -1,4 +1,0 @@
-    Checking napi-vm-plugin-protocol v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/crates/napi-vm-plugin-protocol)
-    Checking napi-vm-plugin-sdk v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/crates/napi-vm-plugin-sdk)
-    Checking napi-vm-plugin-host v0.1.0 (/workspace/scratch/461b26a0463e/napi-vm-portable-rebuild/crates/napi-vm-plugin-host)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 32.62s

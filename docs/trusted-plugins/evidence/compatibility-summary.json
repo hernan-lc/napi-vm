@@ -1,0 +1,120 @@
+{
+  "sourceRevision": "d94803c5aa22f3310544f7e01aeceb40f8323ae4",
+  "capturedAt": "2026-10-02T23:16:42.413719+00:00",
+  "scope": "local reference validation; remote CI evaluated separately",
+  "environment": {
+    "os": "linux",
+    "arch": "x64",
+    "libc": "gnu",
+    "node": "24.19.0",
+    "bun": "1.4.2",
+    "rust": "1.96.0"
+  },
+  "checks": [
+    {
+      "command": "npm run plugins:check-generated",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:check-assets",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:build",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:typecheck",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:lint",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:test:node",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:test:bun",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:test:rust",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:test:interop",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:test:rust-interop",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:test:packaged",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:test:consumers",
+      "status": "pass"
+    },
+    {
+      "command": "npm run plugins:test:rust-consumer",
+      "status": "pass"
+    },
+    {
+      "command": "cargo test --release",
+      "status": "pass"
+    },
+    {
+      "command": "cargo test --release --all-features",
+      "status": "pass"
+    },
+    {
+      "command": "cargo test --no-default-features",
+      "status": "pass"
+    },
+    {
+      "command": "npm run lint",
+      "status": "pass"
+    },
+    {
+      "command": "npm run check:generated",
+      "status": "pass"
+    },
+    {
+      "command": "npm run test:node",
+      "status": "pass"
+    },
+    {
+      "command": "npm test",
+      "status": "pass"
+    },
+    {
+      "command": "cargo build --target wasm32-unknown-unknown --no-default-features --features wasm",
+      "status": "pass"
+    },
+    {
+      "command": "cargo metadata --locked --no-deps --format-version 1",
+      "status": "pass"
+    },
+    {
+      "command": "cargo metadata --locked --no-deps --format-version 1 --manifest-path tests/fixtures/node-api/napi-rs/Cargo.toml",
+      "status": "pass"
+    }
+  ],
+  "preconditions": [
+    "npm ci --ignore-scripts",
+    "cargo fetch --locked --manifest-path tests/fixtures/node-api/napi-rs/Cargo.toml before offline Node-API fixture builds"
+  ],
+  "notes": [
+    "Root test binaries and NAPI module rebuilt from current source.",
+    "Existing root and optional cross-runtime ignored/skipped tests remain reported by their runners.",
+    "npm test browser suite reports playground/pkg unavailable; WASM compilation passed separately, no browser runtime claim.",
+    "Rust consumer verifies actual Cargo packages with patches to extracted unpublished sibling archives; not a crates.io publication claim.",
+    "Native external lifecycle runs with empty PATH and minimal environment.",
+    "All four generated Rust bindings and greeter/wire-types TypeScript bindings compiled in external consumers.",
+    "Windows console-interrupt dev smoke explicitly not tested; Windows host shutdown still configured in CI."
+  ]
+}

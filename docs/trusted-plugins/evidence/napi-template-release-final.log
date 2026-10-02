@@ -1,4 +1,0 @@
-   Compiling napi-vm-plugin-protocol v0.1.0 (/tmp/napi-rust-only-jcAX2S/plugin/vendor/napi-vm-plugin-protocol)
-   Compiling napi-vm-plugin-sdk v0.1.0 (/tmp/napi-rust-only-jcAX2S/plugin/vendor/napi-vm-plugin-sdk)
-   Compiling trusted-greeter-template v0.1.0 (/tmp/napi-rust-only-jcAX2S/plugin)
-    Finished `release` profile [optimized] target(s) in 2m 50s

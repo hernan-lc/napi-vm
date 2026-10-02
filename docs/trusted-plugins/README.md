@@ -21,6 +21,8 @@ A single compiled portable TS package is the interoperability target. A Rust hos
 - `npm run plugins:test:rust`
 - `npm run plugins:test:interop`
 - `npm run plugins:test:packaged`
+- `npm run plugins:test:consumers` / `npm run plugins:test:rust-consumer`
+- `npm run plugins:test:cargo-package` / `npm run plugins:check-assets`
 - `npm run plugins:bench`
 
 Node-compatible build uses TypeScript directly. Bun is required only for its declared runtime matrix, and Cargo only for Rust builds. Existing VM scripts remain separate. New package names are local workspace names; no packages have been published.
