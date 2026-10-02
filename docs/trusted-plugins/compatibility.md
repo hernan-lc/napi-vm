@@ -44,3 +44,9 @@ Native CI definitions exist for Linux/macOS/Windows. Their existence does not es
 - External HTTP/MCP injection exposes connection capabilities. It does not implement a complete MCP client, registry or authentication workflow
 - Native dependencies currently require the explicit external-runtime Node-API path or an explicitly managed Rust-host executable service; there is no universal dynamic-library loader
 - CLI/codegen are authored ESM JavaScript with strict public declaration/consumer checks; protocol/SDK/host and TS examples are strictly compiled TypeScript
+
+## Remote validation prerequisite
+
+No workflow runs or checks were available for the current portable-host PR during review. The existing root validation record documents intentionally disabled repository Actions; the latest available historical CI run is [labelled as blocked by billing](https://github.com/nglmercer/napi-vm/actions/runs/36674833312). This is historical evidence, not a live billing-settings audit. Remote runtime validation and merge remain pending until the CI workflows can execute successfully.
+
+Final JS output/error credential coverage and the package whitelist fixture were rechecked on source revision `3ad057ee561b396a64d730f1d26119b4cd41bf7d`: Node 125 passed with no skipped cases, Bun 125 passed, strict package declarations and independent tarball imports passed. Rust and root VM code are unchanged from the reference revision above.
