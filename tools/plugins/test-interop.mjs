@@ -1,0 +1,19 @@
+import {spawn} from 'node:child_process';
+import {readFile,writeFile} from 'node:fs/promises';
+import {join,dirname} from 'node:path';
+import {createHash} from 'node:crypto';
+import {fileURLToPath} from 'node:url';
+import {stageFixtures,root,artifacts} from './stage-fixtures.mjs';
+import {capture} from './capture.mjs';
+const fixtures=await stageFixtures();const results=[];async function record(result){results.push(result);await writeFile(join(artifacts,'interop-results.json'),JSON.stringify({partial:true,results},null,2)+'\n');console.error(JSON.stringify({host:result.host,runtime:result.runtime,status:result.status}));}const cli=join(root,'packages/plugin-cli/src/index.mjs');
+for(const host of ['node','bun'])for(const runtime of ['node','bun']){const {stdout}=await capture(host,[cli,'invoke',join(artifacts,'greeter-ts'),'--interface','example.greeter','--method','greet','--input','{"name":"Ana"}','--runtime',runtime]);const result=JSON.parse(stdout);if(result.message!=='Hola, Ana')throw new Error('unexpected result '+stdout);await record({host,runtime,artifact:'same compiled TS ESM',result,status:'runtime-tested'});}
+for(const host of ['node','bun'])for(const runtime of ['node','bun']){const {stdout}=await capture(host,[join(root,'tools/plugins/js-scenarios.mjs'),join(artifacts,'greeter-ts'),join(artifacts,'counter-ts'),runtime]);await record({host,runtime,scenario:'callbacks/domain-errors/events/stateful-reload',result:JSON.parse(stdout),status:'runtime-tested'});}
+const exe=join(root,'target/debug/trusted-host-rust'+(process.platform==='win32'?'.exe':''));
+// Rust host CLI contract coordinated with the native implementation.
+for(const runtime of ['node','bun']){const {stdout}=await capture(exe,[fixtures['greeter-ts'],runtime,'greeter']);const result=JSON.parse(stdout);await record({host:'rust',runtime,artifact:'same compiled TS ESM',result,status:'runtime-tested'});}
+{const {stdout}=await capture(exe,[fixtures['greeter-rust'],'native','greeter']);await record({host:'rust',runtime:'native',artifact:'Rust executable',result:JSON.parse(stdout),status:'runtime-tested'});}
+{const {stdout}=await capture(exe,[fixtures['greeter-bun'],'native','greeter'],{env:{...process.env,PATH:process.platform==='win32'?(process.env.SystemRoot+'\\System32'):'/usr/bin:/bin'}});await record({host:'rust',runtime:'bun-embedded',artifact:'Bun standalone without external JS runtime on PATH',result:JSON.parse(stdout),status:'runtime-tested'});}
+for(const [initial,runtime,replacement]of [['counter-ts','node','counter-rust'],['counter-rust','native','counter-ts']]){const {stdout}=await capture(exe,[fixtures[initial],runtime,'migrate',fixtures[replacement]],{timeoutMs:60000});await record({host:'rust',runtime,scenario:initial+' -> '+replacement+' -> '+initial,result:JSON.parse(stdout),status:'runtime-tested'});}
+for(const host of ['node','bun']){let rejected=false;try{await capture(host,[cli,'invoke',join(artifacts,'greeter-rust'),'--interface','example.greeter','--method','greet','--input','{"name":"Ana"}']);}catch(e){if(!/UNSUPPORTED|executable|JavaScript|javascript/i.test(e.message))throw e;rejected=true;}if(!rejected)throw new Error('TS host accepted native executable');await record({host,runtime:'native',status:'unsupported-rejected'});}
+const testedArtifacts={};for(const[name,manifest]of Object.entries(fixtures)){const lock=await readFile(join(dirname(manifest),'plugin.lock.json'));testedArtifacts[name]={manifestSha256:createHash('sha256').update(await readFile(manifest)).digest('hex'),lockSha256:createHash('sha256').update(lock).digest('hex')};}
+const report={environment:{os:process.platform,arch:process.arch,node:process.version},testedArtifacts,results};await writeFile(join(artifacts,'interop-results.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report,null,2));

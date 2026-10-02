@@ -1,0 +1,49 @@
+{
+  "name": "@napi-vm/plugin-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "napi-vm-plugin": "./src/index.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.d.mts",
+      "import": "./src/index.mjs"
+    }
+  },
+  "files": [
+    "src",
+    "templates",
+    "scripts/sync-assets.mjs"
+  ],
+  "dependencies": {
+    "@napi-vm/plugin-codegen": "0.1.0",
+    "@napi-vm/plugin-host": "0.1.0",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "types": "./src/index.d.mts",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepare:templates": "node scripts/sync-assets.mjs",
+    "prepack": "node scripts/sync-assets.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0"
+  },
+  "description": "Author, validate, build and package trusted process plugins.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nglmercer/napi-vm.git",
+    "directory": "packages/plugin-cli"
+  },
+  "homepage": "https://github.com/nglmercer/napi-vm/tree/main/packages/plugin-cli",
+  "bugs": {
+    "url": "https://github.com/nglmercer/napi-vm/issues"
+  },
+  "main": "./src/index.mjs"
+}

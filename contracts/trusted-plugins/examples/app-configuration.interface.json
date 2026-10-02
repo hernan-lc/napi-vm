@@ -1,0 +1,15 @@
+{
+  "id": "app.configuration",
+  "version": "1.0.0",
+  "methods": {
+    "get": {
+      "input": "#/$defs/GetInput",
+      "output": "#/$defs/GetOutput",
+      "errors": []
+    }
+  },
+  "errors": {},
+  "events": {},
+  "descriptorVersion": 1,
+  "types": "./app-configuration.types.schema.json"
+}

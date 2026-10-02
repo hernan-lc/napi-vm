@@ -1,0 +1,43 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-process",
+  "id": "example.greeter",
+  "version": "0.1.0",
+  "protocol": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "provides": {
+    "example.greeter": "1.0.0"
+  },
+  "requiresHost": {},
+  "contracts": [
+    "./contracts/greeter.contract.json"
+  ],
+  "assets": [],
+  "launch": {
+    "kind": "javascript",
+    "entry": "./dist/main.js",
+    "runtimes": [
+      "bun",
+      "node"
+    ],
+    "preferredRuntime": "bun",
+    "args": []
+  },
+  "development": {
+    "entry": "./src/main.ts",
+    "runtime": "bun"
+  },
+  "extensions": {
+    "napi-vm.pack": {
+      "include": [
+        "package.json",
+        "dist",
+        "node_modules/@napi-vm/plugin-sdk",
+        "node_modules/@napi-vm/plugin-protocol"
+      ]
+    }
+  }
+}

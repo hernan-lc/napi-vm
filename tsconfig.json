@@ -19,5 +19,5 @@
   // `?raw` imports; it is checked by `playground/tsconfig.json` instead.
   // Checking it here would silently apply the wrong settings to it.
   "include": ["**/*.ts"],
-  "exclude": ["node_modules", "dist", "target", "playground"]
+  "exclude": ["node_modules", "dist", "target", "playground", "packages", "contracts/trusted-plugins", "examples/trusted", "tools/plugins"]
 }

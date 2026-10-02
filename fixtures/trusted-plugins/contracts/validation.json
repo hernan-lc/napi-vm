@@ -1,0 +1,341 @@
+[
+  {
+    "name": "safe max",
+    "schema": {
+      "type": "integer"
+    },
+    "value": 9007199254740991,
+    "valid": true
+  },
+  {
+    "name": "safe min",
+    "schema": {
+      "type": "integer"
+    },
+    "value": -9007199254740991,
+    "valid": true
+  },
+  {
+    "name": "unsafe max",
+    "schema": {
+      "type": "integer"
+    },
+    "value": 9007199254740992,
+    "valid": false
+  },
+  {
+    "name": "float integer",
+    "schema": {
+      "type": "integer"
+    },
+    "value": 1.25,
+    "valid": false
+  },
+  {
+    "name": "i64-decimal 9223372036854775807",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "i64-decimal"
+    },
+    "value": "9223372036854775807",
+    "valid": true
+  },
+  {
+    "name": "i64-decimal -9223372036854775808",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "i64-decimal"
+    },
+    "value": "-9223372036854775808",
+    "valid": true
+  },
+  {
+    "name": "i64-decimal 9223372036854775808",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "i64-decimal"
+    },
+    "value": "9223372036854775808",
+    "valid": false
+  },
+  {
+    "name": "i64-decimal -0",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "i64-decimal"
+    },
+    "value": "-0",
+    "valid": false
+  },
+  {
+    "name": "i64-decimal 01",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "i64-decimal"
+    },
+    "value": "01",
+    "valid": false
+  },
+  {
+    "name": "i64-decimal +1",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "i64-decimal"
+    },
+    "value": "+1",
+    "valid": false
+  },
+  {
+    "name": "u64-decimal 18446744073709551615",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "u64-decimal"
+    },
+    "value": "18446744073709551615",
+    "valid": true
+  },
+  {
+    "name": "u64-decimal 18446744073709551616",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "u64-decimal"
+    },
+    "value": "18446744073709551616",
+    "valid": false
+  },
+  {
+    "name": "u64-decimal -1",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "u64-decimal"
+    },
+    "value": "-1",
+    "valid": false
+  },
+  {
+    "name": "bytes-base64 ",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "bytes-base64"
+    },
+    "value": "",
+    "valid": true
+  },
+  {
+    "name": "bytes-base64 YWJj",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "bytes-base64"
+    },
+    "value": "YWJj",
+    "valid": true
+  },
+  {
+    "name": "bytes-base64 YQ==",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "bytes-base64"
+    },
+    "value": "YQ==",
+    "valid": true
+  },
+  {
+    "name": "bytes-base64 YQ",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "bytes-base64"
+    },
+    "value": "YQ",
+    "valid": false
+  },
+  {
+    "name": "bytes-base64 YR==",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "bytes-base64"
+    },
+    "value": "YR==",
+    "valid": false
+  },
+  {
+    "name": "utc-datetime 2000-02-29T00:00:00.000Z",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "utc-datetime"
+    },
+    "value": "2000-02-29T00:00:00.000Z",
+    "valid": true
+  },
+  {
+    "name": "utc-datetime 1900-02-29T00:00:00.000Z",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "utc-datetime"
+    },
+    "value": "1900-02-29T00:00:00.000Z",
+    "valid": false
+  },
+  {
+    "name": "utc-datetime 0001-01-01T00:00:00.000Z",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "utc-datetime"
+    },
+    "value": "0001-01-01T00:00:00.000Z",
+    "valid": true
+  },
+  {
+    "name": "utc-datetime 0000-01-01T00:00:00.000Z",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "utc-datetime"
+    },
+    "value": "0000-01-01T00:00:00.000Z",
+    "valid": false
+  },
+  {
+    "name": "utc-datetime 2026-01-01T00:00:60.000Z",
+    "schema": {
+      "type": "string",
+      "x-wire-type": "utc-datetime"
+    },
+    "value": "2026-01-01T00:00:60.000Z",
+    "valid": false
+  },
+  {
+    "name": "astral scalar length",
+    "schema": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1
+    },
+    "value": "😀",
+    "valid": true
+  },
+  {
+    "name": "two unicode scalars",
+    "schema": {
+      "type": "string",
+      "maxLength": 1
+    },
+    "value": "a😀",
+    "valid": false
+  },
+  {
+    "name": "optional nullable {}",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "value": {},
+    "valid": true
+  },
+  {
+    "name": "optional nullable {\"value\": null}",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "value": {
+      "value": null
+    },
+    "valid": true
+  },
+  {
+    "name": "optional nullable {\"value\": \"x\"}",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "value": {
+      "value": "x"
+    },
+    "valid": true
+  },
+  {
+    "name": "optional nullable {\"value\": 1}",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "value": {
+      "value": 1
+    },
+    "valid": false
+  },
+  {
+    "name": "optional nullable {\"other\": null}",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "value": {
+      "other": null
+    },
+    "valid": false
+  },
+  {
+    "name": "proto sensitive key",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "__proto__": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "__proto__"
+      ],
+      "additionalProperties": false
+    },
+    "value": {
+      "__proto__": "safe"
+    },
+    "valid": true
+  }
+]

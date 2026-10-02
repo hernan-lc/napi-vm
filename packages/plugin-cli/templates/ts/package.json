@@ -1,0 +1,23 @@
+{
+  "name": "trusted-greeter-template",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "napi-vm-plugin dev .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "napi-vm-plugin build . --format js",
+    "test:node": "npm run build && node --test tests/*.node.test.mjs",
+    "test:artifact": "napi-vm-plugin test . --artifact",
+    "test": "npm run test:node"
+  },
+  "dependencies": {
+    "@napi-vm/plugin-sdk": "0.1.0",
+    "@napi-vm/plugin-protocol": "0.1.0"
+  },
+  "devDependencies": {
+    "@napi-vm/plugin-cli": "0.1.0",
+    "typescript": "6.0.3",
+    "@types/node": "^22.10.0"
+  }
+}

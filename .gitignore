@@ -8,3 +8,9 @@ artifacts/
 .node-libs/
 **/**/dist
 **.tmp
+
+# Workspace-local toolchain convenience (never packaged).
+/tools/plugins/env.sh
+
+# Nested workspace/template dependencies are installed, not vendored.
+**/node_modules/

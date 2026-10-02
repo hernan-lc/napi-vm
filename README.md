@@ -505,3 +505,21 @@ regression suite. Run `npm test` to see the current verified count.
 MIT — see [LICENSE](LICENSE).
 
 Runtime ownership, bytecode evaluation, collection APIs, and cache bounds are documented in [Runtime improvements](docs/runtime-improvements.md).
+
+## Trusted process plugins (independent SDKs)
+
+An additive, explicitly selected trusted-process framework is available in
+[`docs/trusted-plugins`](docs/trusted-plugins/README.md). Its TypeScript host runs
+JavaScript/TypeScript artifacts under declared Node/Bun runtimes; its independent
+Rust host also runs target-specific native executables. Legacy VM/sandbox plugins,
+capability checks, CommonJS entrypoints and browser/Wasm APIs are unchanged.
+
+These plugins have the launching account's OS privileges. Cancellation is
+cooperative, and shutdown supervises direct children only.
+
+From a clean checkout, run `npm ci --ignore-scripts`, `npm run plugins:build`
+and `npm run plugins:check` with Node, Bun and Cargo available. For Node-only
+authoring, use `npm run plugins:build:ts` and the
+[development guide](docs/trusted-plugins/development.md). See the
+[compatibility evidence](docs/trusted-plugins/compatibility.md) before relying on
+any platform/runtime claim. New workspace packages have not been published.

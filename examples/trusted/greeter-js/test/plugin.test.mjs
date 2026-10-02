@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {createHarness,definePlugin}from'@napi-vm/plugin-sdk';import{plugin,CONTRACT as G,CONFIGURATION as C}from'../dist/plugin.mjs';
+test('plain JavaScript generated-contract callback, no TS compilation',async()=>{const h=await createHarness(plugin,{services:[definePlugin(C,{get:()=>({value:'Hola'})})]});try{assert.equal((await h.invoke(G,'greet',{name:'Ana'})).message,'Hola, Ana');}finally{await h.shutdown();}});

@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {createHarness}from'@napi-vm/plugin-sdk';import{createCounter}from'../dist/plugin.js';import{CONTRACT}from'../dist/generated/counter.js';
+test('counter snapshot and restore',async()=>{const h=await createHarness(createCounter());await h.invoke(CONTRACT,'add',{amount:12});const snapshot=await h.snapshot();await h.shutdown();const restored=await createHarness(createCounter(),{snapshot});try{assert.equal((await restored.invoke(CONTRACT,'get',{})).count,'12');}finally{await restored.shutdown();}});

@@ -1,0 +1,15 @@
+{
+  "descriptorVersion": 1,
+  "id": "example.wire-types",
+  "version": "1.0.0",
+  "types": "./wire-types.types.schema.json",
+  "methods": {
+    "echo": {
+      "input": "#/$defs/WireTypes",
+      "output": "#/$defs/WireTypes",
+      "errors": []
+    }
+  },
+  "errors": {},
+  "events": {}
+}

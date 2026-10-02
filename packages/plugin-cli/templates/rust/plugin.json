@@ -1,0 +1,30 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-process",
+  "id": "example.greeter",
+  "version": "0.1.0",
+  "protocol": {
+    "major": 1,
+    "minMinor": 0,
+    "maxMinor": 0
+  },
+  "provides": {
+    "example.greeter": "1.0.0"
+  },
+  "requiresHost": {},
+  "contracts": [
+    "./contracts/greeter.contract.json"
+  ],
+  "assets": [],
+  "launch": {
+    "kind": "executable",
+    "entry": "./bin/plugin",
+    "args": [],
+    "target": {
+      "os": "linux",
+      "arch": "x64",
+      "libc": "gnu"
+    }
+  },
+  "profile": "native-executable"
+}

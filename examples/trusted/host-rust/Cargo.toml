@@ -1,0 +1,12 @@
+[package]
+name = "trusted-host-rust"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[dependencies]
+napi-vm-plugin-protocol = { path = "../../../crates/napi-vm-plugin-protocol" }
+napi-vm-plugin-sdk = { path = "../../../crates/napi-vm-plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "signal"] }
+napi-vm-plugin-host = { path = "../../../crates/napi-vm-plugin-host" }

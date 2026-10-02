@@ -1,0 +1,21 @@
+[package]
+name = "napi-vm-plugin-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+repository = "https://github.com/nglmercer/napi-vm"
+homepage = "https://github.com/nglmercer/napi-vm"
+readme = "README.md"
+keywords = ["plugins", "rpc", "process"]
+categories = ["development-tools"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
+license = "MIT"
+description = "Independent trusted process plugin host"
+[dependencies]
+napi-vm-plugin-protocol = { path = "../napi-vm-plugin-protocol", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process", "fs", "signal"] }
+napi-vm-plugin-sdk = { path = "../napi-vm-plugin-sdk", version = "0.1.0" }
+sha2 = "0.10"
+getrandom = "0.3"

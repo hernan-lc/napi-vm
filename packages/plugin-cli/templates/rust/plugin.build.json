@@ -1,0 +1,6 @@
+{
+  "language": "rust",
+  "entry": "src/main.rs",
+  "output": "bin/plugin",
+  "binary": "trusted-greeter-template"
+}

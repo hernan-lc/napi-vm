@@ -1,0 +1,22 @@
+{
+  "id": "example.greeter",
+  "version": "1.0.0",
+  "methods": {
+    "greet": {
+      "input": "#/$defs/GreetInput",
+      "output": "#/$defs/GreetOutput",
+      "errors": [
+        "INVALID_NAME"
+      ],
+      "idempotent": true
+    }
+  },
+  "errors": {
+    "INVALID_NAME": {
+      "data": "#/$defs/InvalidNameData"
+    }
+  },
+  "events": {},
+  "descriptorVersion": 1,
+  "types": "./greeter.types.schema.json"
+}

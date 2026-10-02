@@ -1,0 +1,44 @@
+{
+  "name": "@napi-vm/plugin-codegen",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.mts",
+      "import": "./src/index.mjs"
+    }
+  },
+  "bin": {
+    "napi-vm-plugin-codegen": "./src/index.mjs"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "types": "./src/index.d.mts",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "@types/node": "^22.10.0"
+  },
+  "dependencies": {
+    "@napi-vm/plugin-protocol": "0.1.0"
+  },
+  "description": "Generate deterministic TypeScript and Rust bindings for trusted plugin contracts.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nglmercer/napi-vm.git",
+    "directory": "packages/plugin-codegen"
+  },
+  "homepage": "https://github.com/nglmercer/napi-vm/tree/main/packages/plugin-codegen",
+  "bugs": {
+    "url": "https://github.com/nglmercer/napi-vm/issues"
+  },
+  "main": "./src/index.mjs"
+}

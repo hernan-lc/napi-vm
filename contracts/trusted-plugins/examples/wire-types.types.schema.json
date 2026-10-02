@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "WireTypes": {
+      "type": "object",
+      "properties": {
+        "__proto__": {
+          "type": "string"
+        },
+        "self": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "self-field": {
+          "type": "string"
+        },
+        "self_field": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string",
+          "x-wire-type": "bytes-base64"
+        },
+        "wide": {
+          "type": "string",
+          "x-wire-type": "u64-decimal"
+        },
+        "created": {
+          "type": "string",
+          "x-wire-type": "utc-datetime"
+        },
+        "integer": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "literal": {
+          "type": "integer",
+          "const": 1
+        },
+        "choice": {
+          "type": "string",
+          "enum": [
+            "🌍",
+            "ready",
+            "quote\"\\value",
+            "literal\\u0010",
+            "controls\b\f"
+          ]
+        },
+        "optionalNull": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tagged": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "text"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "number"
+                },
+                "value": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "kind",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "optionalNumber": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "__proto__",
+        "data",
+        "wide",
+        "created",
+        "integer",
+        "literal",
+        "choice",
+        "tagged"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
