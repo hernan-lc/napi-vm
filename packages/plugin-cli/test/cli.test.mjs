@@ -29,13 +29,13 @@ test('template vendoring includes license and README, excludes caches, and rejec
    await mkdir(destination,{recursive:true});const metadata=JSON.parse(await readFile(join(source,'package.json'),'utf8'));
    for(const file of [...metadata.files,'package.json','LICENSE','README.md'])await cp(join(source,file),join(destination,file),{recursive:true});
   }
-  const scripts=join(root,'node_modules/@napi-vm/plugin-cli/scripts');
-  for(const name of ['target','.cache']){await mkdir(join(scripts,name));await writeFile(join(scripts,name,'fixture.txt'),'must not be vendored');}
+  const payload=join(root,'node_modules/@napi-vm/plugin-cli/src');
+  for(const name of ['target','.cache']){await mkdir(join(payload,name));await writeFile(join(payload,name,'fixture.txt'),'must not be vendored');}
   const entry=join(root,'node_modules/@napi-vm/plugin-cli/src/index.mjs');const project=join(root,'project');
   const created=spawnSync(process.execPath,[entry,'create',project,'--language','ts'],{cwd:root,encoding:'utf8',timeout:30000});assert.equal(created.status,0,created.stderr);
   for(const name of names){await access(join(project,'vendor',name,'LICENSE'));await access(join(project,'vendor',name,'README.md'));}
-  for(const name of ['target','.cache'])await assert.rejects(access(join(project,'vendor/plugin-cli/scripts',name)),/ENOENT/);
-  await writeFile(join(root,'outside'),'outside source');await symlink(join(root,'outside'),join(scripts,'alias'),'file');
+  for(const name of ['target','.cache'])await assert.rejects(access(join(project,'vendor/plugin-cli/src',name)),/ENOENT/);
+  await writeFile(join(root,'outside'),'outside source');await symlink(join(root,'outside'),join(payload,'alias'),'file');
   const rejected=join(root,'symlink-project');const failed=spawnSync(process.execPath,[entry,'create',rejected,'--language','ts'],{cwd:root,encoding:'utf8',timeout:30000});
   assert.equal(failed.status,1);assert.match(failed.stderr,/Refusing symlink/);await assert.rejects(access(rejected),/ENOENT/);
  } finally {await rm(root,{recursive:true,force:true});}
