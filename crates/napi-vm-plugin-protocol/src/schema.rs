@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Validated contract schema and canonical interface identity shared across languages.
 pub struct Contract {
     pub descriptor: Value,
     pub schemas: Value,
@@ -193,9 +194,9 @@ impl Contract {
         if root
             .keys()
             .any(|k| !["$defs", "$schema", "title", "description"].contains(&k.as_str()))
-            || !c.schemas["$defs"]
+            || c.schemas["$defs"]
                 .as_object()
-                .is_some_and(|d| d.len() <= 1024)
+                .is_none_or(|d| d.len() > 1024)
         {
             return Err(invalid(
                 "schemas requires bounded $defs and document metadata only",

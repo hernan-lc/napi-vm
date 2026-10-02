@@ -24,5 +24,15 @@
   },
   "dependencies": {
     "@napi-vm/plugin-protocol": "0.1.0"
+  },
+  "description": "Define and run trusted JavaScript process plugins under Node or Bun.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nglmercer/napi-vm.git",
+    "directory": "packages/plugin-sdk"
+  },
+  "homepage": "https://github.com/nglmercer/napi-vm/tree/main/packages/plugin-sdk",
+  "bugs": {
+    "url": "https://github.com/nglmercer/napi-vm/issues"
   }
 }

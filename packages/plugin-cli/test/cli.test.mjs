@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,writeFile,readFile,mkdir,rm,symlink,stat} from 'node:fs/promises';
+import {mkdtemp,writeFile,readFile,mkdir,rm,symlink,stat,access,cp} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {main} from '../src/index.mjs';
@@ -15,3 +15,37 @@ test('doctor validates runtime names before probing executables',async()=>{const
 test('CLI entrypoint runs through an npm-style bin symlink',async()=>{const {spawnSync}=await import('node:child_process');const {fileURLToPath}=await import('node:url');const root=await mkdtemp(join(tmpdir(),'plugin-bin-'));try{const bin=join(root,'napi-vm-plugin.mjs');await symlink(fileURLToPath(new URL('../src/index.mjs',import.meta.url)),bin,'file');const result=spawnSync(process.execPath,[bin,'help'],{encoding:'utf8',timeout:10000});assert.equal(result.status,0,result.stderr);assert.match(JSON.parse(result.stdout).help,/create <directory>/);}finally{await rm(root,{recursive:true,force:true});}});
 
 test('native dev launch stages have verified inventories before host startup',async()=>{const root=await mkdtemp(join(tmpdir(),'plugin-native-dev-'));try{const directory=await fixture(root);const manifestPath=join(directory,'plugin.json');const manifest=JSON.parse(await readFile(manifestPath,'utf8'));const entry='dist/plugin'+(process.platform==='win32'?'.exe':'');await writeFile(join(directory,entry),'Controlled packaging fixture; not launched by this unit test.\n',{mode:0o755});manifest.profile='native-executable';manifest.launch={kind:'executable',entry,args:[],target:currentTarget()};await writeFile(manifestPath,JSON.stringify(manifest));const launchDirectory=await prepareDevelopmentPackage(directory,'executable');assert.notEqual(launchDirectory,directory);const lock=JSON.parse(await readFile(join(launchDirectory,'plugin.lock.json'),'utf8'));assert.equal(lock.artifact.profile,'native-executable');assert.equal(lock.files[entry].length,64);await main(['validate',launchDirectory]);assert.equal(await prepareDevelopmentPackage(directory,'js'),directory);await assert.rejects(prepareDevelopmentPackage(directory,'executable'),/already exists/);}finally{await rm(root,{recursive:true,force:true});}});
+
+test('pack rejects aliases of secret files and broken links without partial output',async()=>{const root=await mkdtemp(join(tmpdir(),'plugin-secret-alias-'));try{const directory=await fixture(root);const manifestPath=join(directory,'plugin.json');const manifest=JSON.parse(await readFile(manifestPath,'utf8'));manifest.assets=['innocent.txt'];await writeFile(manifestPath,JSON.stringify(manifest));const out=join(root,'output');for(const secret of ['.env','.ENV']){await writeFile(join(directory,secret),'TOKEN=fixture');await symlink(secret,join(directory,'innocent.txt'),'file');await assert.rejects(pack(directory,out),/sensitive/);await assert.rejects(access(out),/ENOENT/);await rm(join(directory,'innocent.txt'));}await symlink('does-not-exist',join(directory,'innocent.txt'),'file');await assert.rejects(pack(directory,out),/ENOENT/);await assert.rejects(access(out),/ENOENT/);}finally{await rm(root,{recursive:true,force:true});}});
+
+test('template vendoring includes license and README, excludes caches, and rejects symlink payloads',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'plugin-vendor-payload-'));
+ const {fileURLToPath}=await import('node:url');const {spawnSync}=await import('node:child_process');
+ const names=['plugin-protocol','plugin-sdk','plugin-host','plugin-codegen','plugin-cli'];
+ try {
+  // Contaminate isolated installed payloads, never the shared checkout used by npm pack.
+  for(const name of names){
+   const source=fileURLToPath(new URL('../../'+name+'/',import.meta.url));const destination=join(root,'node_modules/@napi-vm',name);
+   await mkdir(destination,{recursive:true});const metadata=JSON.parse(await readFile(join(source,'package.json'),'utf8'));
+   for(const file of [...metadata.files,'package.json','LICENSE','README.md'])await cp(join(source,file),join(destination,file),{recursive:true});
+  }
+  const scripts=join(root,'node_modules/@napi-vm/plugin-cli/scripts');
+  for(const name of ['target','.cache']){await mkdir(join(scripts,name));await writeFile(join(scripts,name,'fixture.txt'),'must not be vendored');}
+  const entry=join(root,'node_modules/@napi-vm/plugin-cli/src/index.mjs');const project=join(root,'project');
+  const created=spawnSync(process.execPath,[entry,'create',project,'--language','ts'],{cwd:root,encoding:'utf8',timeout:30000});assert.equal(created.status,0,created.stderr);
+  for(const name of names){await access(join(project,'vendor',name,'LICENSE'));await access(join(project,'vendor',name,'README.md'));}
+  for(const name of ['target','.cache'])await assert.rejects(access(join(project,'vendor/plugin-cli/scripts',name)),/ENOENT/);
+  await writeFile(join(root,'outside'),'outside source');await symlink(join(root,'outside'),join(scripts,'alias'),'file');
+  const rejected=join(root,'symlink-project');const failed=spawnSync(process.execPath,[entry,'create',rejected,'--language','ts'],{cwd:root,encoding:'utf8',timeout:30000});
+  assert.equal(failed.status,1);assert.match(failed.stderr,/Refusing symlink/);await assert.rejects(access(rejected),/ENOENT/);
+ } finally {await rm(root,{recursive:true,force:true});}
+});
+
+test('CLI failures exit nonzero, write stderr, and preserve the JSON stdout channel',async()=>{
+ const {spawnSync}=await import('node:child_process');const {fileURLToPath}=await import('node:url');
+ const entry=fileURLToPath(new URL('../src/index.mjs',import.meta.url));
+ for(const args of [['no-such-command'],['pack','.','--out'],['invoke','.','--interface','example.greeter','--method','greet','--input','{']]){
+  const result=spawnSync(process.execPath,[entry,...args],{encoding:'utf8',timeout:10000});
+  assert.equal(result.status,1,result.stderr);assert.equal(result.stdout,'');assert(result.stderr.length>0);
+ }
+});

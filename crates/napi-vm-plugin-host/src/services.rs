@@ -22,6 +22,7 @@ use tokio::{
 };
 
 #[derive(Clone, Debug)]
+/// OS/architecture/libc/ABI requirements for an explicitly supervised sidecar.
 pub struct NativeTarget {
     pub os: String,
     pub arch: String,
@@ -29,6 +30,8 @@ pub struct NativeTarget {
     pub abi: String,
 }
 /// Environment may contain secrets. Intentionally does not implement Debug.
+/// An owned direct sidecar child, continuously drained until explicit shutdown.
+/// Output is discarded; arbitrary descendants are outside this ownership boundary.
 pub struct ManagedServiceSpec {
     pub name: String,
     pub executable: PathBuf,
@@ -42,6 +45,7 @@ pub struct ManagedServiceSpec {
     pub shutdown_timeout: Duration,
 }
 #[derive(Clone, Debug)]
+/// Loopback HTTP readiness probe with an exact expected response status.
 pub struct HttpReadiness {
     pub address: SocketAddr,
     pub path: String,
@@ -114,7 +118,7 @@ impl ManagedServiceSpec {
         }
         if !self.readiness.address.ip().is_loopback()
             || !self.readiness.path.starts_with('/')
-            || self.readiness.path.bytes().any(|b| b < 32 || b == 127)
+            || self.readiness.path.bytes().any(|b| b <= 32 || b == 127)
             || !(200..=599).contains(&self.readiness.expected_status)
         {
             return Err(invalid("readiness requires safe loopback HTTP path/status"));
@@ -289,7 +293,6 @@ impl ManagedService {
         if self.stopped {
             return Ok(());
         }
-        self.stopped = true;
         if self.child.try_wait()?.is_none() {
             self.child.start_kill()?;
             timeout(self.shutdown_timeout, self.child.wait())
@@ -301,6 +304,7 @@ impl ManagedService {
                     )
                 })??;
         }
+        self.stopped = true;
         for task in self.drainers.drain(..) {
             task.abort();
             let _ = task.await;
@@ -393,7 +397,7 @@ mod tests {
             "aarch64" => "arm64",
             x => x,
         };
-        let spec = ManagedServiceSpec {
+        let mut spec = ManagedServiceSpec {
             name: "fixture".into(),
             executable: exe,
             arguments: vec![
@@ -432,6 +436,22 @@ mod tests {
             startup_timeout: Duration::from_secs(5),
             shutdown_timeout: Duration::from_secs(2),
         };
+        spec.readiness.path = "/health injected".into();
+        assert_eq!(
+            spec.preflight().await.unwrap_err().stable_code(),
+            "INVALID_ARGUMENT"
+        );
+        spec.readiness.path = "/health".into();
+        spec.readiness.expected_status = 99;
+        assert!(spec.preflight().await.is_err());
+        spec.readiness.expected_status = 200;
+        let checksum = spec.sha256.clone();
+        spec.sha256 = "0".repeat(64);
+        assert!(spec.preflight().await.is_err());
+        spec.sha256 = checksum;
+        spec.endpoint = "http://wrong-authority/".into();
+        assert!(spec.preflight().await.is_err());
+        spec.endpoint = format!("http://{address}");
         let mut service = ManagedService::start(spec).await.unwrap();
         assert!(service.pid().is_some());
         assert_eq!(service.endpoint(), format!("http://{address}"));

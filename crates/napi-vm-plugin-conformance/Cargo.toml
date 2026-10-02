@@ -2,8 +2,17 @@
 name = "napi-vm-plugin-conformance"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96"
+repository = "https://github.com/nglmercer/napi-vm"
+homepage = "https://github.com/nglmercer/napi-vm"
+readme = "README.md"
+keywords = ["plugins", "rpc", "process"]
+categories = ["development-tools"]
+include = ["src/**", "tests/**", "Cargo.toml", "README.md", "LICENSE"]
 license = "MIT"
 description = "Independent trusted process plugin conformance"
+# Repository integration fixtures are not a downstream library.
+publish = false
 [dependencies]
 napi-vm-plugin-protocol = { path = "../napi-vm-plugin-protocol", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }

@@ -6,11 +6,14 @@
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "declaration": true,
-    "skipLibCheck": true,
+    "skipLibCheck": false,
     "outDir": "dist",
     "rootDir": "src",
     "allowJs": true,
-    "checkJs": true
+    "checkJs": true,
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src/**/*.js"

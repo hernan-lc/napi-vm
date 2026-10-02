@@ -27,6 +27,21 @@ impl Lifecycle for Hooks {
         Box::pin(async move {
             let mode = config["mode"].as_str().unwrap_or("normal").to_string();
             *self.mode.lock().unwrap() = mode.clone();
+            if mode == "initialize-barrier" {
+                tokio::fs::write(config["entered"].as_str().unwrap(), b"entered").await?;
+                while tokio::fs::metadata(config["release"].as_str().unwrap())
+                    .await
+                    .is_err()
+                {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+            if mode == "secret-error" {
+                let value = std::env::var("NAPI_VM_TEST_SECRET").unwrap();
+                let mut error = RpcError::new("INTERNAL_ERROR", value.clone());
+                error.data["detail"] = json!({"nested":[value]});
+                return Err(error);
+            }
             if mode == "initialize-error" {
                 return Err(RpcError::new(
                     "INTERNAL_ERROR",
@@ -41,6 +56,13 @@ impl Lifecycle for Hooks {
                 context.resources().spawn(|_: Cancellation| {
                     Box::pin(async { std::future::pending::<()>().await })
                 })?;
+            }
+            if mode == "secrets" {
+                for name in ["NAPI_VM_PLUGIN_TOKEN", "NAPI_VM_TEST_SECRET"] {
+                    let value = std::env::var(name).unwrap();
+                    println!("secret={value}");
+                    eprintln!("secret={value}");
+                }
             }
             if mode == "logs" {
                 for _ in 0..4096 {

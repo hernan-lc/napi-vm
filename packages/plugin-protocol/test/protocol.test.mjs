@@ -61,3 +61,17 @@ test('D01/D04/D09/D10 nullable presence, tagged unions, u64, UTC calendar, and l
  for(const created of ['2023-02-29T00:00:00.000Z','0000-01-01T00:00:00.000Z','2024-01-01T23:59:60.000Z','2024-01-01T00:00:00Z'])assert.throws(()=>validate(c,'#/$defs/WireTypes',{...base,created}));
  for(const change of [{wide:'18446744073709551616'},{wide:'-1'},{wide:'01'},{literal:2},{data:'AP8'},{tagged:{kind:'unknown',value:1}},{integer:9007199254740992}])assert.throws(()=>validate(c,'#/$defs/WireTypes',{...base,...change}));
 });
+
+test('invalid handler wire output returns INVALID_RESULT and releases the business slot', async()=>{
+ const [h,p]=await pair();
+ const envelope={context:{timeoutMs:1000,callChain:[]}};
+ let accessed=false;const invalid=[undefined,Infinity,new Date(),{get value(){accessed=true;return 1;}}];
+ p.onRequest('system.invoke',()=>invalid.length?invalid.shift():null);
+ try{for(let i=0;i<4;i++){await assert.rejects(h.request('system.invoke',envelope),e=>e.code==='INVALID_RESULT');await p.whenIdle(1000);}assert.equal(accessed,false);assert.equal(await h.request('system.invoke',envelope),null);}finally{h.close();p.close();}
+});
+test('malformed application error data closes the transport',async()=>{
+ for(const data of [{code:'APPLICATION_ERROR',domainCode:12,data:{}},{code:'APPLICATION_ERROR',domainCode:'ERR'},{code:'INTERNAL_ERROR',domainCode:'ERR',data:{}},{code:'INTERNAL_ERROR',extra:true}]){
+  const [h,p]=await pair();p.onRequest('system.ping',()=>new Promise(()=>{}));
+  try{const pending=h.request('system.ping',{});const rejected=assert.rejects(pending,e=>e.code==='INVALID_REQUEST'||e.code==='INVALID_ARGUMENT');p.socket.write(encodeFrame({jsonrpc:'2.0',id:'h:test:1',error:{code:data.code==='APPLICATION_ERROR'?-32012:-32603,message:'bad',data}}));await rejected;assert.equal(h.isClosed,true);}finally{h.close();p.close();}
+ }
+});

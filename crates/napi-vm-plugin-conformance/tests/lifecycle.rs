@@ -1,5 +1,4 @@
 use napi_vm_plugin_host::*;
-use napi_vm_plugin_protocol::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{path::PathBuf, time::Duration};
@@ -104,8 +103,16 @@ async fn repeated_unload_reaps_and_instances_are_independent() {
         json!({"count":"0"})
     );
     let pid = a.pid().unwrap();
-    h.unload(&a.instance_id()).await.unwrap();
-    h.unload(&a.instance_id()).await.unwrap();
+    a.shutdown().await.unwrap();
+    a.shutdown().await.unwrap();
+    assert_eq!(a.status(), Status::Stopped);
+    assert_eq!(
+        a.invoke(&contract(), "get", json!({}))
+            .await
+            .unwrap_err()
+            .stable_code(),
+        "NOT_READY"
+    );
     #[cfg(target_os = "linux")]
     assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
     h.shutdown().await.unwrap();
@@ -223,4 +230,107 @@ async fn tampered_inventory_rejected_before_execution() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn bootstrap_and_environment_credentials_never_enter_retained_output() {
+    let pkg = package();
+    let h = host();
+    let secret = "fixture-private-environment-credential";
+    let mut opts = options("secrets");
+    opts.environment
+        .insert("NAPI_VM_TEST_SECRET".into(), secret.into());
+    let p = h.load(pkg.0.join("plugin.json"), opts).await.unwrap();
+    // Graceful shutdown closes pipes and awaits their drainers before inspection.
+    p.shutdown().await.unwrap();
+    let (logs, _) = p.logs();
+    let output: String = logs.iter().map(|x| x.text.as_str()).collect();
+    assert!(
+        output.contains("[redacted]"),
+        "fixture output was not captured"
+    );
+    assert!(!output.contains(secret));
+    assert_eq!(output.matches("[redacted]").count(), 4);
+    h.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn plugin_errors_and_instance_metadata_redact_known_credentials() {
+    let pkg = package();
+    let h = host();
+    let secret = "private-error-credential";
+    let mut opts = options("secret-error");
+    opts.environment
+        .insert("NAPI_VM_TEST_SECRET".into(), secret.into());
+    let error = match h.load(pkg.0.join("plugin.json"), opts).await {
+        Ok(_) => panic!("fixture should fail initialization"),
+        Err(error) => error,
+    };
+    assert!(!serde_json::to_string(&error).unwrap().contains(secret));
+    assert!(error.message.contains("[redacted]"));
+    assert!(!serde_json::to_string(&h.list()).unwrap().contains(secret));
+    h.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_starting_native_plugin_and_reaps_it() {
+    let pkg = package();
+    let h = host();
+    let loading = h.clone();
+    let manifest = pkg.0.join("plugin.json");
+    let entered = pkg.0.join("initialize-entered");
+    let release = pkg.0.join("initialize-release");
+    let opts = LoadOptions {
+        configuration: json!({"mode":"initialize-barrier", "entered":entered, "release":release}),
+        ..Default::default()
+    };
+    let load = tokio::spawn(async move { loading.load(manifest, opts).await });
+    // Package hashing precedes the protocol startup deadline. Wait for a fixture
+    // signal instead of assuming how long hashing or native process launch takes.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while tokio::fs::metadata(&entered).await.is_err() {
+            assert!(
+                !load.is_finished(),
+                "fixture failed before initialize barrier"
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let metadata = h.list().into_iter().next().unwrap();
+    assert_eq!(metadata.status, Status::Starting);
+    let pid = h.get(&metadata.instance_id).unwrap().pid().unwrap();
+    let stopping = h.clone();
+    let shutdown = tokio::spawn(async move { stopping.shutdown().await });
+    tokio::task::yield_now().await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown must wait for admitted initialization"
+    );
+    tokio::fs::write(&release, b"release").await.unwrap();
+    let p = load.await.unwrap().unwrap();
+    shutdown.await.unwrap().unwrap();
+    assert_eq!(p.status(), Status::Stopped);
+    assert!(p.pid().is_none());
+    #[cfg(target_os = "linux")]
+    assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
+    #[cfg(not(target_os = "linux"))]
+    let _ = pid;
+    assert_eq!(
+        p.invoke(&contract(), "get", json!({}))
+            .await
+            .unwrap_err()
+            .stable_code(),
+        "NOT_READY"
+    );
+    let error = match h
+        .load(pkg.0.join("plugin.json"), LoadOptions::default())
+        .await
+    {
+        Ok(_) => panic!("shutdown host admitted a new load"),
+        Err(error) => error,
+    };
+    assert_eq!(error.stable_code(), "NOT_READY");
+    p.shutdown().await.unwrap();
 }

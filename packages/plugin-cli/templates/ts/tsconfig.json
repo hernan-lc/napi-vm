@@ -6,9 +6,12 @@
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "declaration": true,
-    "skipLibCheck": true,
+    "skipLibCheck": false,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src/**/*.ts"

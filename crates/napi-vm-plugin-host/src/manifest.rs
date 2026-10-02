@@ -12,6 +12,7 @@ use tokio::{io::AsyncReadExt, process::Command};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Explicit OS, architecture and optional libc identity for a native artifact.
 pub struct Target {
     pub os: String,
     pub arch: String,
@@ -73,6 +74,7 @@ pub struct ProtocolRange {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+/// Declared launch route: supported JavaScript runtime or a target-specific executable.
 pub enum Launch {
     Javascript {
         entry: String,
@@ -153,6 +155,8 @@ pub struct Dependencies {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Validated package metadata describing contracts, launch settings and dependencies.
+/// Runtime connection credentials belong in `LoadOptions`, never in this document.
 pub struct Manifest {
     pub manifest_version: u32,
     pub execution: String,
@@ -177,6 +181,9 @@ pub struct Manifest {
     pub extensions: BTreeMap<String, Value>,
 }
 #[derive(Clone)]
+/// Preflight result with validated contracts and one selected launch command.
+/// Preparing JavaScript plugins probes their declared runtime; native preparation does
+/// not invoke Node, Bun or npm. This is authoring/introspection data, not a running instance.
 pub struct Prepared {
     pub manifest_path: PathBuf,
     pub directory: PathBuf,
@@ -189,6 +196,9 @@ pub struct Prepared {
     pub native_paths: BTreeMap<String, Value>,
 }
 #[derive(Clone, Default)]
+/// Explicit runtime paths/override and integrity/development policy.
+/// `LoadOptions::default()` enables integrity verification; constructing this type
+/// directly with its default leaves `verify_integrity` false for authoring preflight.
 pub struct RuntimeOptions {
     pub runtime: Option<String>,
     pub runtime_paths: BTreeMap<String, PathBuf>,

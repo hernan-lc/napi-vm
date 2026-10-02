@@ -148,13 +148,26 @@ export interface InjectedService { url: string; headers?: Record<string, string>
 export interface LoadOptions extends LaunchOptions { configuration?: JsonValue; context?: JsonValue; env?: Record<string, string>; services?: Record<string, InjectedService>; instanceId?: string }
 export interface HostOptions { contracts?: Contract[]; runtimePaths?: Partial<Record<'node' | 'bun', string>>; limits?: Partial<Limits> }
 interface Subscription { contract: Contract; event: string; listener: (payload: JsonValue) => void | Promise<void>; onError?: (error: PluginError) => void; queue: { payload: JsonValue; sessionId: string; bytes: number }[]; bytes: number; running: boolean; stopped: boolean }
+const errorSecrets = new WeakMap<PluginHandle, string[]>();
+/** Capture the current generation's secrets before awaiting plugin work. */
+function errorSanitizer(handle: PluginHandle): (error: unknown) => PluginError {
+  const secrets = errorSecrets.get(handle) ?? [];
+  const text = (value: string): string => { for (const secret of secrets) value = value.split(secret).join('[REDACTED]'); return value; };
+  const data = (value: JsonValue): JsonValue => {
+    if (typeof value === 'string') return text(value);
+    if (Array.isArray(value)) return value.map(data);
+    if (value && typeof value === 'object') { const out: JsonObject = Object.create(null) as JsonObject; for (const [key, item] of Object.entries(value)) out[text(key)] = data(item); return out; }
+    return value;
+  };
+  return error => { const failure = asPluginError(error); return new PluginError(failure.code, text(failure.message), failure.details === undefined ? undefined : data(failure.details), failure.domainCode, failure.data === undefined ? undefined : data(failure.data)); };
+}
 export class PluginHandle {
   status: Status = 'DISCOVERED'; sessionId = ''; selectedRuntime: ResolvedLaunch | undefined; metadata: Manifest;
   readonly instanceId: string; readonly subscriptions = new Set<Subscription>(); readonly logs: { stream: 'stdout' | 'stderr'; text: string }[] = []; droppedLogBytes = 0; logBytes = 0; discardedStaleEvents = 0;
   peer: RpcPeer | undefined; child: ChildProcess | undefined; snapshot: Snapshot | null | undefined; lastEvent = 0n; outgoingEvent = 0n; exitPromise: Promise<void> | undefined;
   resolved: ResolvedManifest; options: LoadOptions; private readonly host: TrustedPluginHost;
   constructor(host: TrustedPluginHost, resolved: ResolvedManifest, options: LoadOptions) { this.host = host; this.resolved = resolved; this.metadata = resolved.manifest; this.options = options; Object.defineProperty(this, 'options', { enumerable: false }); this.instanceId = options.instanceId ?? randomUUID(); }
-  invoke(contract: Contract, method: string, input: unknown, options?: CallOptions): Promise<JsonValue> { if (options?.context?.callChain.includes(`p:${this.sessionId}`)) return Promise.reject(new PluginError('REENTRANT_CALL', 'Target is active in call chain')); if (this.status !== 'READY' || !this.peer) return Promise.reject(new PluginError('NOT_READY', `Plugin is ${this.status}`)); this.host.assertContract(this, contract); return invokeRemote(this.peer, contract, method, input, options); }
+  invoke(contract: Contract, method: string, input: unknown, options?: CallOptions): Promise<JsonValue> { if (options?.context?.callChain.includes(`p:${this.sessionId}`)) return Promise.reject(new PluginError('REENTRANT_CALL', 'Target is active in call chain')); if (this.status !== 'READY' || !this.peer) return Promise.reject(new PluginError('NOT_READY', `Plugin is ${this.status}`)); this.host.assertContract(this, contract); const sanitize = errorSanitizer(this); return invokeRemote(this.peer, contract, method, input, options).catch(error => { throw sanitize(error); }); }
   client(contract: Contract): ReturnType<typeof createClient> { this.host.assertContract(this, contract); return createClient(contract, this); }
   subscribe(contract: Contract, event: string, listener: Subscription['listener'], onError?: Subscription['onError']): () => void {
     this.host.assertContract(this, contract); if (!Object.hasOwn(contract.descriptor.events, event)) throw new PluginError('INVALID_ARGUMENT', 'Undeclared event');
@@ -206,8 +219,9 @@ export class TrustedPluginHost extends EventEmitter {
   private async start(handle: PluginHandle, launch: ResolvedLaunch, snapshot: Snapshot | null): Promise<void> {
     handle.sessionId = randomUUID(); handle.selectedRuntime = launch; handle.lastEvent = 0n; handle.outgoingEvent = 0n; this.transition(handle, 'STARTING');
     const session = handle.sessionId; const token = randomBytes(32).toString('hex');
-    const secretValues = [token, ...Object.values(handle.options.services ?? {}).flatMap(service => Object.values(service.headers ?? {}))];
-    for (const service of Object.values(handle.options.services ?? {})) { const url = new URL(service.url); if (url.password) secretValues.push(decodeURIComponent(url.password)); for (const value of url.searchParams.values()) if (value) secretValues.push(value); }
+    const secretValues = [token, ...Object.values(handle.options.env ?? {}), ...Object.values(handle.options.services ?? {}).flatMap(service => Object.values(service.headers ?? {}))];
+    for (const service of Object.values(handle.options.services ?? {})) { for (const [name, value] of Object.entries(service.headers ?? {})) if (/^(?:proxy-)?authorization$/i.test(name)) { const credential = /^[^\s]+\s+(.+)$/.exec(value)?.[1]?.trim(); if (credential) secretValues.push(credential); } const url = new URL(service.url); if (url.password) secretValues.push(url.password, decodeURIComponent(url.password)); for (const value of url.searchParams.values()) if (value) secretValues.push(value, encodeURIComponent(value)); if (url.password || url.search) secretValues.push(service.url); }
+    errorSecrets.set(handle, [...new Set(secretValues.filter(Boolean))].sort((a, b) => b.length - a.length));
     this.logRedaction.set(handle, { secrets: [...new Set(secretValues.filter(Boolean))].map(v => Buffer.from(v)).sort((a, b) => b.length - a.length), pending: { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) } }); const candidates = new Set<RpcPeer>(); let accepted = false;
     let resolveHello!: (peer: RpcPeer) => void, rejectHello!: (error: unknown) => void;
     const hello = new Promise<RpcPeer>((resolve, reject) => { resolveHello = resolve; rejectHello = reject; });
@@ -255,7 +269,7 @@ export class TrustedPluginHost extends EventEmitter {
         });
       })(), this.limits.startupTimeoutMs, 'Plugin startup/initialization timed out');
       if (handle.sessionId !== session || handle.status !== 'READY' || !handle.peer || handle.peer.isClosed) throw new PluginError('PLUGIN_EXITED', 'Plugin disconnected during initialization');
-    } catch (error) { await this.terminate(handle); throw error; }
+    } catch (error) { const failure = errorSanitizer(handle)(error); await this.terminate(handle); throw failure; }
     finally { server.close(); for (const peer of candidates) if (peer !== handle.peer || !accepted) peer.close(); }
   }
   private log(handle: PluginHandle, stream: 'stdout' | 'stderr', chunk: Buffer, final = false): void {
@@ -346,7 +360,7 @@ export class TrustedPluginHost extends EventEmitter {
       for (const sub of handle.subscriptions) { handle.discardedStaleEvents += sub.queue.length; sub.queue = []; sub.bytes = 0; }
       try { await this.start(handle, replacement.launch, snapshot); handle.snapshot = undefined; return handle; }
       catch (error) { this.transition(handle, 'FAILED'); handle.snapshot = snapshot; await this.terminate(handle); throw error; }
-    } finally { this.operations.delete(instanceId); this.emit('operationDone', instanceId); }
+    } catch (error) { throw errorSanitizer(handle)(error); } finally { this.operations.delete(instanceId); this.emit('operationDone', instanceId); }
   }
   async shutdown(): Promise<void> {
     this.closing = true;

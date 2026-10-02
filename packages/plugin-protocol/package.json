@@ -22,5 +22,15 @@
   "engines": {
     "node": ">=22"
   },
-  "dependencies": {}
+  "dependencies": {},
+  "description": "Framed JSON protocol and strict contracts for trusted process plugins.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nglmercer/napi-vm.git",
+    "directory": "packages/plugin-protocol"
+  },
+  "homepage": "https://github.com/nglmercer/napi-vm/tree/main/packages/plugin-protocol",
+  "bugs": {
+    "url": "https://github.com/nglmercer/napi-vm/issues"
+  }
 }

@@ -67,16 +67,16 @@ export async function invokeRemote(peer: RpcPeer, contract: Contract, method: st
   } catch (error) { throw validateDomainError(contract, method, error); }
 }
 class Tasks {
-  controller = new AbortController(); pending = new Set<Promise<void>>(); failure: unknown; draining = false;
+  controller = new AbortController(); pending = new Set<Promise<void>>(); failure: unknown; failed = false; draining = false;
   spawn(task: (signal: AbortSignal) => Promise<void>): Promise<void> {
     if (this.draining) throw new PluginError('NOT_READY', 'Background work is quiescing');
     const work = Promise.resolve().then(() => task(this.controller.signal)); this.pending.add(work);
-    void work.catch(error => { this.failure = error; }).finally(() => this.pending.delete(work)); return work;
+    void work.catch(error => { this.failure = error; this.failed = true; }).finally(() => this.pending.delete(work)); return work;
   }
   async drain(timeoutMs: number): Promise<void> {
     this.draining = true; this.controller.abort();
     await bounded(Promise.allSettled([...this.pending]).then(() => {}), timeoutMs, 'Background tasks did not quiesce');
-    if (this.failure) throw new PluginError('INTERNAL_ERROR', 'Tracked background task failed');
+    if (this.failed) throw new PluginError('INTERNAL_ERROR', 'Tracked background task failed');
   }
 }
 export async function bounded<T>(work: Promise<T>, timeoutMs: number, message: string): Promise<T> {

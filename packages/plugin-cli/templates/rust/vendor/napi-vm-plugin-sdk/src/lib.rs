@@ -48,6 +48,8 @@ pub trait ClientTransport: Send + Sync + 'static {
     }
 }
 #[derive(Clone)]
+/// Invocation context carrying inherited deadline, call chain and cooperative cancellation.
+/// Child calls propagate the context; timeout never guarantees rollback of side effects.
 pub struct CallContext {
     transport: Arc<dyn ClientTransport>,
     pub request_id: String,
@@ -333,6 +335,7 @@ struct RegistryInner {
     changed: Notify,
 }
 #[derive(Clone)]
+/// Contract-bound handler registry, shared by clones. Registration precedes endpoint startup.
 pub struct Registry(Arc<RegistryInner>);
 impl Default for Registry {
     fn default() -> Self {
@@ -536,6 +539,8 @@ impl Registry {
 }
 
 #[derive(Clone, Default)]
+/// Tracked task and cleanup ownership for quiescence and explicit shutdown.
+/// Unmanaged external threads are not tracked or assumed safe to snapshot.
 pub struct Resources(Arc<ResourceInner>);
 type Cleanup = Box<dyn FnOnce() -> PluginFuture<'static, ()> + Send>;
 #[derive(Default)]

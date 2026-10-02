@@ -1,5 +1,5 @@
 import {readFile,writeFile,mkdir,stat,lstat,realpath,readdir,copyFile,chmod,rm} from 'node:fs/promises';
-import {resolve,join,dirname,basename,sep,isAbsolute} from 'node:path';
+import {resolve,join,dirname,basename,sep,isAbsolute,relative} from 'node:path';
 import {createHash} from 'node:crypto';
 export const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
 export async function readJson(path){return JSON.parse(await readFile(path,'utf8'));}
@@ -14,10 +14,10 @@ export async function contained(root,path){
  if(full===base||!full.startsWith(base+sep))throw new Error('Path escapes package: '+path);
  return full;
 }
-const forbidden=part=>['.git','.hg','.svn','.cache','__pycache__','target','.bin','.env','.npmrc','.yarnrc','.pypirc','.netrc','credentials','credentials.json','.aws','.ssh','.gnupg','.config','id_rsa','id_ed25519','.DS_Store'].includes(part)||part.startsWith('.env.')||/\.(pem|key|p12|pfx)$/i.test(part);
+const forbidden=part=>{part=part.toLowerCase();return ['.git','.hg','.svn','.cache','__pycache__','target','.bin','.env','.npmrc','.yarnrc','.pypirc','.netrc','credentials','credentials.json','.aws','.ssh','.gnupg','.config','id_rsa','id_ed25519','.ds_store'].includes(part)||part.startsWith('.env.')||/\.(pem|key|p12|pfx)$/i.test(part);};
 async function collect(root,path,files,ancestors=new Set()){
  path=relativePath(path);if(path.split('/').some(forbidden))throw new Error('Refusing sensitive/cache file: '+path);
- const full=await contained(root,path);const info=await stat(full);
+ const full=await contained(root,path);if(relative(root,full).split(sep).some(forbidden))throw new Error('Refusing sensitive/cache symlink target: '+path);const info=await stat(full);
  if(info.isDirectory()){
   if(ancestors.has(full))throw new Error('Symlink directory cycle: '+path);
   const next=new Set([...ancestors,full]);for(const name of (await readdir(full)).sort())await collect(root,path+'/'+name,files,next);

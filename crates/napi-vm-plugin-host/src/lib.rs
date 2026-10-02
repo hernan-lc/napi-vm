@@ -1,9 +1,10 @@
-//! Native Tokio trusted-process host, independent of the legacy VM and JS tooling.
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 mod manifest;
 pub mod services;
 pub use manifest::*;
 use napi_vm_plugin_protocol::*;
+pub use napi_vm_plugin_protocol::{Contract, Limits};
 use napi_vm_plugin_sdk::{
     CallContext, ClientTransport, EventHub, InvokeOptions, PeerTransport, Registry, Resources,
     Subscription,
@@ -32,6 +33,7 @@ use tokio::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+/// Observable instance lifecycle state. Business calls are accepted only in `Ready`.
 pub enum Status {
     Discovered,
     Starting,
@@ -43,6 +45,7 @@ pub enum Status {
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Serializable noncredential instance status and selected runtime information.
 pub struct InstanceMetadata {
     pub instance_id: String,
     pub plugin_id: String,
@@ -62,6 +65,8 @@ pub struct ServiceConnection {
     pub headers: BTreeMap<String, String>,
 }
 #[derive(Clone)]
+/// Per-load runtime selection, runtime-only credentials and initialization values.
+/// The default verifies package integrity; native launches require no JavaScript runtime.
 pub struct LoadOptions {
     pub runtime: RuntimeOptions,
     pub environment: BTreeMap<String, String>,
@@ -84,6 +89,8 @@ impl Default for LoadOptions {
     }
 }
 #[derive(Clone, Default)]
+/// Replacement options for a stable instance. State transfer requires successful quiescence
+/// and a compatible snapshot unless `force_without_state` is explicitly set.
 pub struct ReloadOptions {
     pub replacement_manifest: Option<PathBuf>,
     pub force_without_state: bool,
@@ -146,6 +153,7 @@ struct Instance {
     lifecycle_busy: AtomicBool,
     events: EventHub,
     logs: Arc<Mutex<Logs>>,
+    secrets: Mutex<Vec<String>>,
     services: tokio::sync::Mutex<Vec<ManagedService>>,
 }
 struct LifecycleLease(Arc<Instance>);
@@ -201,6 +209,7 @@ struct HostInner {
     services: Registry,
     instances: RwLock<BTreeMap<String, Arc<Instance>>>,
     shutting_down: AtomicBool,
+    startup_gate: tokio::sync::RwLock<()>,
     resources: Resources,
 }
 impl Drop for HostInner {
@@ -217,11 +226,15 @@ impl Drop for HostInner {
     }
 }
 #[derive(Clone)]
+/// Cloneable Tokio host owning direct plugin children and registered callback handlers.
+/// Keep this alive until explicit asynchronous shutdown completes.
 pub struct Host {
     inner: Arc<HostInner>,
 }
 #[derive(Clone)]
+/// A stable instance handle. Reload replaces its session while retaining this identity.
 pub struct PluginHandle {
+    host: Weak<HostInner>,
     instance: Arc<Instance>,
     limits: Limits,
 }
@@ -239,6 +252,7 @@ impl Host {
                 services: Registry::new(),
                 instances: RwLock::new(BTreeMap::new()),
                 shutting_down: AtomicBool::new(false),
+                startup_gate: tokio::sync::RwLock::new(()),
                 resources: Resources::default(),
             }),
         })
@@ -274,6 +288,7 @@ impl Host {
             .get(id)
             .cloned()
             .map(|instance| PluginHandle {
+                host: Arc::downgrade(&self.inner),
                 instance,
                 limits: self.inner.limits.clone(),
             })
@@ -291,6 +306,9 @@ impl Host {
         mut options: LoadOptions,
         service_specs: Vec<ManagedServiceSpec>,
     ) -> PluginResult<PluginHandle> {
+        // Shutdown closes admission, then waits for admitted starts to finish.
+        // This covers preparation before the instance enters the registry too.
+        let _startup = self.inner.startup_gate.read().await;
         if self.inner.shutting_down.load(Ordering::Acquire) {
             return Err(RpcError::new("NOT_READY", "host is shutting down"));
         }
@@ -378,6 +396,7 @@ impl Host {
                 self.inner.limits.max_queued_bytes,
             ),
             logs: Arc::new(Mutex::new(Logs::default())),
+            secrets: Mutex::new(Vec::new()),
             services: tokio::sync::Mutex::new(Vec::new()),
         });
         self.inner
@@ -386,6 +405,7 @@ impl Host {
             .unwrap()
             .insert(id.clone(), instance.clone());
         let handle = PluginHandle {
+            host: Arc::downgrade(&self.inner),
             instance: instance.clone(),
             limits: self.inner.limits.clone(),
         };
@@ -411,7 +431,7 @@ impl Host {
         if let Err(e) = result {
             set_failed(&instance, e.clone());
             shutdown_services(&instance).await;
-            return Err(e);
+            return Err(sanitize_error(&instance, e));
         }
         Ok(handle)
     }
@@ -455,10 +475,9 @@ impl Host {
             )
         })?;
         let mut drainers = Vec::new();
-        let mut secrets = vec![token.clone()];
-        for service in options.services.values() {
-            secrets.extend(service.headers.values().filter(|s| !s.is_empty()).cloned());
-        }
+        let mut secrets = connection_secrets(&options);
+        secrets.push(token.clone());
+        *instance.secrets.lock().unwrap() = secrets.clone();
         if let Some(stdout) = child.stdout.take() {
             drainers.push(drain_logs(
                 stdout,
@@ -712,6 +731,10 @@ impl Host {
         }
     }
     pub async fn reload(&self, id: &str, options: ReloadOptions) -> PluginResult<PluginHandle> {
+        let _startup = self.inner.startup_gate.read().await;
+        if self.inner.shutting_down.load(Ordering::Acquire) {
+            return Err(RpcError::new("NOT_READY", "host is shutting down"));
+        }
         let handle = self
             .get(id)
             .ok_or_else(|| RpcError::new("NOT_READY", "unknown instance"))?;
@@ -799,11 +822,13 @@ impl Host {
                         timeout,
                         None,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| sanitize_error(&instance, error))?;
                 let snapshot = old
                     .peer
                     .request("system.snapshot", json!({}), timeout, None)
-                    .await?;
+                    .await
+                    .map_err(|error| sanitize_error(&instance, error))?;
                 validate_snapshot(&old_prepared, &snapshot)?;
                 validate_snapshot(&prepared, &snapshot)?;
                 instance.record.lock().unwrap().snapshot = snapshot.clone();
@@ -836,7 +861,7 @@ impl Host {
         instance.transition(Status::Stopped);
         if let Err(e) = self.start(instance.clone(), prepared, load, snapshot).await {
             set_failed(&instance, e.clone());
-            return Err(e);
+            return Err(sanitize_error(&instance, e));
         }
         Ok(handle)
     }
@@ -885,7 +910,11 @@ impl Host {
         shutdown_services(&i).await;
         i.events.close();
         i.transition(Status::Stopped);
-        if let Some(e) = error { Err(e) } else { Ok(()) }
+        if let Some(e) = error {
+            Err(sanitize_error(&i, e))
+        } else {
+            Ok(())
+        }
     }
     /// Emit a registered host-service event to one current plugin session.
     pub async fn emit(
@@ -941,6 +970,7 @@ impl Host {
     }
     pub async fn shutdown(&self) -> PluginResult<()> {
         self.inner.shutting_down.store(true, Ordering::Release);
+        let _startup = self.inner.startup_gate.write().await;
         let ids: Vec<_> = self
             .inner
             .instances
@@ -969,6 +999,17 @@ impl Host {
     }
 }
 impl PluginHandle {
+    /// Quiesce, stop, and reap this instance through its owning host.
+    /// Repeated shutdown is safe. Keep the host alive until this completes;
+    /// handles do not prolong host ownership. After host drop this is a no-op.
+    /// The host owns only the direct child process.
+    pub async fn shutdown(&self) -> PluginResult<()> {
+        let Some(inner) = self.host.upgrade() else {
+            return Ok(());
+        };
+        Host { inner }.unload(&self.instance_id()).await
+    }
+
     pub fn pid(&self) -> Option<u32> {
         self.instance
             .record
@@ -1085,6 +1126,7 @@ impl ClientTransport for StableTarget {
             )
             .invoke(c, m, v, o)
             .await
+            .map_err(|error| sanitize_error(&i, error))
         })
     }
     fn emit(
@@ -1119,6 +1161,7 @@ fn random_hex(size: usize) -> PluginResult<String> {
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 fn set_failed(i: &Instance, error: RpcError) {
+    let error = sanitize_error(i, error);
     i.transition(Status::Failed);
     i.record.lock().unwrap().metadata.failure = Some(error);
 }
@@ -1295,6 +1338,116 @@ fn validate_hello(
     }
     Ok(())
 }
+// Preserve encoded and decoded URL credentials because plugins may log either.
+fn decode_url_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%'
+            && at + 2 < bytes.len()
+            && let (Some(a), Some(b)) = (
+                (bytes[at + 1] as char).to_digit(16),
+                (bytes[at + 2] as char).to_digit(16),
+            )
+        {
+            decoded.push((a * 16 + b) as u8);
+            at += 3;
+        } else {
+            decoded.push(if bytes[at] == b'+' { b' ' } else { bytes[at] });
+            at += 1;
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+fn connection_secrets(options: &LoadOptions) -> Vec<String> {
+    let mut secrets: Vec<String> = options
+        .environment
+        .values()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect();
+    for service in options.services.values() {
+        secrets.extend(service.headers.values().filter(|s| !s.is_empty()).cloned());
+        for (name, value) in &service.headers {
+            if (name.eq_ignore_ascii_case("authorization")
+                || name.eq_ignore_ascii_case("proxy-authorization"))
+                && let Some((_, credential)) = value.split_once(' ')
+                && !credential.trim().is_empty()
+            {
+                secrets.push(credential.trim().into());
+            }
+        }
+        secrets.push(service.url.clone());
+        if let Some((_, rest)) = service.url.split_once("://") {
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+            if let Some((userinfo, _)) = authority.rsplit_once('@') {
+                for part in userinfo.split(':') {
+                    if !part.is_empty() {
+                        secrets.push(part.into());
+                        secrets.push(decode_url_component(part));
+                    }
+                }
+            }
+        }
+        if let Some((_, query)) = service.url.split_once('?') {
+            for pair in query.split('#').next().unwrap_or("").split('&') {
+                if let Some((_, value)) = pair.split_once('=')
+                    && !value.is_empty()
+                {
+                    secrets.push(value.into());
+                    secrets.push(decode_url_component(value));
+                }
+            }
+        }
+    }
+    secrets.retain(|s| !s.is_empty());
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    secrets.dedup();
+    secrets
+}
+fn sanitize_error(instance: &Instance, error: RpcError) -> RpcError {
+    redact_error(error, &instance.secrets.lock().unwrap())
+}
+fn redact_error(mut error: RpcError, secrets: &[String]) -> RpcError {
+    fn text(value: &mut String, secrets: &[String]) {
+        for secret in secrets {
+            *value = value.replace(secret, "[redacted]");
+        }
+    }
+    fn redact(value: &mut Value, secrets: &[String], envelope: bool) {
+        match value {
+            Value::String(value) => text(value, secrets),
+            Value::Array(items) => {
+                for item in items {
+                    redact(item, secrets, false);
+                }
+            }
+            Value::Object(items) => {
+                let entries = std::mem::take(items);
+                for (mut key, mut item) in entries {
+                    // Protocol and domain identifiers are public contract data, not
+                    // credential payloads. Coincidentally matching environment values
+                    // must never destroy stable error classification or envelope names.
+                    if envelope && matches!(key.as_str(), "code" | "domainCode") {
+                        items.insert(key, item);
+                        continue;
+                    }
+                    if !envelope || key != "data" {
+                        text(&mut key, secrets);
+                    }
+                    redact(&mut item, secrets, false);
+                    items.insert(key, item);
+                }
+            }
+            _ => {}
+        }
+    }
+    text(&mut error.message, secrets);
+    redact(&mut error.data, secrets, true);
+    error
+}
+
 fn drain_logs<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     mut stream: R,
     logs: Arc<Mutex<Logs>>,
@@ -1404,6 +1557,54 @@ fn supervise(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn error_redaction_preserves_contract_codes_and_envelope_names() {
+        let mut error = RpcError::new("INTERNAL_ERROR", "INTERNAL_ERROR private-key");
+        error.data["detail"] = json!({"private-key":"INTERNAL_ERROR", "code":"private-key"});
+        let redacted = redact_error(
+            error,
+            &["INTERNAL_ERROR".into(), "private-key".into(), "code".into()],
+        );
+        assert_eq!(redacted.stable_code(), "INTERNAL_ERROR");
+        assert_eq!(redacted.message, "[redacted] [redacted]");
+        assert_eq!(redacted.data["detail"], json!({"[redacted]":"[redacted]"}));
+        let domain = redact_error(
+            RpcError::domain("DOMAIN", "DOMAIN", json!({"code":"DOMAIN"})),
+            &["DOMAIN".into(), "code".into(), "data".into()],
+        );
+        assert_eq!(domain.stable_code(), "APPLICATION_ERROR");
+        assert_eq!(domain.data["domainCode"], "DOMAIN");
+        assert_eq!(domain.data["data"], json!({"[redacted]":"[redacted]"}));
+    }
+
+    #[test]
+    fn service_credentials_cover_encoded_and_decoded_urls() {
+        let options = LoadOptions {
+            services: BTreeMap::from([("fixture".into(), ServiceConnection {
+                url: "http://user:pass%20word@localhost:1234/?token=private%2Bkey&other=query+secret".into(),
+                headers: BTreeMap::from([("Authorization".into(), "Bearer header-secret".into())]),
+            })]),
+            ..Default::default()
+        };
+        let secrets = connection_secrets(&options);
+        for expected in [
+            "user",
+            "pass%20word",
+            "pass word",
+            "private%2Bkey",
+            "private+key",
+            "query+secret",
+            "query secret",
+            "Bearer header-secret",
+            "header-secret",
+        ] {
+            assert!(
+                secrets.iter().any(|secret| secret == expected),
+                "missing {expected}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn log_redaction_spans_arbitrary_chunks() {
         let secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

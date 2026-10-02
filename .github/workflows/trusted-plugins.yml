@@ -8,10 +8,17 @@ permissions:
   contents: read
 jobs:
   native:
+    name: Plugins runtime (${{ matrix.platform }}, Rust 1.96)
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        include:
+          - os: ubuntu-24.04
+            platform: Linux x64
+          - os: macos-15
+            platform: macOS arm64
+          - os: windows-2025
+            platform: Windows x64
     runs-on: ${{ matrix.os }}
     env:
       CARGO_BUILD_JOBS: 2
@@ -24,10 +31,20 @@ jobs:
         with:
           toolchain: 1.96.0
           components: rustfmt, clippy
+      - name: Cache Rust artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: trusted-plugins-${{ matrix.os }}-rust-1.96-${{ hashFiles('**/Cargo.lock') }}
       - name: Install pinned Bun
         run: npm install --global bun@1.4.2
       - run: npm ci --ignore-scripts
       - run: npm run plugins:check-generated
+      - run: npm run plugins:check-assets
       - run: npm run plugins:build
       - run: npm run plugins:typecheck
       - run: npm run plugins:test:node
@@ -36,9 +53,50 @@ jobs:
       - run: npm run plugins:test:interop
       - run: npm run plugins:test:rust-interop
       - run: npm run plugins:test:packaged
+      - name: External npm tarball consumers
+        run: npm run plugins:test:consumers
+      - name: External Rust consumer and runtime without JS tooling
+        run: npm run plugins:test:rust-consumer
       - run: npm run plugins:lint
+  native-runtime:
+    name: Plugins native runtime (${{ matrix.platform }}, Rust 1.96)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            platform: Linux arm64
+          - os: windows-11-arm
+            platform: Windows arm64
+          - os: macos-15-intel
+            platform: macOS x64
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.96.0
+      - name: Cache Rust artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: trusted-plugins-${{ matrix.os }}-rust-1.96-${{ hashFiles('**/Cargo.lock') }}
+      - run: npm ci --ignore-scripts
+      - run: npm run plugins:test:rust
+      - name: Packaged native lifecycle without JS tooling
+        run: npm run plugins:test:rust-consumer
   # Existing runtime-matrix remains authoritative for full native legacy behavior.
   legacy-boundary:
+    name: VM workspace and WASM boundary
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -48,10 +106,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.96.0
-      - name: Install tested Bun for legacy runtime comparisons
-        run: npm install --global bun@1.4.2
-      - run: npm ci --ignore-scripts
-      - run: npm run lint:ts
-      - run: cargo test -p napi-vm --no-default-features
-      - run: cargo metadata --locked --no-deps --format-version 1
-      - run: cargo metadata --locked --no-deps --format-version 1 --manifest-path tests/fixtures/node-api/napi-rs/Cargo.toml
+          targets: wasm32-unknown-unknown
+      - name: Verify VM remains the sole default workspace member
+        shell: bash
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/root-metadata.json"
+          node --input-type=module - "$RUNNER_TEMP/root-metadata.json" <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const metadata = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const root = metadata.packages.find(pkg => pkg.name === 'napi-vm');
+          assert.ok(root, 'root VM package must exist');
+          assert.deepEqual(metadata.workspace_default_members, [root.id]);
+          JS
+      - name: Verify napi-rs fixture remains an independent workspace
+        shell: bash
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 --manifest-path tests/fixtures/node-api/napi-rs/Cargo.toml > "$RUNNER_TEMP/fixture-metadata.json"
+          node --input-type=module - "$RUNNER_TEMP/fixture-metadata.json" <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import assert from 'node:assert/strict';
+          const metadata = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          assert.equal(metadata.workspace_root, path.resolve('tests/fixtures/node-api/napi-rs'));
+          assert.equal(metadata.workspace_members.length, 1);
+          assert.equal(metadata.packages[0].name, 'napi-vm-napi-rs-fixture');
+          JS
+      - name: Build VM WASM without process-host dependencies
+        run: cargo build --locked -p napi-vm --target wasm32-unknown-unknown --no-default-features --features wasm

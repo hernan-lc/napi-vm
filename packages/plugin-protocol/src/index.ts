@@ -339,7 +339,12 @@ export class RpcPeer extends EventEmitter {
       const controller = new AbortController(); this.active.set(id, controller); const deadline = performance.now() + timeoutMs;
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       const context: RequestContext = { id, signal: controller.signal, callChain: [...chain, this.endpointId], remainingMs: () => Math.max(0, deadline - performance.now()), throwIfCancelled() { if (controller.signal.aborted) throw new PluginError('CANCELLED', 'Handler acknowledged cancellation'); } };
-      void Promise.resolve().then(() => handler(msg.params as JsonValue, context)).then(result => this.reply(id, wireValue(result), undefined, msg.method as string), error => this.reply(id, undefined, asPluginError(error))).finally(() => { clearTimeout(timer); this.active.delete(id); if (business) this.release(); });
+      void Promise.resolve().then(() => handler(msg.params as JsonValue, context)).then(result => {
+        let data: JsonValue;
+        try { data = wireValue(result, this.limits.maxDepth); }
+        catch { throw new PluginError('INVALID_RESULT', 'Handler returned invalid wire data'); }
+        this.reply(id, data, undefined, msg.method as string);
+      }).catch(error => this.reply(id, undefined, asPluginError(error))).finally(() => { clearTimeout(timer); this.active.delete(id); if (business) this.release(); });
     } else {
       exactKeys(msg, ['jsonrpc', 'id', 'result', 'error'], ['jsonrpc', 'id']);
       if (typeof msg.id !== 'string' || Object.hasOwn(msg, 'result') === Object.hasOwn(msg, 'error')) throw new PluginError('INVALID_REQUEST', 'Malformed RPC response');
@@ -347,7 +352,9 @@ export class RpcPeer extends EventEmitter {
       if (!pending) { this.diagnostics.unknownReplies = Math.min(Number.MAX_SAFE_INTEGER, this.diagnostics.unknownReplies + 1); return; }
       let failure: PluginError | undefined;
       if (Object.hasOwn(msg, 'error')) {
-        const e = object(msg.error); const data = object(e.data);
+        const e = object(msg.error); exactKeys(e, ['code', 'message', 'data'], ['code', 'message', 'data']); const data = object(e.data);
+        exactKeys(data, ['code', 'details', 'domainCode', 'data'], ['code']);
+        if (Object.hasOwn(data, 'domainCode') && (typeof data.domainCode !== 'string' || !data.domainCode || data.code !== 'APPLICATION_ERROR') || Object.hasOwn(data, 'data') && data.code !== 'APPLICATION_ERROR' || data.code === 'APPLICATION_ERROR' && (!Object.hasOwn(data, 'domainCode') || !Object.hasOwn(data, 'data'))) throw new PluginError('INVALID_REQUEST', 'Malformed application error');
         if (typeof data.code !== 'string' || !Object.hasOwn(ERROR_CODES, data.code) || ERROR_CODES[data.code as ErrorCode] !== e.code || typeof e.message !== 'string' || e.message.length > 2048) throw new PluginError('INVALID_REQUEST', 'Malformed RPC error');
         failure = new PluginError(data.code as ErrorCode, e.message, data.details as JsonValue | undefined, data.domainCode as string | undefined, data.data as JsonValue | undefined);
       }

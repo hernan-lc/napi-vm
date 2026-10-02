@@ -32,3 +32,10 @@ test('wire timeout remaining duration is a positive integer for Rust callbacks',
 test('harness preserves explicit null initialization data and defaults only absence',async()=>{
  for(const options of [{configuration:null,context:null},{}]){let seen;const h=await createHarness(definePlugin(G,{greet:()=>({message:'ok'})},{initialize(input){seen=input;}}),options);try{assert.equal(JSON.stringify(seen.configuration),Object.hasOwn(options,'configuration')?'null':'{}');assert.equal(JSON.stringify(seen.context),Object.hasOwn(options,'context')?'null':'{}');}finally{await h.shutdown();}}
 });
+
+test('tracked background task failures are detected even with falsy rejection reasons',async()=>{
+ for(const reason of [undefined,null,false,0,'']){
+  const h=await createHarness(definePlugin(G,{greet:()=>({message:'ok'})},{initialize(_,ctx){void ctx.spawnTask(async()=>{throw reason;});}}));
+  try{await assert.rejects(h.snapshot(),e=>e.code==='INTERNAL_ERROR');}finally{await h.shutdown().catch(()=>{});}
+ }
+});

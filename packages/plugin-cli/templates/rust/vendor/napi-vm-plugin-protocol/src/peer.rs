@@ -17,6 +17,7 @@ use tokio::{
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Validated framing, pending request, queue and lifecycle timeout resource bounds.
 pub struct Limits {
     pub max_frame_bytes: usize,
     pub max_depth: usize,
