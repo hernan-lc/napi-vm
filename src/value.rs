@@ -43,6 +43,28 @@ pub const MAX_STRING_LEN: usize = 16 * 1024 * 1024;
 /// or spend unbounded time resolving a missing property.
 pub const MAX_PROTOTYPE_DEPTH: usize = 4096;
 
+/// ECMAScript ToIntegerOrInfinity, after numeric coercion.
+pub(crate) fn to_integer_or_infinity(number: f64) -> f64 {
+    if number.is_nan() || number == 0.0 {
+        0.0
+    } else {
+        number.trunc()
+    }
+}
+
+/// ECMAScript ToInt32 wraps instead of saturating at Rust's integer bounds.
+pub(crate) fn to_int32(number: f64) -> i32 {
+    if !number.is_finite() {
+        return 0;
+    }
+    let wrapped = number.trunc().rem_euclid(4_294_967_296.0);
+    if wrapped >= 2_147_483_648.0 {
+        (wrapped - 4_294_967_296.0) as i32
+    } else {
+        wrapped as i32
+    }
+}
+
 /// Convenience constructor for the guest-visible limit errors.
 pub fn limit_err(msg: &str) -> VmErr {
     VmErr::Msg(format!("RangeError: {}", msg))

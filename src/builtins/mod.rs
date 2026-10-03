@@ -595,10 +595,6 @@ fn make_callable(target: &Value, call: NativeFn, construct: Option<NativeFn>) {
     }
 }
 
-fn arg_num(args: &[Value], i: usize) -> f64 {
-    args.get(i).map(|v| v.to_number()).unwrap_or(f64::NAN)
-}
-
 fn arr_items(this: &Value) -> Vec<Value> {
     match this {
         Value::Array(a) => a.borrow().clone(),

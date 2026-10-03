@@ -3,7 +3,7 @@ use std::rc::Rc;
 use super::Interpreter;
 use crate::error::VmErr;
 use crate::parser::{BinOp, UnOp};
-use crate::value::Value;
+use crate::value::{Value, to_int32};
 
 /// `===`.
 ///
@@ -144,13 +144,13 @@ impl Interpreter {
                 BinOp::Div => Some(Value::Number(a / b)),
                 BinOp::Mod => Some(Value::Number(a % b)),
                 BinOp::Pow => Some(Value::Number(a.powf(*b))),
-                BinOp::BitAnd => Some(Value::Number(((*a as i32) & (*b as i32)) as f64)),
-                BinOp::BitOr => Some(Value::Number(((*a as i32) | (*b as i32)) as f64)),
-                BinOp::BitXor => Some(Value::Number(((*a as i32) ^ (*b as i32)) as f64)),
-                BinOp::Shl => Some(Value::Number(((*a as i32) << ((*b as i32) & 31)) as f64)),
-                BinOp::Shr => Some(Value::Number(((*a as i32) >> ((*b as i32) & 31)) as f64)),
+                BinOp::BitAnd => Some(Value::Number((to_int32(*a) & to_int32(*b)) as f64)),
+                BinOp::BitOr => Some(Value::Number((to_int32(*a) | to_int32(*b)) as f64)),
+                BinOp::BitXor => Some(Value::Number((to_int32(*a) ^ to_int32(*b)) as f64)),
+                BinOp::Shl => Some(Value::Number((to_int32(*a) << (to_int32(*b) & 31)) as f64)),
+                BinOp::Shr => Some(Value::Number((to_int32(*a) >> (to_int32(*b) & 31)) as f64)),
                 BinOp::UShr => Some(Value::Number(
-                    ((*a as i32 as u32) >> (*b as i32 as u32 & 31)) as f64,
+                    ((to_int32(*a) as u32) >> (to_int32(*b) as u32 & 31)) as f64,
                 )),
                 BinOp::Lt => Some(Value::Bool(a < b)),
                 BinOp::Gt => Some(Value::Bool(a > b)),
@@ -222,14 +222,18 @@ impl Interpreter {
             BinOp::Div => Value::Number(self.tn(l) / self.tn(r)),
             BinOp::Mod => Value::Number(self.tn(l) % self.tn(r)),
             BinOp::Pow => Value::Number(self.tn(l).powf(self.tn(r))),
-            BinOp::BitAnd => Value::Number(((self.tn(l) as i32) & (self.tn(r) as i32)) as f64),
-            BinOp::BitOr => Value::Number(((self.tn(l) as i32) | (self.tn(r) as i32)) as f64),
-            BinOp::BitXor => Value::Number(((self.tn(l) as i32) ^ (self.tn(r) as i32)) as f64),
-            BinOp::Shl => Value::Number(((self.tn(l) as i32) << ((self.tn(r) as i32) & 31)) as f64),
-            BinOp::Shr => Value::Number(((self.tn(l) as i32) >> ((self.tn(r) as i32) & 31)) as f64),
+            BinOp::BitAnd => Value::Number((to_int32(self.tn(l)) & to_int32(self.tn(r))) as f64),
+            BinOp::BitOr => Value::Number((to_int32(self.tn(l)) | to_int32(self.tn(r))) as f64),
+            BinOp::BitXor => Value::Number((to_int32(self.tn(l)) ^ to_int32(self.tn(r))) as f64),
+            BinOp::Shl => {
+                Value::Number((to_int32(self.tn(l)) << (to_int32(self.tn(r)) & 31)) as f64)
+            }
+            BinOp::Shr => {
+                Value::Number((to_int32(self.tn(l)) >> (to_int32(self.tn(r)) & 31)) as f64)
+            }
             BinOp::UShr => {
-                let a = (self.tn(l) as i32) as u32;
-                let b = (self.tn(r) as i32) as u32 & 31;
+                let a = to_int32(self.tn(l)) as u32;
+                let b = to_int32(self.tn(r)) as u32 & 31;
                 Value::Number((a >> b) as f64)
             }
             BinOp::Eq => Value::Bool(self.leq(l, r)),
@@ -476,7 +480,7 @@ impl Interpreter {
             UnOp::Not => Value::Bool(!self.truthy(v)),
             UnOp::Neg => Value::Number(-self.tn(v)),
             UnOp::Pos => Value::Number(self.tn(v)),
-            UnOp::BitNot => Value::Number(!(self.tn(v) as i32) as f64),
+            UnOp::BitNot => Value::Number(!to_int32(self.tn(v)) as f64),
             UnOp::Typeof if super::call::callable_slot(v, super::call::CALL_SLOT).is_some() => {
                 Value::String("function".to_string())
             }

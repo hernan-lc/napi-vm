@@ -6,7 +6,37 @@ use std::rc::Rc;
 use super::{NativeFn, arr_items, join_str, nf};
 use crate::error::VmErr;
 use crate::interpreter::{Environment, Interpreter};
-use crate::value::Value;
+use crate::value::{Value, to_integer_or_infinity};
+
+fn callback(a: &[Value]) -> Result<Value, VmErr> {
+    let cb = a.first().cloned().unwrap_or(Value::Undefined);
+    if !crate::interpreter::call::is_callable_value(&cb) {
+        return Err(VmErr::Msg("TypeError: callback is not a function".into()));
+    }
+    Ok(cb)
+}
+
+fn array_element(
+    interp: &mut Interpreter,
+    this: &Value,
+    index: usize,
+    skip_holes: bool,
+) -> Result<Option<Value>, VmErr> {
+    let key = Value::String(index.to_string());
+    if skip_holes && !interp.has_property(this, &key)? {
+        return Ok(None);
+    }
+    interp.get_prop_value(this, &key).map(Some)
+}
+
+fn relative_index(number: f64, length: usize) -> usize {
+    let integer = to_integer_or_infinity(number);
+    if integer < 0.0 {
+        (length as f64 + integer).max(0.0) as usize
+    } else {
+        (integer as usize).min(length)
+    }
+}
 
 fn arr_presence(this: &Value) -> Vec<bool> {
     match this {
@@ -178,49 +208,83 @@ fn array_of(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr
 /// index properties of an array-like.
 fn array_from(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let source = a.first().cloned().unwrap_or(Value::Undefined);
-    let mapper = a.get(1).cloned();
-    let items = match &source {
-        Value::Array(items) => items.borrow().clone(),
-        Value::Undefined | Value::Null => {
-            return Err(VmErr::Msg(
-                "TypeError: Array.from requires an array-like or iterable".to_string(),
-            ));
-        }
-        // An array-like has a `length` but no iterator; the iterator protocol
-        // takes precedence when both are present, as in the specification.
-        Value::Object { .. }
+    let mapper = a.get(1).filter(|v| !matches!(v, Value::Undefined)).cloned();
+    if mapper
+        .as_ref()
+        .is_some_and(|m| !crate::interpreter::call::is_callable_value(m))
+    {
+        return Err(VmErr::Msg(
+            "TypeError: Array.from mapper is not a function".into(),
+        ));
+    }
+    let receiver = a.get(2).cloned().unwrap_or(Value::Undefined);
+    let iterator_method =
+        interp.get_prop_value_str(&source, crate::interpreter::SYMBOL_ITERATOR_SLOT)?;
+    let mut out = Vec::new();
+    if !matches!(iterator_method, Value::Undefined | Value::Null) {
+        let iterator = interp.call_this(&iterator_method, source.clone(), vec![])?;
+        let next = interp.get_prop_value_str(&iterator, "next")?;
+        loop {
+            interp.consume_loop()?;
+            let step = interp.call_this(&next, iterator.clone(), vec![])?;
             if matches!(
-                interp.prop(
-                    &source,
-                    &Value::String(crate::interpreter::SYMBOL_ITERATOR_SLOT.to_string())
-                )?,
+                step,
                 Value::Undefined
-            ) =>
-        {
-            let length = interp.member(&source, "length")?.to_number();
-            let length = if length.is_finite() && length > 0.0 {
-                (length as usize).min(crate::value::MAX_ARRAY_LEN)
-            } else {
-                0
-            };
-            let mut out = Vec::with_capacity(length.min(1024));
-            for index in 0..length {
-                out.push(interp.member(&source, &index.to_string())?);
+                    | Value::Null
+                    | Value::Bool(_)
+                    | Value::Number(_)
+                    | Value::String(_)
+                    | Value::BigInt(_)
+                    | Value::Symbol(_)
+            ) {
+                return Err(VmErr::Msg(
+                    "TypeError: iterator result is not an object".into(),
+                ));
             }
-            out
+            if interp.get_prop_value_str(&step, "done")?.is_truthy() {
+                break;
+            }
+            let value = interp.get_prop_value_str(&step, "value")?;
+            let result = (|| {
+                if out.len() >= crate::value::MAX_ARRAY_LEN {
+                    return Err(crate::value::limit_err("Maximum array length exceeded"));
+                }
+                match &mapper {
+                    Some(mapper) => interp.call_this(
+                        mapper,
+                        receiver.clone(),
+                        vec![value, Value::Number(out.len() as f64)],
+                    ),
+                    None => Ok(value),
+                }
+            })();
+            match result {
+                Ok(value) => out.push(value),
+                Err(error) => {
+                    // A mapping failure closes the iterator (including a
+                    // generator's finally block), retaining the original error.
+                    if let Ok(close) = interp.get_prop_value_str(&iterator, "return")
+                        && crate::interpreter::call::is_callable_value(&close)
+                    {
+                        let _ = interp.call_this(&close, iterator.clone(), vec![]);
+                    }
+                    return Err(error);
+                }
+            }
         }
-        other => interp.iterate(other)?,
-    };
-    let Some(mapper) = mapper.filter(|m| !matches!(m, Value::Undefined | Value::Null)) else {
-        return Value::checked_array(items);
-    };
-    let mut out = Vec::with_capacity(items.len());
-    for (index, item) in items.into_iter().enumerate() {
-        out.push(interp.call_this(
-            &mapper,
-            Value::Undefined,
-            vec![item, Value::Number(index as f64)],
-        )?);
+    } else {
+        let length = array_like_length(interp, &source)?;
+        for index in 0..length {
+            let value = interp.get_prop_value_str(&source, &index.to_string())?;
+            out.push(match &mapper {
+                Some(mapper) => interp.call_this(
+                    mapper,
+                    receiver.clone(),
+                    vec![value, Value::Number(index as f64)],
+                )?,
+                None => value,
+            });
+        }
     }
     Value::checked_array(out)
 }
@@ -293,29 +357,19 @@ fn array_splice(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value
     };
     reject_frozen_array_mutation(cell)?;
     let length = cell.borrow().len();
-    let start = match a.first() {
-        Some(v) => {
-            let n = v.to_number();
-            if !n.is_finite() {
-                if n > 0.0 { length } else { 0 }
-            } else if n < 0.0 {
-                ((length as f64 + n).max(0.0)) as usize
-            } else {
-                (n as usize).min(length)
-            }
-        }
-        None => 0,
-    };
+    let start = relative_index(a.first().map(Value::to_number).unwrap_or(0.0), length);
     let remove = match a.get(1) {
         // No `deleteCount` removes everything from `start` onwards.
-        None => length - start,
-        Some(v) => {
-            let n = v.to_number();
-            if !n.is_finite() || n <= 0.0 {
+        None => {
+            if a.is_empty() {
                 0
             } else {
-                (n as usize).min(length - start)
+                length - start
             }
+        }
+        Some(v) => {
+            let n = v.to_number();
+            (n as usize).min(length - start)
         }
     };
     let inserted: Vec<Value> = a.iter().skip(2).cloned().collect();
@@ -337,7 +391,7 @@ fn array_splice(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value
 /// `at(index)`: a negative index counts back from the end.
 fn array_at(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
-    let index = a.first().map(|v| v.to_number()).unwrap_or(0.0);
+    let index = to_integer_or_infinity(a.first().map(|v| v.to_number()).unwrap_or(0.0));
     let index = if index < 0.0 {
         items.len() as f64 + index
     } else {
@@ -359,28 +413,22 @@ fn search(
     reverse: bool,
     want_index: bool,
 ) -> Result<Value, VmErr> {
-    let items = arr_items(this);
-    let predicate = a.first().cloned().unwrap_or(Value::Undefined);
-    let positions: Vec<usize> = if reverse {
-        (0..items.len()).rev().collect()
-    } else {
-        (0..items.len()).collect()
-    };
-    for index in positions {
+    let length = array_like_length(interp, this)?;
+    let predicate = callback(a)?;
+    let receiver = a.get(1).cloned().unwrap_or(Value::Undefined);
+    for step in 0..length {
+        let index = if reverse { length - 1 - step } else { step };
+        let value = array_element(interp, this, index, false)?.expect("holes are visited");
         let hit = interp.call_this(
             &predicate,
-            Value::Undefined,
-            vec![
-                items[index].clone(),
-                Value::Number(index as f64),
-                this.clone(),
-            ],
+            receiver.clone(),
+            vec![value.clone(), Value::Number(index as f64), this.clone()],
         )?;
         if hit.is_truthy() {
             return Ok(if want_index {
                 Value::Number(index as f64)
             } else {
-                items[index].clone()
+                value
             });
         }
     }
@@ -421,10 +469,8 @@ fn array_last_index_of(
     let start = match a.get(1) {
         None => items.len() - 1,
         Some(v) => {
-            let n = v.to_number();
-            if n.is_nan() {
-                0
-            } else if n >= 0.0 {
+            let n = to_integer_or_infinity(v.to_number());
+            if n >= 0.0 {
                 (n as usize).min(items.len() - 1)
             } else {
                 let k = (items.len() as i64).saturating_add(n as i64);
@@ -490,17 +536,7 @@ fn array_fill(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, 
     let resolve = |value: Option<&Value>, default: usize| -> usize {
         match value {
             Some(Value::Undefined) | None => default,
-            Some(v) => {
-                let n = v.to_number();
-                if !n.is_finite() {
-                    return if n > 0.0 { length } else { 0 };
-                }
-                if n < 0.0 {
-                    ((length as f64 + n).max(0.0)) as usize
-                } else {
-                    (n as usize).min(length)
-                }
-            }
+            Some(v) => relative_index(v.to_number(), length),
         }
     };
     let start = resolve(a.get(1), 0);
@@ -519,156 +555,123 @@ fn array_fill(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, 
     Ok(this)
 }
 
-/// Build an iterator over a projection of the elements. `keys()`, `values()`
-/// and `entries()` differ only in what each step produces.
-fn iterate_projection(
-    interp: &mut Interpreter,
-    this: &Value,
-    project: impl Fn(usize, &Value) -> Value,
-) -> Result<Value, VmErr> {
-    let projected: Vec<Value> = arr_items(this)
-        .iter()
-        .enumerate()
-        .map(|(index, value)| project(index, value))
-        .collect();
-    let array = Value::checked_array(projected)?;
-    let iterator = interp.prop(
-        &array,
-        &Value::String(crate::interpreter::SYMBOL_ITERATOR_SLOT.to_string()),
-    )?;
-    interp.call_this(&iterator, array, vec![])
-}
-
-fn array_keys(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
-    iterate_projection(interp, &this, |index, _| Value::Number(index as f64))
+fn array_keys(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    crate::interpreter::array_iter_with_kind(this, "keys")
 }
 
 fn array_values(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
     crate::interpreter::array_iter(interp, this, Vec::new())
 }
 
-fn array_entries(interp: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
-    iterate_projection(interp, &this, |index, value| {
-        Value::array(vec![Value::Number(index as f64), value.clone()])
-    })
+fn array_entries(_: &mut Interpreter, this: Value, _: Vec<Value>) -> Result<Value, VmErr> {
+    crate::interpreter::array_iter_with_kind(this, "entries")
 }
 
 fn array_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let items = arr_items(&this);
-    let presence = arr_presence(&this);
-    let cb = a.first().cloned().unwrap_or(Value::Undefined);
-    let mut out = Vec::with_capacity(items.len());
-    let mut out_presence = Vec::with_capacity(items.len());
-    for (i, it) in items.iter().enumerate() {
-        if !presence.get(i).copied().unwrap_or(true) {
+    let length = array_like_length(interp, &this)?;
+    let cb = callback(&a)?;
+    let receiver = a.get(1).cloned().unwrap_or(Value::Undefined);
+    let mut out = Vec::with_capacity(length);
+    let mut presence = Vec::with_capacity(length);
+    for index in 0..length {
+        if let Some(value) = array_element(interp, &this, index, true)? {
+            out.push(interp.call_this(
+                &cb,
+                receiver.clone(),
+                vec![value, Value::Number(index as f64), this.clone()],
+            )?);
+            presence.push(true);
+        } else {
             out.push(Value::Undefined);
-            out_presence.push(false);
-            continue;
+            presence.push(false);
         }
-        let r = interp.call_this(
-            &cb,
-            Value::Undefined,
-            vec![it.clone(), Value::Number(i as f64), this.clone()],
-        )?;
-        out.push(r);
-        out_presence.push(true);
     }
-    Value::checked_array_with_presence(out, out_presence)
+    Value::checked_array_with_presence(out, presence)
 }
 
 fn array_filter(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let items = arr_items(&this);
-    let presence = arr_presence(&this);
-    let cb = a.first().cloned().unwrap_or(Value::Undefined);
+    let length = array_like_length(interp, &this)?;
+    let cb = callback(&a)?;
+    let receiver = a.get(1).cloned().unwrap_or(Value::Undefined);
     let mut out = Vec::new();
-    for (i, it) in items.iter().enumerate() {
-        if !presence.get(i).copied().unwrap_or(true) {
+    for index in 0..length {
+        let Some(value) = array_element(interp, &this, index, true)? else {
             continue;
-        }
+        };
         let keep = interp.call_this(
             &cb,
-            Value::Undefined,
-            vec![it.clone(), Value::Number(i as f64), this.clone()],
+            receiver.clone(),
+            vec![value.clone(), Value::Number(index as f64), this.clone()],
         )?;
         if keep.is_truthy() {
-            out.push(it.clone());
+            out.push(value);
         }
     }
     Value::checked_array(out)
 }
 
-fn array_reduce(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let items = arr_items(&this);
-    let presence = arr_presence(&this);
-    let cb = a.first().cloned().unwrap_or(Value::Undefined);
-    let (mut acc, start) = if a.len() >= 2 {
-        (a[1].clone(), 0)
-    } else {
-        let Some(first) = presence.iter().position(|present| *present) else {
-            return Err(VmErr::Msg(
-                "TypeError: Reduce of empty array with no initial value".into(),
-            ));
-        };
-        (items[first].clone(), first + 1)
-    };
-    for (i, item) in items.iter().enumerate().skip(start) {
-        if !presence.get(i).copied().unwrap_or(true) {
+fn reduce_direction(
+    interp: &mut Interpreter,
+    this: Value,
+    a: Vec<Value>,
+    reverse: bool,
+) -> Result<Value, VmErr> {
+    let length = array_like_length(interp, &this)?;
+    let cb = callback(&a)?;
+    let mut acc = a.get(1).cloned();
+    for step in 0..length {
+        let index = if reverse { length - 1 - step } else { step };
+        let Some(value) = array_element(interp, &this, index, true)? else {
             continue;
-        }
-        acc = interp.call_this(
-            &cb,
-            Value::Undefined,
-            vec![acc, item.clone(), Value::Number(i as f64), this.clone()],
-        )?;
+        };
+        acc = Some(match acc {
+            None => value,
+            Some(previous) => interp.call_this(
+                &cb,
+                Value::Undefined,
+                vec![previous, value, Value::Number(index as f64), this.clone()],
+            )?,
+        });
     }
-    Ok(acc)
+    acc.ok_or_else(|| VmErr::Msg("TypeError: Reduce of empty array with no initial value".into()))
+}
+
+fn array_reduce(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    reduce_direction(interp, this, a, false)
 }
 
 fn array_for_each(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let items = arr_items(&this);
-    let presence = arr_presence(&this);
-    let cb = a.first().cloned().unwrap_or(Value::Undefined);
-    for (i, it) in items.iter().enumerate() {
-        if !presence.get(i).copied().unwrap_or(true) {
-            continue;
+    let length = array_like_length(interp, &this)?;
+    let cb = callback(&a)?;
+    let receiver = a.get(1).cloned().unwrap_or(Value::Undefined);
+    for index in 0..length {
+        if let Some(value) = array_element(interp, &this, index, true)? {
+            interp.call_this(
+                &cb,
+                receiver.clone(),
+                vec![value, Value::Number(index as f64), this.clone()],
+            )?;
         }
-        interp.call_this(
-            &cb,
-            Value::Undefined,
-            vec![it.clone(), Value::Number(i as f64), this.clone()],
-        )?;
     }
     Ok(Value::Undefined)
 }
 
 fn array_find(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let items = arr_items(&this);
-    let cb = a.first().cloned().unwrap_or(Value::Undefined);
-    for (i, it) in items.iter().enumerate() {
-        let hit = interp.call_this(
-            &cb,
-            Value::Undefined,
-            vec![it.clone(), Value::Number(i as f64), this.clone()],
-        )?;
-        if hit.is_truthy() {
-            return Ok(it.clone());
-        }
-    }
-    Ok(Value::Undefined)
+    search(interp, &this, &a, false, false)
 }
 
 fn array_some(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let items = arr_items(&this);
-    let presence = arr_presence(&this);
-    let cb = a.first().cloned().unwrap_or(Value::Undefined);
-    for (i, it) in items.iter().enumerate() {
-        if !presence.get(i).copied().unwrap_or(true) {
+    let length = array_like_length(interp, &this)?;
+    let cb = callback(&a)?;
+    let receiver = a.get(1).cloned().unwrap_or(Value::Undefined);
+    for index in 0..length {
+        let Some(value) = array_element(interp, &this, index, true)? else {
             continue;
-        }
+        };
         let hit = interp.call_this(
             &cb,
-            Value::Undefined,
-            vec![it.clone(), Value::Number(i as f64), this.clone()],
+            receiver.clone(),
+            vec![value, Value::Number(index as f64), this.clone()],
         )?;
         if hit.is_truthy() {
             return Ok(Value::Bool(true));
@@ -678,17 +681,17 @@ fn array_some(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
 }
 
 fn array_every(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let items = arr_items(&this);
-    let presence = arr_presence(&this);
-    let cb = a.first().cloned().unwrap_or(Value::Undefined);
-    for (i, it) in items.iter().enumerate() {
-        if !presence.get(i).copied().unwrap_or(true) {
+    let length = array_like_length(interp, &this)?;
+    let cb = callback(&a)?;
+    let receiver = a.get(1).cloned().unwrap_or(Value::Undefined);
+    for index in 0..length {
+        let Some(value) = array_element(interp, &this, index, true)? else {
             continue;
-        }
+        };
         let hit = interp.call_this(
             &cb,
-            Value::Undefined,
-            vec![it.clone(), Value::Number(i as f64), this.clone()],
+            receiver.clone(),
+            vec![value, Value::Number(index as f64), this.clone()],
         )?;
         if !hit.is_truthy() {
             return Ok(Value::Bool(false));
@@ -701,7 +704,7 @@ fn array_every(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<V
 /// array bound so a hostile `length` cannot drive an unbounded loop.
 fn array_like_length(interp: &mut Interpreter, this: &Value) -> Result<usize, VmErr> {
     let len_val = interp.get_prop_value_str(this, "length")?;
-    let n = interp.tn(&len_val);
+    let n = interp.ecmascript_to_number(&len_val)?;
     if !n.is_finite() || n <= 0.0 {
         return Ok(0);
     }
@@ -855,8 +858,8 @@ fn array_slice(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value,
     };
     let start = norm(a.first().map(|v| v.to_number()).unwrap_or(0.0));
     let end = match a.get(1) {
+        Some(Value::Undefined) | None => len,
         Some(v) => norm(v.to_number()),
-        None => len,
     };
     if start >= end {
         return Ok(Value::array(vec![]));
@@ -967,8 +970,11 @@ fn merge_sort_values(
 }
 
 fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
+    let cmp = a.first().cloned().unwrap_or(Value::Undefined);
+    if !matches!(cmp, Value::Undefined) && !crate::interpreter::call::is_callable_value(&cmp) {
+        return Err(VmErr::Msg("TypeError: comparator is not a function".into()));
+    }
     if let Value::Array(items) = &this {
-        let cmp = a.first().cloned().unwrap_or(Value::Undefined);
         // Never hold the array's RefCell borrow while invoking guest code.
         // Comparators are allowed to re-enter the array (for example by
         // calling `push`), and keeping the RefMut across the callback used to
@@ -995,10 +1001,7 @@ fn array_sort(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
                 (present && !matches!(value, Value::Undefined)).then_some(value)
             })
             .collect();
-        if matches!(
-            cmp,
-            Value::Function(_) | Value::NativeFunction { .. } | Value::HostFunction { .. }
-        ) {
+        if !matches!(cmp, Value::Undefined) {
             // Comparator errors must escape sort. Converting them to zero
             // silently changes program behavior and leaves callers unable to
             // catch the original exception.
@@ -1062,8 +1065,10 @@ fn reject_frozen_array_mutation(array: &crate::value::ArrayCell) -> Result<(), V
 fn array_flat(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let items = arr_items(&this);
     let presence = arr_presence(&this);
-    let depth = a.first().map(|v| v.to_number()).unwrap_or(1.0);
-    let depth = if depth.is_nan() { 0.0 } else { depth };
+    let depth = match a.first() {
+        Some(Value::Undefined) | None => 1.0,
+        Some(v) => to_integer_or_infinity(v.to_number()),
+    };
 
     // Use an explicit work stack. Guest code can construct deeply nested
     // arrays dynamically, so parser and call-depth limits do not protect the
@@ -1117,17 +1122,17 @@ fn array_flat(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, 
 }
 
 fn array_flat_map(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let items = arr_items(&this);
-    let presence = arr_presence(&this);
-    let cb = a.first().cloned().unwrap_or(Value::Undefined);
+    let length = array_like_length(interp, &this)?;
+    let cb = callback(&a)?;
+    let receiver = a.get(1).cloned().unwrap_or(Value::Undefined);
     let mut out = Vec::new();
-    for (i, it) in items.iter().enumerate() {
-        if !presence.get(i).copied().unwrap_or(true) {
+    for i in 0..length {
+        let Some(it) = array_element(interp, &this, i, true)? else {
             continue;
-        }
+        };
         let r = interp.call_this(
             &cb,
-            Value::Undefined,
+            receiver.clone(),
             vec![it.clone(), Value::Number(i as f64), this.clone()],
         )?;
         match &r {
@@ -1164,35 +1169,5 @@ fn array_reduce_right(
     this: Value,
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
-    let items = arr_items(&this);
-    let presence = arr_presence(&this);
-    let cb = a.first().cloned().unwrap_or(Value::Undefined);
-    let len = items.len();
-    let (mut acc, mut i) = if a.len() >= 2 {
-        (a[1].clone(), len as i64 - 1)
-    } else {
-        let Some(last) = presence.iter().rposition(|present| *present) else {
-            return Err(VmErr::Msg(
-                "TypeError: Reduce of empty array with no initial value".into(),
-            ));
-        };
-        (items[last].clone(), last as i64 - 1)
-    };
-    while i >= 0 {
-        let index = i as usize;
-        if presence.get(index).copied().unwrap_or(true) {
-            acc = interp.call_this(
-                &cb,
-                Value::Undefined,
-                vec![
-                    acc,
-                    items[index].clone(),
-                    Value::Number(i as f64),
-                    this.clone(),
-                ],
-            )?;
-        }
-        i -= 1;
-    }
-    Ok(acc)
+    reduce_direction(interp, this, a, true)
 }

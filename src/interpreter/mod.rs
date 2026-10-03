@@ -41,7 +41,7 @@ pub use native_addon::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use node_addon::{NodeAddonOptions, NodeAddonRuntimeInfo, NodeAddonSidecar};
-pub(crate) use resolve::array_iter;
+pub(crate) use resolve::{array_iter, array_iter_with_kind};
 #[cfg(all(
     feature = "node-api-host",
     any(target_os = "linux", target_os = "macos", target_os = "windows")

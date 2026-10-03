@@ -257,51 +257,78 @@ pub(super) fn parse_int(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Re
         None => return Ok(Value::Number(f64::NAN)),
     };
     let mut radix = match a.get(1) {
-        Some(v) => v.to_number() as u32,
+        Some(v) => crate::value::to_int32(interp.ecmascript_to_number(v)?),
         None => 0,
     };
-    let t = s.trim();
-    let mut chars = t.chars();
-    let mut first = chars.next();
-    let mut neg = false;
-    if first == Some('+') {
-        first = chars.next();
-    } else if first == Some('-') {
-        neg = true;
-        first = chars.next();
-    }
-    // Infer radix from a 0x/0X prefix when unspecified.
-    if radix == 0 {
-        if first == Some('0') {
-            let mut peek = chars.clone();
-            if matches!(peek.next(), Some('x') | Some('X')) {
-                radix = 16;
-                chars.next();
-                first = chars.next();
-            } else {
-                radix = 10;
-            }
-        } else {
-            radix = 10;
-        }
-    }
-    let mut val: i64 = 0;
-    let mut any = false;
-    let mut cur = first;
-    while let Some(c) = cur {
-        match c.to_digit(radix) {
-            Some(d) => {
-                val = val.saturating_mul(radix as i64).saturating_add(d as i64);
-                any = true;
-                cur = chars.next();
-            }
-            None => break,
-        }
-    }
-    if !any {
+    if radix != 0 && !(2..=36).contains(&radix) {
         return Ok(Value::Number(f64::NAN));
     }
-    Ok(Value::Number((if neg { -val } else { val }) as f64))
+    let mut digits = s.trim_start();
+    let neg = digits.starts_with('-');
+    if digits.starts_with(['+', '-']) {
+        digits = &digits[1..];
+    }
+    let strip_prefix = radix == 0 || radix == 16;
+    if radix == 0 {
+        radix = 10;
+    }
+    if strip_prefix && (digits.starts_with("0x") || digits.starts_with("0X")) {
+        radix = 16;
+        digits = &digits[2..];
+    }
+    let end = digits
+        .find(|c: char| !c.is_ascii() || c.to_digit(radix as u32).is_none())
+        .unwrap_or(digits.len());
+    if end == 0 {
+        return Ok(Value::Number(f64::NAN));
+    }
+    let digits = &digits[..end];
+    // Decimal parsing rounds the full integer once, rather than overflowing
+    // an i64 or accumulating rounding error one digit at a time.
+    let val = if radix == 10 {
+        digits.parse::<f64>().unwrap_or(f64::INFINITY)
+    } else {
+        digits.chars().fold(0.0, |value, c| {
+            value * radix as f64 + c.to_digit(radix as u32).expect("validated digit") as f64
+        })
+    };
+    Ok(Value::Number(if neg { -val } else { val }))
+}
+
+/// Longest initial decimal literal, including an optional signed exponent.
+fn decimal_prefix(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut index = usize::from(matches!(bytes.first(), Some(b'+') | Some(b'-')));
+    let mut digits = 0;
+    while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+        index += 1;
+        digits += 1;
+    }
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        return 0;
+    }
+    let end = index;
+    if matches!(bytes.get(index), Some(b'e') | Some(b'E')) {
+        index += 1;
+        if matches!(bytes.get(index), Some(b'+') | Some(b'-')) {
+            index += 1;
+        }
+        let exponent_start = index;
+        while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+            index += 1;
+        }
+        if index == exponent_start {
+            return end;
+        }
+    }
+    index
 }
 
 pub(super) fn parse_float(
@@ -314,23 +341,16 @@ pub(super) fn parse_float(
         Some(v) => interp.vs(v)?,
         None => return Ok(Value::Number(f64::NAN)),
     };
-    let t = s.trim();
-    let mut end = 0usize;
-    let mut seen_digit = false;
-    for (i, c) in t.char_indices() {
-        let ok = c.is_ascii_digit()
-            || (c == '.' && seen_digit)
-            || ((c == '+' || c == '-') && i == 0)
-            || ((c == 'e' || c == 'E') && seen_digit);
-        if ok {
-            if c.is_ascii_digit() {
-                seen_digit = true;
-            }
-            end = i + c.len_utf8();
+    let t = s.trim_start();
+    let unsigned = t.strip_prefix(['+', '-']).unwrap_or(t);
+    if unsigned.starts_with("Infinity") {
+        return Ok(Value::Number(if t.starts_with('-') {
+            f64::NEG_INFINITY
         } else {
-            break;
-        }
+            f64::INFINITY
+        }));
     }
+    let end = decimal_prefix(t);
     match t[..end].parse::<f64>() {
         Ok(n) => Ok(Value::Number(n)),
         Err(_) => Ok(Value::Number(f64::NAN)),

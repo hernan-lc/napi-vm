@@ -1202,84 +1202,97 @@ pub(crate) fn array_iter(
     this: super::Value,
     _args: Vec<super::Value>,
 ) -> Result<super::Value, crate::error::VmErr> {
-    use std::cell::RefCell;
-    use std::rc::Rc;
+    array_iter_with_kind(this, "values")
+}
 
-    let items = match &this {
-        super::Value::Array(a) => a.borrow().clone(),
-        _ => vec![],
-    };
-    let cursor = Rc::new(RefCell::new(0usize));
-    let items_rc = Rc::new(items);
-
-    // Build an iterator object with a `next` method implemented as a closure
-    // captured in a NativeFunction. Since NativeFunction takes a plain fn
-    // pointer, we store the state in the object's properties and use a
-    // stateful approach via a shared counter.
-    let cursor_clone = cursor.clone();
-    let items_clone = items_rc.clone();
-
-    // We store the iterator state in the object itself and use a native
-    // function that reads it back. The trick: store items and cursor index
-    // as hidden properties on the iterator object.
-    let iter_obj = super::Value::object(vec![
+pub(crate) fn array_iter_with_kind(
+    source: super::Value,
+    kind: &str,
+) -> Result<super::Value, crate::error::VmErr> {
+    let iterator = super::Value::object(vec![
+        ("__items__".into(), source),
+        ("__cursor__".into(), super::Value::Number(0.0)),
+        ("__kind__".into(), super::Value::String(kind.into())),
         (
-            "__items__".to_string(),
-            super::Value::array((*items_rc).clone()),
-        ),
-        ("__cursor__".to_string(), super::Value::Number(0.0)),
-        (
-            "next".to_string(),
+            "next".into(),
             super::Value::NativeFunction {
                 name: "next".into(),
                 callable: array_iter_next,
             },
         ),
-        // An iterator is itself iterable, which is what makes
-        // `[...map.keys()]` and `for (const k of map.keys())` work.
         (
-            crate::interpreter::SYMBOL_ITERATOR_SLOT.to_string(),
+            crate::interpreter::SYMBOL_ITERATOR_SLOT.into(),
             super::Value::NativeFunction {
                 name: "[Symbol.iterator]".into(),
                 callable: string_iter_self,
             },
         ),
     ]);
-
-    // Suppress unused variable warnings for the closure-based approach we
-    // didn't end up using.
-    let _ = (cursor_clone, items_clone);
-
-    Ok(iter_obj)
+    if let super::Value::Object { props } = &iterator {
+        for key in [
+            "__items__",
+            "__cursor__",
+            "__kind__",
+            "next",
+            crate::interpreter::SYMBOL_ITERATOR_SLOT,
+        ] {
+            props.meta.borrow_mut().set_attrs(
+                key,
+                crate::value::PropAttrs {
+                    enumerable: false,
+                    ..crate::value::PropAttrs::default()
+                },
+            );
+        }
+    }
+    Ok(iterator)
 }
 
-/// `next()` for an array iterator: reads `__items__` and `__cursor__` from
-/// `this`, advances the cursor, and returns `{value, done}`.
+/// Read the source at each step. Array iterators observe changes to both
+/// values and length, but remain exhausted after the first done result.
 fn array_iter_next(
-    _interp: &mut super::Interpreter,
+    interp: &mut super::Interpreter,
     this: super::Value,
     _args: Vec<super::Value>,
 ) -> Result<super::Value, crate::error::VmErr> {
-    let items_prop = this.get_prop("__items__");
-    let items = match &items_prop {
-        Some(super::Value::Array(a)) => a.borrow().clone(),
-        _ => vec![],
-    };
+    let source = this
+        .get_prop("__items__")
+        .unwrap_or(super::Value::Undefined);
+    if matches!(source, super::Value::Undefined) {
+        return Ok(super::call::iter_result(super::Value::Undefined, true));
+    }
+    let length = interp.get_prop_value_str(&source, "length")?;
+    let length = interp.ecmascript_to_number(&length)?;
     let cursor = match this.get_prop("__cursor__") {
         Some(super::Value::Number(n)) => n as usize,
         _ => 0,
     };
-
-    if cursor < items.len() {
-        let val = items[cursor].clone();
-        this.set_prop(
-            "__cursor__".to_string(),
-            super::Value::Number((cursor + 1) as f64),
-        )?;
-        Ok(super::call::iter_result(val, false))
-    } else {
-        Ok(super::call::iter_result(super::Value::Undefined, true))
+    if cursor as f64 >= length || length.is_nan() {
+        this.set_prop("__items__".into(), super::Value::Undefined)?;
+        return Ok(super::call::iter_result(super::Value::Undefined, true));
     }
+    if cursor >= crate::value::MAX_ARRAY_LEN {
+        return Err(crate::value::limit_err(
+            "Maximum array iteration length exceeded",
+        ));
+    }
+    this.set_prop(
+        "__cursor__".into(),
+        super::Value::Number((cursor + 1) as f64),
+    )?;
+    let kind = this.get_prop("__kind__");
+    let index = super::Value::Number(cursor as f64);
+    let value = if matches!(&kind, Some(super::Value::String(kind)) if kind == "keys") {
+        index
+    } else {
+        let value = interp.get_prop_value_str(&source, &cursor.to_string())?;
+        if matches!(&kind, Some(super::Value::String(kind)) if kind == "entries") {
+            super::Value::array(vec![index, value])
+        } else {
+            value
+        }
+    };
+    Ok(super::call::iter_result(value, false))
 }
 
 /// `[Symbol.iterator]()` on a string returns a character iterator.

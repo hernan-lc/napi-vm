@@ -33,7 +33,8 @@ test("typed array search methods honor fromIndex", () => {
 
 test("String search methods honor the position argument", () => {
   expect(runCode("'abcabc'.indexOf('b', 2);")).toBe("4");
-  expect(runCode("'abcabc'.indexOf('b', -4);")).toBe("4");
+  // String positions clamp negatives to zero; arrays use relative indices.
+  expect(runCode("'abcabc'.indexOf('b', -4);")).toBe("1");
   expect(runCode("'abc'.indexOf('b', 9);")).toBe("-1");
   expect(runCode("'abcabc'.lastIndexOf('b', 3);")).toBe("1");
   expect(runCode("'abc'.lastIndexOf('b', 9);")).toBe("1");
