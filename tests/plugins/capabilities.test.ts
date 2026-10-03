@@ -228,6 +228,78 @@ async function withFetchStub(transport: Transport, fn: () => Promise<void>): Pro
   }
 }
 
+test("fetch response limits count UTF-8 bytes instead of string length", async () => {
+  await withFetchStub(async () => new Response("ééé"), async () => {
+    const vm = new Vm();
+    installForTest("fetch", vm, {
+      manifestPermissions: { fetch: "*" },
+      grant: { allow: ["*"], maxResponseBytes: 4 },
+    });
+    try {
+      await expect(vm.runAsync("await fetch('https://api.example.com/x');")).rejects.toThrow("4-byte limit");
+    } finally {
+      vm.dispose();
+    }
+  });
+});
+
+test("fetch stops and cancels a stream as soon as it exceeds the byte limit", async () => {
+  let cancelled = false;
+  let pulls = 0;
+  await withFetchStub(async () => new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      controller.enqueue(new TextEncoder().encode("ab"));
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 })), async () => {
+    const vm = new Vm();
+    installForTest("fetch", vm, {
+      manifestPermissions: { fetch: "*" },
+      grant: { allow: ["*"], maxResponseBytes: 3 },
+    });
+    try {
+      await expect(vm.runAsync("await fetch('https://api.example.com/x');")).rejects.toThrow("3-byte limit");
+      expect(cancelled).toBe(true);
+      expect(pulls).toBe(2);
+    } finally {
+      vm.dispose();
+    }
+  });
+});
+
+test("fetch decodes a multibyte character split across stream chunks", async () => {
+  await withFetchStub(async () => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array([0xc3]));
+      controller.enqueue(new Uint8Array([0xa9]));
+      controller.close();
+    },
+  })), async () => {
+    const vm = new Vm();
+    installForTest("fetch", vm, {
+      manifestPermissions: { fetch: "*" },
+      grant: { allow: ["*"], maxResponseBytes: 2 },
+    });
+    try {
+      expect(await vm.runAsync("const r=await fetch('https://api.example.com/x'); await r.text();")).toBe("é");
+    } finally {
+      vm.dispose();
+    }
+  });
+});
+
+test("fetch rejects invalid host limits before installing the capability", () => {
+  for (const maxResponseBytes of [NaN, Infinity, -1, 1.5]) {
+    const vm = new Vm();
+    expect(() => installForTest("fetch", vm, {
+      manifestPermissions: { fetch: "*" },
+      grant: { allow: ["*"], maxResponseBytes },
+    })).toThrow("maxResponseBytes");
+    vm.dispose();
+  }
+});
+
 test("a permitted request reaches the transport", async () => {
   const seen: string[] = [];
   await withFetchStub(async (url) => {

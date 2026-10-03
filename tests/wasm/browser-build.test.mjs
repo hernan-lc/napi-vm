@@ -35,6 +35,28 @@ function run(source) {
 }
 
 describe("browser build", { skip: built ? false : "playground/pkg is not built" }, () => {
+  test("numeric builtin regressions also work in the browser target", () => {
+    assert.equal(run('Number.isNaN(parseInt("12", 1));'), "true");
+    assert.equal(run('parseInt("0xff", 16);'), "255");
+    assert.equal(run('parseFloat(".5rest");'), "0.5");
+    assert.equal(run('parseFloat("1e+2rest");'), "100");
+    assert.equal(run('Object.is(Math.round(-0.1), -0);'), "true");
+    assert.equal(run('4294967295 >>> 0;'), "4294967295");
+  });
+
+  test("array callbacks and iterators read current elements", () => {
+    assert.equal(run('[1].map(function(x) { return x + this.n; }, {n:2}).join();'), "3");
+    assert.equal(run('(() => { const a=[1,2]; return a.map(x => { a[1]=9; return x; }).join(); })();'), "1,9");
+    assert.equal(run('(() => { const a=[1]; const it=a.values(); it.next(); a.push(2); return it.next().value; })();'), "2");
+    assert.equal(run('[1,2,3].slice(1, undefined).join();'), "2,3");
+    assert.equal(run('"abc".indexOf("a", -1);'), "0");
+  });
+
+  test("function constructors propagate guest exceptions", () => {
+    assert.equal(run('(() => { function F() { throw new Error("boom"); } try { new F(); } catch (e) { return e.message; } })();'), "boom");
+    assert.equal(run('(() => { function F(a,b,...rest) { this.n=rest.length; } return new F().n; })();'), "0");
+  });
+
   test("generators yield their values", () => {
     assert.equal(run("function* g() { yield 1; yield 2; } [...g()].join();"), "1,2");
     assert.equal(run("function* g() { yield 1; } g().next().value;"), "1");

@@ -1215,7 +1215,9 @@ impl Interpreter {
             });
             self.push_frame(fname, Span::unknown());
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::bytecode::vm::run_function(self, code, parent_env, this_val, args)
+                stacker::maybe_grow(RECURSION_STACK_RED_ZONE, RECURSION_STACK_SEGMENT, || {
+                    crate::bytecode::vm::run_function(self, code, parent_env, this_val, args)
+                })
             }));
             if let Err(panic) = outcome {
                 self.pop_frame();
@@ -1339,7 +1341,7 @@ impl Interpreter {
                         let rest_name = fd.params[rest_idx].trim_start_matches("...").to_string();
                         for (i, p) in fd.params.iter().enumerate() {
                             if i == rest_idx {
-                                let rest_args = args[i..].to_vec();
+                                let rest_args = args.get(i..).unwrap_or(&[]).to_vec();
                                 fe.borrow_mut().set(&rest_name, Value::array(rest_args));
                             } else {
                                 let arg = if i < args.len() {
@@ -1768,83 +1770,13 @@ impl Interpreter {
                 } else {
                     Value::object(vec![])
                 };
-                let parent_env = fd.closure.clone().unwrap_or_else(|| self.global.clone());
-
-                // Bytecode-backed constructors run the register VM with the
-                // fresh instance as `this`. No frame is pushed, and the
-                // collapse-everything-to-`inst` mapping matches the AST path.
-                if let Some(code) = &fd.bytecode {
-                    let code = code.clone();
-                    let r = crate::bytecode::vm::run_function(
-                        self,
-                        &code,
-                        parent_env,
-                        inst.clone(),
-                        &args,
-                    );
-                    return match r {
-                        Err(VmErr::Ret(v)) if is_js_object(&v) => Ok(v),
-                        Err(VmErr::Ret(_)) => Ok(inst),
-                        _ => Ok(inst),
-                    };
-                }
-
-                let rest_idx = fd.params.iter().position(|p| p.starts_with("..."));
-                let fe = match rest_idx {
-                    None => {
-                        let mut vars: SmallVec<[(Key, Value); 8]> = SmallVec::new();
-                        vars.push((Key::from("this"), inst.clone()));
-                        for (i, p) in fd.params.iter().enumerate() {
-                            let arg = args.get(i).cloned().unwrap_or(Value::Undefined);
-                            vars.push((p.clone(), arg));
-                        }
-                        // Arrows inherit `arguments` through the chain; only real
-                        // functions bind their own.
-                        if fd.uses_arguments && !fd.is_arrow {
-                            let args_obj = Value::arguments_object(args.as_slice())?;
-                            vars.push((Key::from("arguments"), args_obj));
-                        }
-                        Rc::new(RefCell::new(Environment::with_bindings(parent_env, vars)))
-                    }
-                    Some(rest_idx) => {
-                        let fe = Rc::new(RefCell::new(Environment::child(parent_env)));
-                        fe.borrow_mut().set("this", inst.clone());
-                        let rest_name = fd.params[rest_idx].trim_start_matches("...").to_string();
-                        for (i, p) in fd.params.iter().enumerate() {
-                            if i == rest_idx {
-                                let rest_args = args[i..].to_vec();
-                                fe.borrow_mut().set(&rest_name, Value::array(rest_args));
-                            } else {
-                                let is_rest_param = fd
-                                    .params
-                                    .get(i + 1)
-                                    .map(|p| p.starts_with("..."))
-                                    .unwrap_or(false);
-                                let arg = if !is_rest_param && i >= rest_idx {
-                                    Value::Undefined
-                                } else {
-                                    args.get(i).cloned().unwrap_or(Value::Undefined)
-                                };
-                                fe.borrow_mut().set(p, arg);
-                            }
-                        }
-                        // Arrows inherit `arguments` through the chain; only real
-                        // functions bind their own.
-                        if fd.uses_arguments && !fd.is_arrow {
-                            let args_obj = Value::arguments_object(args.as_slice())?;
-                            fe.borrow_mut().set("arguments", args_obj);
-                        }
-                        fe
-                    }
-                };
-
-                let s = std::mem::replace(&mut self.global, fe);
-                let r = self.run_function_body(&fd.body, fd.needs_hoisting);
-                self.global = s;
-                match r {
-                    Err(VmErr::Ret(v)) if is_js_object(&v) => Ok(v),
-                    Err(VmErr::Ret(_)) => Ok(inst),
-                    _ => Ok(inst),
+                // Constructors share ordinary function call admission, stack
+                // growth and error propagation. Only their return-value rule
+                // differs: an explicit object replaces the fresh instance.
+                match self.call_this(f, inst.clone(), args) {
+                    Ok(value) if is_js_object(&value) => Ok(value),
+                    Ok(_) => Ok(inst),
+                    Err(error) => Err(error),
                 }
             }
             _ => {

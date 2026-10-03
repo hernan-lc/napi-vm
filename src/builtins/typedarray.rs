@@ -1031,16 +1031,7 @@ pub fn write_element(view: &Rc<TypedArrayData>, index: usize, value: &Value) -> 
 /// `ToInt32`: truncate towards zero and wrap modulo 2³², which is how the
 /// integer views convert a `Number`.
 fn to_int(value: f64) -> i32 {
-    if !value.is_finite() {
-        return 0;
-    }
-    let truncated = value.trunc();
-    let wrapped = truncated.rem_euclid(4_294_967_296.0);
-    if wrapped >= 2_147_483_648.0 {
-        (wrapped - 4_294_967_296.0) as i32
-    } else {
-        wrapped as i32
-    }
+    crate::value::to_int32(value)
 }
 
 fn read_all(view: &Rc<TypedArrayData>) -> Vec<Value> {
@@ -1148,7 +1139,8 @@ fn typed_prototype_method(name: &str) -> Value {
 fn typed_at(_: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let view = require(&this)?;
     let length = view.effective_length();
-    let index = a.first().map(|v| v.to_number()).unwrap_or(0.0);
+    let index =
+        crate::value::to_integer_or_infinity(a.first().map(|v| v.to_number()).unwrap_or(0.0));
     let index = if index < 0.0 {
         length as f64 + index
     } else {
@@ -1176,7 +1168,8 @@ fn typed_join(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Va
 /// `set(source, offset)`: copy elements in, converting as needed.
 fn typed_set(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let view = require(&this)?;
-    let offset = a.get(1).map(|v| v.to_number()).unwrap_or(0.0);
+    let offset =
+        crate::value::to_integer_or_infinity(a.get(1).map(|v| v.to_number()).unwrap_or(0.0));
     if !offset.is_finite() || offset < 0.0 {
         return Err(range_err("Invalid offset"));
     }
@@ -1187,7 +1180,10 @@ fn typed_set(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Val
         Some(other) => interp.iterate(other)?,
         None => Vec::new(),
     };
-    if offset + items.len() > view.effective_length() {
+    if offset
+        .checked_add(items.len())
+        .is_none_or(|end| end > view.effective_length())
+    {
         return Err(range_err("Source is too large"));
     }
     for (index, item) in items.iter().enumerate() {
@@ -1203,7 +1199,7 @@ fn window(length: usize, a: &[Value]) -> (usize, usize) {
         match value {
             Some(Value::Undefined) | None => default,
             Some(v) => {
-                let n = v.to_number();
+                let n = crate::value::to_integer_or_infinity(v.to_number());
                 if !n.is_finite() {
                     return if n > 0.0 { length } else { 0 };
                 }
@@ -1335,7 +1331,10 @@ fn new_data_view(_: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value, 
         Some(Value::Undefined) | None => available - byte_offset,
         Some(v) => v.to_number().max(0.0) as usize,
     };
-    if byte_offset + byte_length > available {
+    if byte_offset
+        .checked_add(byte_length)
+        .is_none_or(|end| end > available)
+    {
         return Err(range_err("Invalid DataView length"));
     }
     Ok(Value::DataView(Rc::new(TypedArrayData {

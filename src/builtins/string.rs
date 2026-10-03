@@ -3,7 +3,7 @@
 use super::{NativeFn, nf, str_this};
 use crate::error::VmErr;
 use crate::interpreter::{Environment, Interpreter};
-use crate::value::Value;
+use crate::value::{Value, to_integer_or_infinity};
 
 fn bounded_string(value: String) -> Result<Value, VmErr> {
     Value::checked_string(value)
@@ -118,7 +118,7 @@ fn string_raw(interp: &mut Interpreter, _: Value, a: Vec<Value>) -> Result<Value
 /// `at(index)`: a negative index counts back from the end.
 fn string_at(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let chars: Vec<char> = str_this(interp, &this)?.chars().collect();
-    let index = a.first().map(|v| v.to_number()).unwrap_or(0.0);
+    let index = to_integer_or_infinity(a.first().map(|v| v.to_number()).unwrap_or(0.0));
     let index = if index < 0.0 {
         chars.len() as f64 + index
     } else {
@@ -140,7 +140,7 @@ fn pad(
     let text = str_this(interp, this)?;
     let current = text.chars().count();
     let target = a.first().map(|v| v.to_number()).unwrap_or(0.0);
-    if !target.is_finite() || target <= current as f64 {
+    if target.is_nan() || target <= current as f64 {
         return Ok(Value::String(text));
     }
     let target = target as usize;
@@ -205,25 +205,6 @@ fn clamp_position(raw: Option<f64>, len: usize) -> usize {
     }
 }
 
-/// `ToIntegerOrInfinity`, clamped into `[0, len]`, for the forward searches
-/// (`indexOf`, `includes`): negatives count back from the end, `NaN` and
-/// missing mean `0`.
-fn forward_from_index(raw: Option<f64>, len: usize) -> usize {
-    let n = raw.unwrap_or(0.0);
-    if n.is_nan() {
-        return 0;
-    }
-    // `as` saturates infinities and truncates toward zero, matching
-    // `ToIntegerOrInfinity`; `saturating_add` keeps `-Infinity` from
-    // overflowing.
-    let i = n as i64;
-    if i < 0 {
-        (len as i64).saturating_add(i).max(0) as usize
-    } else {
-        (i as usize).min(len)
-    }
-}
-
 /// First occurrence of `needle` at or after character `from`, as a character
 /// index. Empty needles match at `from` itself.
 fn search_from(s: &str, needle: &str, from: usize) -> Option<usize> {
@@ -245,7 +226,7 @@ fn string_last_index_of(
     let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v)?,
-        None => String::new(),
+        None => "undefined".into(),
     };
     let len = text.chars().count();
     // Unlike `Array.prototype.lastIndexOf`, `NaN` (and a missing position)
@@ -289,7 +270,7 @@ fn string_code_point_at(
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
     let text = str_this(interp, &this)?;
-    let index = a.first().map(|v| v.to_number()).unwrap_or(0.0);
+    let index = to_integer_or_infinity(a.first().map(|v| v.to_number()).unwrap_or(0.0));
     if !index.is_finite() || index < 0.0 {
         return Ok(Value::Undefined);
     }
@@ -403,8 +384,8 @@ fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
     };
     let start = norm(a.first().map(|v| v.to_number()).unwrap_or(0.0));
     let end = match a.get(1) {
+        Some(Value::Undefined) | None => len,
         Some(v) => norm(v.to_number()),
-        None => len,
     };
     if start >= end {
         return Ok(Value::String(String::new()));
@@ -412,58 +393,49 @@ fn string_slice(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<
     bounded_string(chars[start as usize..end as usize].iter().collect())
 }
 fn string_split(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
-    let s = str_this(interp, &this)?;
-    // A regular-expression separator splices its capture groups into the
-    // result, so it goes through the pattern path rather than `str::split`.
+    let text = str_this(interp, &this)?;
+    let limit = match a.get(1) {
+        Some(Value::Undefined) | None => crate::value::MAX_ARRAY_LEN,
+        Some(value) => (crate::value::to_int32(interp.ecmascript_to_number(value)?) as u32
+            as usize)
+            .min(crate::value::MAX_ARRAY_LEN),
+    };
+    // A regular-expression separator inserts its capture groups.
     if let Some(pattern) = a.first().and_then(|v| v.as_regexp()) {
-        let limit = match a.get(1) {
-            Some(Value::Undefined) | None => crate::value::MAX_ARRAY_LEN,
-            Some(l) => (l.to_number().max(0.0) as usize).min(crate::value::MAX_ARRAY_LEN),
-        };
-        let input: Vec<char> = s.chars().collect();
-        return super::regexp::split_with_pattern(&input, &pattern, limit);
+        return super::regexp::split_with_pattern(
+            &text.chars().collect::<Vec<_>>(),
+            &pattern,
+            limit,
+        );
     }
-    match a.first() {
-        Some(Value::String(sep)) => {
-            let limit = match a.get(1) {
-                Some(l) => (l.to_number().max(0.0) as usize).min(crate::value::MAX_ARRAY_LEN),
-                None => crate::value::MAX_ARRAY_LEN,
-            };
-            let mut parts: Vec<Value> = Vec::new();
-            // An empty separator splits into characters. Rust's `split("")`
-            // instead yields a leading and trailing empty string, which is not
-            // what JavaScript does.
-            if sep.is_empty() {
-                for c in s.chars() {
-                    if parts.len() >= limit {
-                        break;
-                    }
-                    parts.push(Value::String(c.to_string()));
-                }
-                return Value::checked_array(parts);
-            }
-            for p in s.split(sep.as_str()) {
-                if parts.len() >= limit {
-                    break;
-                }
-                if parts.len() >= crate::value::MAX_ARRAY_LEN {
-                    return Err(crate::value::limit_err("Maximum array length exceeded"));
-                }
-                parts.push(Value::String(p.to_string()));
-            }
-            Value::checked_array(parts)
-        }
-        _ => Value::checked_array(vec![Value::String(s)]),
+    if limit == 0 {
+        return Value::checked_array(vec![]);
     }
+    let separator = match a.first() {
+        Some(Value::Undefined) | None => return Value::checked_array(vec![Value::String(text)]),
+        Some(value) => interp.vs(value)?,
+    };
+    let parts = if separator.is_empty() {
+        text.chars()
+            .take(limit)
+            .map(|ch| Value::String(ch.to_string()))
+            .collect()
+    } else {
+        text.split(&separator)
+            .take(limit)
+            .map(|part| Value::String(part.into()))
+            .collect()
+    };
+    Value::checked_array(parts)
 }
 fn string_includes(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this)?;
     let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v)?,
-        None => String::new(),
+        None => "undefined".into(),
     };
-    let from = forward_from_index(a.get(1).map(|v| v.to_number()), s.chars().count());
+    let from = clamp_position(a.get(1).map(|v| v.to_number()), s.chars().count());
     Ok(Value::Bool(search_from(&s, &needle, from).is_some()))
 }
 fn string_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
@@ -471,9 +443,9 @@ fn string_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resu
     let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v)?,
-        None => String::new(),
+        None => "undefined".into(),
     };
-    let from = forward_from_index(a.get(1).map(|v| v.to_number()), s.chars().count());
+    let from = clamp_position(a.get(1).map(|v| v.to_number()), s.chars().count());
     // Reported in characters, not bytes, like every other string index here.
     Ok(Value::Number(
         search_from(&s, &needle, from)
@@ -483,7 +455,11 @@ fn string_index_of(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Resu
 }
 fn string_char_at(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this)?;
-    let idx = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    let index = to_integer_or_infinity(a.first().map(|v| v.to_number()).unwrap_or(0.0));
+    if index < 0.0 || !index.is_finite() {
+        return Ok(Value::String(String::new()));
+    }
+    let idx = index as usize;
     Ok(Value::String(
         s.chars()
             .nth(idx)
@@ -500,7 +476,7 @@ fn string_starts_with(
     let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v)?,
-        None => String::new(),
+        None => "undefined".into(),
     };
     // Positions clamp into range; unlike `indexOf` they never wrap.
     let pos = clamp_position(a.get(1).map(|v| v.to_number()), s.chars().count());
@@ -512,12 +488,12 @@ fn string_ends_with(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Res
     let needle = match a.first() {
         Some(Value::String(n)) => n.clone(),
         Some(v) => interp.vs(v)?,
-        None => String::new(),
+        None => "undefined".into(),
     };
     let len = s.chars().count();
     // A missing length means the whole string; an explicit `NaN` means 0.
     let end = match a.get(1) {
-        None => len,
+        Some(Value::Undefined) | None => len,
         Some(v) => clamp_position(Some(v.to_number()), len),
     };
     Ok(Value::Bool(
@@ -526,7 +502,11 @@ fn string_ends_with(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Res
 }
 fn string_repeat(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Result<Value, VmErr> {
     let s = str_this(interp, &this)?;
-    let n = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    let count = to_integer_or_infinity(a.first().map(|v| v.to_number()).unwrap_or(0.0));
+    if count < 0.0 || !count.is_finite() {
+        return Err(crate::value::limit_err("Invalid repeat count"));
+    }
+    let n = count as usize;
     if s.len().saturating_mul(n) > crate::value::MAX_STRING_LEN {
         return Err(crate::value::limit_err("Maximum string length exceeded"));
     }
@@ -641,7 +621,11 @@ fn string_char_code_at(
     a: Vec<Value>,
 ) -> Result<Value, VmErr> {
     let s = str_this(interp, &this)?;
-    let idx = a.first().map(|v| v.to_number() as usize).unwrap_or(0);
+    let index = to_integer_or_infinity(a.first().map(|v| v.to_number()).unwrap_or(0.0));
+    if index < 0.0 || !index.is_finite() {
+        return Ok(Value::Number(f64::NAN));
+    }
+    let idx = index as usize;
     match s.chars().nth(idx) {
         Some(ch) => Ok(Value::Number(ch as u32 as f64)),
         None => Ok(Value::Number(f64::NAN)),
@@ -660,8 +644,8 @@ fn string_substring(interp: &mut Interpreter, this: Value, a: Vec<Value>) -> Res
     };
     let mut start = norm(a.first().map(|v| v.to_number()).unwrap_or(0.0));
     let mut end = match a.get(1) {
+        Some(Value::Undefined) | None => len,
         Some(v) => norm(v.to_number()),
-        None => len,
     };
     if start > end {
         std::mem::swap(&mut start, &mut end);

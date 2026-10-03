@@ -274,6 +274,12 @@ function installFetch(
   const transport: FetchTransport = globalThis.fetch;
   const maxBytes = policy.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const maxRedirects = policy.maxRedirects ?? 3;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new PluginManifestError("fetch: maxResponseBytes must be a non-negative safe integer");
+  }
+  if (!Number.isSafeInteger(maxRedirects) || maxRedirects < 0) {
+    throw new PluginManifestError("fetch: maxRedirects must be a non-negative safe integer");
+  }
 
   vm.exposeAsyncFunction("__cap_fetch", async (rawUrl: unknown, rawOptions: unknown) => {
     let url: URL;
@@ -297,16 +303,18 @@ function installFetch(
     // request to a denied one.
     let current = url;
     let response: Response | undefined;
+    const signal = policy.timeoutMs ? AbortSignal.timeout(policy.timeoutMs) : undefined;
     for (let hop = 0; hop <= maxRedirects; hop++) {
       response = await transport(current.toString(), {
         method,
         headers,
         body,
         redirect: "manual",
-        signal: policy.timeoutMs ? AbortSignal.timeout(policy.timeoutMs) : undefined,
+        signal,
       });
       const location = response.headers.get("location");
       if (response.status < 300 || response.status >= 400 || location === null) break;
+      await response.body?.cancel();
       if (hop === maxRedirects) {
         throw new PermissionDeniedError("fetch: too many redirects");
       }
@@ -317,12 +325,7 @@ function installFetch(
       throw new PermissionDeniedError("fetch: no response");
     }
 
-    const text = await response.text();
-    if (text.length > maxBytes) {
-      throw new PermissionDeniedError(
-        `fetch: response exceeds the ${maxBytes}-byte limit`,
-      );
-    }
+    const text = await boundedResponseText(response, maxBytes);
     const headerEntries: Record<string, string> = {};
     response.headers.forEach((value, key) => {
       headerEntries[key] = value;
@@ -338,4 +341,33 @@ function installFetch(
   });
 
   vm.run(FETCH_GLOBAL_SOURCE);
+}
+
+/** Enforce the limit while reading bytes, before buffering or decoding them. */
+async function boundedResponseText(response: Response, maxBytes: number): Promise<string> {
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > maxBytes) {
+        throw new PermissionDeniedError(`fetch: response exceeds the ${maxBytes}-byte limit`);
+      }
+      const text = decoder.decode(value, { stream: true });
+      if (text !== "") parts.push(text);
+    }
+    parts.push(decoder.decode());
+    return parts.join("");
+  } catch (error) {
+    // Cancellation failures must not hide the original read/limit error.
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
 }
