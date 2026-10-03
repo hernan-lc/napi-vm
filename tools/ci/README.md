@@ -7,7 +7,7 @@ All Rust jobs use `.github/actions/setup-build` after installing Rust:
   and static musl targets retain their existing linkers.
 - Windows MSVC targets use `lld-link`, an alias of Rust's bundled LLVM linker.
   The MSVC action still supplies the C compiler, Windows SDK and import libraries.
-  Both x64 and arm64 are configured. Release PDB settings remain intact.
+  Both x64 and arm64 are configured. Optimized test PDBs retain line tables.
 - macOS keeps Apple's linker. GNU/mold flags do not apply to Mach-O binaries.
 - Miri opts out of native linker configuration.
 
@@ -27,6 +27,31 @@ prebuilt, checksum-verified wasm-pack 0.15.0 instead of `cargo install`.
 Workflow NAPI builds pass `--lib --locked` to Cargo, avoiding compilation of
 the unrelated LSP binary with NAPI enabled. LSP builds remain explicit and
 use their existing core-only feature configuration.
+
+Routine tests use `ci`, with debug assertions and no debug symbols. Coroutine
+backend/stress checks and CI LSP builds use `ci-optimized`: release opt-level 3,
+no cross-crate LTO, 16 codegen units, and line tables for crash diagnostics.
+The two coroutine suites and LSP share a core-only build, avoiding NAPI code
+and repeated LTO.
+The LSP step runs its protocol integration tests; Cargo also builds the normal
+LSP executable for those tests, with the same dependency features as the other
+optimized integration suites. This avoids rebuilding it with a separate
+`cargo build` dependency graph. CI LSP artifacts live in `target/ci-optimized`;
+release-tag jobs still build and publish `target/release` binaries with thin LTO
+and a single codegen unit.
+Native addon builds also retain the release profile.
+
+Node-API host jobs compile their tests in `ci` once, then run them with the
+linked smoke fixture. Windows gets `node.lib` from that test build. macOS avoids
+an unused release host build and an explicit target directory that prevented
+reuse by the example. `NAPI_VM_HOST_PROFILE=ci` lets both example scripts reuse
+the test profile while continuing to load a release-built napi-rs addon.
+
+Plugin Node/Bun suites use `tools/plugins/test-js.mjs` to resolve wildcard paths
+before launching either runtime. npm's Windows command shell does not expand
+these patterns; explicit `./` file arguments work consistently on each OS and
+avoid Bun scanning unrelated files. An empty suite is an error.
+
 `build.rs` tracks the NAPI CLI's declaration directory and force-build variable
 so restored Cargo artifacts cannot silently replace `index.d.ts` with an empty
 file when declaration metadata is missing.
