@@ -43,10 +43,7 @@ jobs:
           bun-version-file: .bun-version
       - run: npm ci --ignore-scripts
       - name: Build CJS and ESM addon without unrelated binaries
-        shell: bash
-        run: |
-          npx napi build --platform --release --esm --js index.mjs -- --lib --locked
-          npx napi build --platform --release --commonjs --js index.js -- --lib --locked
+        run: node tools/ci/build-bindings.mjs
       - name: Check generated sources without rebuilding
         run: git diff --exit-code -- index.js index.mjs index.d.ts
       # The fixture is built offline by tests and has its own lockfile.
@@ -55,13 +52,13 @@ jobs:
       - name: Feature combinations and lint
         shell: bash
         run: |
-          cargo test --release --locked
-          cargo test --release --locked --all-features
-          cargo test --locked --no-default-features
+          cargo test --profile ci --locked
+          cargo test --profile ci --locked --all-features
+          cargo test --profile ci --locked --no-default-features
           npm run lint
       - name: Serialized memory regression
         if: matrix.os == 'ubuntu-24.04'
-        run: cargo test --release --locked --no-default-features --test compiler_memory -- --test-threads=1
+        run: cargo test --profile ci --locked --no-default-features --test compiler_memory -- --test-threads=1
       - name: Upload native addon and generated loaders
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

@@ -119,6 +119,13 @@ required-features = ["node-api-host"]
 lto = "thin"
 codegen-units = 1
 
+# Test the full feature matrix without paying release LTO for every test binary.
+# Keep debug assertions; shipped addons and coroutine stress checks use release.
+[profile.ci]
+inherits = "dev"
+debug = 0
+incremental = false
+
 # `wasm-opt` (binaryen) is not installed in this environment; cargo's own LTO
 # already shrinks the module substantially, so skip the wasm-pack post-pass
 # rather than fail the build trying to fetch/run it.

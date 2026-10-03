@@ -56,10 +56,10 @@ jobs:
         run: npx napi build --platform --release -- --lib --locked
 
       - name: Run Rust tests
-        run: cargo test --release
+        run: cargo test --profile ci --locked
 
       - name: Run core-only Rust tests
-        run: cargo test --release --no-default-features
+        run: cargo test --profile ci --locked --no-default-features
 
       - name: Run Rust lint checks
         run: cargo clippy --all-targets -- -D warnings

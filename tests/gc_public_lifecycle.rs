@@ -25,7 +25,13 @@ fn debt_and_suspended_generator_barrier() {
     vm.set_collection_threshold(1);
     vm.eval_source("var g=(function*(){var o={};o.self=o;yield o;})();g.next();")
         .unwrap();
-    assert!(vm.maybe_collect_cycles().unwrap().skipped.is_some());
+    let collection = vm.maybe_collect_cycles().unwrap();
+    #[cfg(stackful_coroutines)]
+    assert!(collection.skipped.is_some());
+    // Buffered generators store yielded values in the traced heap instead of
+    // an opaque suspended stack, so collection can proceed on Windows ARM.
+    #[cfg(not(stackful_coroutines))]
+    assert!(collection.skipped.is_none());
     vm.eval_source("g.return();g=undefined;").unwrap();
     assert!(vm.maybe_collect_cycles().unwrap().skipped.is_none());
     assert!(vm.maybe_collect_cycles().is_none());
