@@ -10,6 +10,10 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # The release is published only after the exact tagged commit passes the
   # native, core-only, JavaScript, and subprocess crash-safety suites.
@@ -31,10 +35,14 @@ jobs:
           # clippy/rustfmt belong to `stable` and are not visible here.
           components: clippy, rustfmt
 
+      - name: Configure fast linkers and Rust cache
+        uses: ./.github/actions/setup-build
+
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -45,7 +53,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Build native module
-        run: npx napi build --platform --release
+        run: npx napi build --platform --release -- --lib --locked
 
       - name: Run Rust tests
         run: cargo test --release
@@ -59,7 +67,9 @@ jobs:
       - name: Run JavaScript tests
         # Ignore the vendored rdev-node suite (see ci.yml): it has no native
         # binding on a fresh checkout and must not run here.
-        run: bun test --path-ignore-patterns 'vendor/**'
+        run: |
+          bun test ./tests --path-ignore-patterns '**/{node,wasm}/**'
+          npm run test:node
 
       - name: Run subprocess crash catalogue
         run: bun examples/crash.ts
@@ -68,7 +78,6 @@ jobs:
   linux-x64:
     name: Linux x86_64
     runs-on: ubuntu-24.04
-    needs: verify
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -78,26 +87,20 @@ jobs:
           toolchain: 1.98.1
           targets: x86_64-unknown-linux-gnu
 
-      - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Configure fast linkers and Rust cache
+        uses: ./.github/actions/setup-build
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
       - name: Build native module
-        run: npx napi build --platform --release
+        run: npx napi build --platform --release -- --lib --locked
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -148,7 +151,6 @@ jobs:
   linux-arm64:
     name: Linux aarch64
     runs-on: ubuntu-24.04-arm
-    needs: verify
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -158,26 +160,20 @@ jobs:
           toolchain: 1.98.1
           targets: aarch64-unknown-linux-gnu
 
-      - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Configure fast linkers and Rust cache
+        uses: ./.github/actions/setup-build
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
       - name: Build native module
-        run: npx napi build --platform --release
+        run: npx napi build --platform --release -- --lib --locked
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -214,7 +210,6 @@ jobs:
   darwin-arm64:
     name: macOS aarch64
     runs-on: macos-15
-    needs: verify
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -224,26 +219,20 @@ jobs:
           toolchain: 1.98.1
           targets: aarch64-apple-darwin
 
-      - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Configure fast linkers and Rust cache
+        uses: ./.github/actions/setup-build
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
       - name: Build native module
-        run: npx napi build --platform --release
+        run: npx napi build --platform --release -- --lib --locked
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -271,7 +260,6 @@ jobs:
   darwin-x64:
     name: macOS x86_64
     runs-on: macos-15-intel
-    needs: verify
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -281,26 +269,20 @@ jobs:
           toolchain: 1.98.1
           targets: x86_64-apple-darwin
 
-      - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Configure fast linkers and Rust cache
+        uses: ./.github/actions/setup-build
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
       - name: Build native module
-        run: npx napi build --platform --release
+        run: npx napi build --platform --release -- --lib --locked
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -328,7 +310,6 @@ jobs:
   win-x64:
     name: Windows x86_64
     runs-on: windows-2025
-    needs: verify
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -338,26 +319,20 @@ jobs:
           toolchain: 1.98.1
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-x64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Configure fast linkers and Rust cache
+        uses: ./.github/actions/setup-build
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
       - name: Build native module
-        run: npx napi build --platform --release
+        run: npx napi build --platform --release -- --lib --locked
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -385,7 +360,6 @@ jobs:
   win-arm64:
     name: Windows aarch64
     runs-on: windows-11-arm
-    needs: verify
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -395,20 +369,14 @@ jobs:
           toolchain: 1.98.1
           targets: aarch64-pc-windows-msvc
 
-      - name: Cache cargo
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-arm64-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Configure fast linkers and Rust cache
+        uses: ./.github/actions/setup-build
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+          cache: npm
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
@@ -416,7 +384,7 @@ jobs:
       # Native build on the arm64 runner (previously cross-compiled from
       # x64): `--platform` already resolves to aarch64-pc-windows-msvc here.
       - name: Build native module
-        run: npx napi build --platform --release
+        run: npx napi build --platform --release -- --lib --locked
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -444,7 +412,7 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-24.04
-    needs: [linux-x64, linux-arm64, darwin-arm64, darwin-x64, win-x64, win-arm64]
+    needs: [verify, linux-x64, linux-arm64, darwin-arm64, darwin-x64, win-x64, win-arm64]
     steps:
       # No checkout: every published file must come from a build job's
       # artifacts, so a stale generated `index.js` in the repository can never

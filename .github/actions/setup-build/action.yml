@@ -1,0 +1,55 @@
+name: Fast Rust builds
+description: Configure native linkers and restore toolchain-specific Cargo artifacts
+inputs:
+  cache-group:
+    description: Separate workloads that produce different artifacts
+    default: native
+  native-linkers:
+    description: Disable for interpreters such as Miri
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Cache mold
+      if: runner.os == 'Linux' && inputs.native-linkers == 'true'
+      id: mold
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/napi-vm-ci/mold-2.40.4
+        key: mold-2.40.4-${{ runner.os }}-${{ runner.arch }}
+    - name: Configure mold on Linux
+      if: runner.os == 'Linux' && inputs.native-linkers == 'true'
+      shell: bash
+      run: bash "$GITHUB_WORKSPACE/tools/ci/setup-mold.sh"
+    - name: Configure MSVC and Windows SDK
+      if: runner.os == 'Windows' && inputs.native-linkers == 'true'
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      env:
+        FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      with:
+        arch: ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
+    - name: Configure lld-link on Windows
+      if: runner.os == 'Windows' && inputs.native-linkers == 'true'
+      shell: pwsh
+      run: '& "$env:GITHUB_WORKSPACE/tools/ci/setup-lld.ps1"'
+    - name: Fingerprint Rust and linker configuration
+      id: compiler
+      shell: bash
+      run: node "$GITHUB_WORKSPACE/tools/ci/cache-key.cjs"
+    - name: Cache Cargo artifacts
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/registry/src/
+          ~/.cargo/git/db/
+          ~/.cache/miri/
+          target/
+          zed-extension/target/
+          examples/plugins/rust-napi-plugin/native/target/
+        # Cache entries are immutable: append the commit to save fresh artifacts,
+        # then restore the latest compatible entry on the next commit.
+        key: rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-${{ inputs.cache-group }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', '.github/actions/setup-build/action.yml', 'tools/ci/*') }}-${{ github.sha }}
+        restore-keys: |
+          rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-${{ inputs.cache-group }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', '.github/actions/setup-build/action.yml', 'tools/ci/*') }}-

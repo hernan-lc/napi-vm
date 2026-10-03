@@ -1,0 +1,29 @@
+name: Prebuilt wasm-pack
+description: Install a checksum-verified wasm-pack binary without compiling the CLI
+runs:
+  using: composite
+  steps:
+    - name: Cache wasm-pack and wasm-bindgen downloads
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cache/napi-vm-ci/wasm-pack-0.15.0/
+          ~/.cache/.wasm-pack/
+        key: wasm-pack-0.15.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+    - name: Install wasm-pack
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$RUNNER_OS-$RUNNER_ARCH" = Linux-X64
+        install_dir="$HOME/.cache/napi-vm-ci/wasm-pack-0.15.0"
+        if [[ ! -x "$install_dir/wasm-pack" ]]; then
+          archive="$RUNNER_TEMP/wasm-pack.tar.gz"
+          curl --fail --location --retry 3 \
+            https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz \
+            --output "$archive"
+          echo "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a  $archive" | sha256sum --check
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" --strip-components=1 -C "$install_dir"
+        fi
+        echo "$install_dir" >> "$GITHUB_PATH"
+        "$install_dir/wasm-pack" --version
