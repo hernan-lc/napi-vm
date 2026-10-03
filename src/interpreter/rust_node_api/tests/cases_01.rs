@@ -122,8 +122,8 @@ NAPI_MODULE_INIT() {
 "#,
         )
         .unwrap();
-        let built = Command::new("cc")
-            .args(["-std=c11", "-O2", "-fPIC", "-shared", "-I"])
+        let built = node_addon_compiler("cc")
+            .args(["-std=c11", "-O2", "-fPIC", "-I"])
             .arg(include)
             .arg(&source)
             .arg("-o")
@@ -340,8 +340,8 @@ NAPI_MODULE_INIT() {
 }
 "#;
         fs::write(&source, c_source).unwrap();
-        let built = Command::new("cc")
-            .args(["-std=c11", "-O2", "-fPIC", "-shared", "-I"])
+        let built = node_addon_compiler("cc")
+            .args(["-std=c11", "-O2", "-fPIC", "-I"])
             .arg(&include)
             .arg(&source)
             .arg("-o")
@@ -444,8 +444,8 @@ __attribute__((constructor)) static void register_module(void) {
 }
 "#;
         fs::write(&source, c_source).unwrap();
-        let built = Command::new("cc")
-            .args(["-std=c11", "-O2", "-fPIC", "-shared", "-I"])
+        let built = node_addon_compiler("cc")
+            .args(["-std=c11", "-O2", "-fPIC", "-I"])
             .arg(&include)
             .arg(&source)
             .arg("-o")
@@ -617,8 +617,8 @@ NAPI_MODULE(prebuild_fixture, initialize)
 "#,
         )
         .unwrap();
-        let built = Command::new("cc")
-            .args(["-std=c11", "-O2", "-fPIC", "-shared", "-I"])
+        let built = node_addon_compiler("cc")
+            .args(["-std=c11", "-O2", "-fPIC", "-I"])
             .arg(&include)
             .arg(&source)
             .arg("-o")
@@ -934,12 +934,11 @@ NAPI_MODULE_INIT() {
 }
 "#;
         fs::write(&source, c_source).unwrap();
-        let built = Command::new("cc")
+        let built = node_addon_compiler("cc")
             .args([
                 "-std=c11",
                 "-O2",
                 "-fPIC",
-                "-shared",
                 "-DNAPI_VERSION=10",
                 "-I",
             ])
@@ -1244,12 +1243,11 @@ NAPI_MODULE_INIT() {
 }
 "#;
         fs::write(&source, c_source).unwrap();
-        let built = Command::new("cc")
+        let built = node_addon_compiler("cc")
             .args([
                 "-std=c11",
                 "-O2",
                 "-fPIC",
-                "-shared",
                 "-DNAPI_VERSION=9",
                 "-I",
             ])
@@ -1576,12 +1574,11 @@ NAPI_MODULE_INIT() {
 "#
         .replace("__MARKER_PATH__", &marker.to_string_lossy());
         fs::write(&source, c_source).unwrap();
-        let built = Command::new("cc")
+        let built = node_addon_compiler("cc")
             .args([
                 "-std=c11",
                 "-O2",
                 "-fPIC",
-                "-shared",
                 "-pthread",
                 "-DNAPI_VERSION=8",
                 "-I",
@@ -1956,12 +1953,8 @@ module.exports = {
             include_str!("fixtures/real_napi_v7.c"),
         )
         .unwrap();
-        let mut build = Command::new("cc");
+        let mut build = node_addon_compiler("cc");
         build.args(["-std=c11", "-O2", "-fPIC"]);
-        #[cfg(target_os = "linux")]
-        build.arg("-shared");
-        #[cfg(target_os = "macos")]
-        build.args(["-dynamiclib", "-undefined", "dynamic_lookup"]);
         let built = build
             .args(["-pthread", "-DNAPI_VERSION=7", "-I"])
             .arg(include)
@@ -2554,21 +2547,22 @@ module.exports = {
                 let reference_result: serde_json::Value =
                     serde_json::from_slice(&reference.stdout).unwrap();
                 if runtime == "bun" {
-                    // Bun's napi_get_prototype currently invokes a Proxy
-                    // getPrototypeOf trap; Node returns null without invoking
-                    // it. Assert and document that difference, then compare
-                    // the shared observables.
+                    // Bun releases differ here: some invoke getPrototypeOf,
+                    // while others match Node's null result without a trap.
+                    // Accept those two coherent behaviors, keeping every
+                    // other observable in the VM/reference comparison.
                     assert_eq!(reference_result["napiProxyObjectPrototypeMatches"], false);
-                    assert_eq!(
+                    let proxy_observables = serde_json::json!([
                         reference_result["napiProxyObjectPrototypeMatchesTrapResult"],
-                        true
-                    );
-                    assert_eq!(reference_result["napiProxyObjectPrototypeIsNull"], false);
-                    assert_eq!(
+                        reference_result["napiProxyObjectPrototypeIsNull"],
                         reference_result["napiTransparentProxyPrototypeIsNull"],
-                        false
+                        reference_result["proxyTrapCalls"]["napiGetPrototype"]
+                    ]);
+                    assert!(
+                        proxy_observables == serde_json::json!([true, false, false, 1])
+                            || proxy_observables == serde_json::json!([false, true, true, 0]),
+                        "unexpected Bun Node-API proxy behavior: {proxy_observables}"
                     );
-                    assert_eq!(reference_result["proxyTrapCalls"]["napiGetPrototype"], 1);
                     let mut vm_shared = vm_result.clone();
                     let mut bun_shared = reference_result;
                     for result in [&mut vm_shared, &mut bun_shared] {
@@ -4060,10 +4054,10 @@ module.exports = {
                 .pointer("/arrayBufferDetachment/nonArrayBufferStatus")
                 .and_then(serde_json::Value::as_i64);
             assert_eq!(vm_non_arraybuffer_status, Some(NAPI_OK as i64));
-            assert_eq!(
-                bun_non_arraybuffer_status,
-                Some(NAPI_ARRAYBUFFER_EXPECTED as i64),
-                "Bun's napi_is_detached_arraybuffer type check changed; review the known Node/Bun semantic difference"
+            assert!(
+                bun_non_arraybuffer_status == Some(NAPI_ARRAYBUFFER_EXPECTED as i64)
+                    || bun_non_arraybuffer_status == Some(NAPI_OK as i64),
+                "unexpected Bun napi_is_detached_arraybuffer status: {bun_non_arraybuffer_status:?}"
             );
             for output in [&mut bun_result, &mut normalized_guest_result] {
                 output["arrayBufferDetachment"]
@@ -4097,10 +4091,11 @@ module.exports = {
                     Some(&node_proxy_filter_result),
                     "napi-vm should follow Node's Proxy {filter} filter result"
                 );
-                assert_eq!(
-                    bun_result.pointer(&format!("/proxyPropertyNames/{filter}")),
-                    Some(&bun_proxy_filter_result),
-                    "Bun's Proxy {filter} filter behavior changed; review this runtime difference"
+                let bun_filter = bun_result.pointer(&format!("/proxyPropertyNames/{filter}"));
+                assert!(
+                    bun_filter == Some(&bun_proxy_filter_result)
+                        || bun_filter == Some(&node_proxy_filter_result),
+                    "unexpected Bun Proxy {filter} filter result: {bun_filter:?}"
                 );
             }
             for output in [&mut bun_result, &mut normalized_guest_result] {

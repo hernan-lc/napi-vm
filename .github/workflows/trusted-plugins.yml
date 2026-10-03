@@ -88,6 +88,9 @@ jobs:
 
       - run: npm ci --ignore-scripts
       - run: npm run plugins:test:rust
+      # Packing imports the JS host's compiled entry point before the native
+      # consumer is launched with an empty PATH.
+      - run: npm run plugins:build:ts
       - name: Packaged native lifecycle without JS tooling
         run: npm run plugins:test:rust-consumer
   # Existing runtime-matrix remains authoritative for full native legacy behavior.

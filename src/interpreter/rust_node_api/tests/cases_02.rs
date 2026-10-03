@@ -179,8 +179,8 @@ NAPI_MODULE_INIT() {
 "#,
         )
         .unwrap();
-        let built = Command::new("cc")
-            .args(["-std=c11", "-O2", "-fPIC", "-shared", "-I"])
+        let built = node_addon_compiler("cc")
+            .args(["-std=c11", "-O2", "-fPIC", "-I"])
             .arg(&include)
             .arg(&source)
             .arg("-o")
@@ -372,8 +372,8 @@ NAPI_MODULE_INIT() {
 "#,
         )
         .unwrap();
-        let built = Command::new("cc")
-            .args(["-std=c11", "-O2", "-fPIC", "-shared", "-I"])
+        let built = node_addon_compiler("cc")
+            .args(["-std=c11", "-O2", "-fPIC", "-I"])
             .arg(&include)
             .arg(&source)
             .arg("-o")
@@ -628,12 +628,11 @@ process.stdout.write(JSON.stringify({
             let version_root = root.join(format!("v{api_version}"));
             fs::create_dir_all(&version_root).unwrap();
             let addon = version_root.join("fixture.node");
-            let built = Command::new("cc")
+            let built = node_addon_compiler("cc")
                 .args([
                     "-std=c11",
                     "-O2",
                     "-fPIC",
-                    "-shared",
                     &format!("-DNAPI_VERSION={api_version}"),
                     "-I",
                 ])
@@ -926,12 +925,11 @@ NODE_API_MODULE(napi_vm_node_addon_api_fixture, Init)
 "#,
         )
         .unwrap();
-        let built = Command::new("c++")
+        let built = node_addon_compiler("c++")
             .args([
                 "-std=c++17",
                 "-O2",
                 "-fPIC",
-                "-shared",
                 "-DNAPI_VERSION=8",
                 "-I",
             ])
@@ -1410,12 +1408,11 @@ NAPI_MODULE_INIT() {
 "#,
         )
         .unwrap();
-        let built = Command::new("cc")
+        let built = node_addon_compiler("cc")
             .args([
                 "-std=c11",
                 "-O2",
                 "-fPIC",
-                "-shared",
                 "-DNAPI_EXPERIMENTAL",
                 "-DNAPI_VERSION=10",
                 "-I",

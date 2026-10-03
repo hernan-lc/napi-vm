@@ -574,11 +574,6 @@ jobs:
   windows-node-api-host:
     name: Windows Node-API host (MSVC)
     runs-on: windows-2025
-    # `ilammy/msvc-dev-cmd` has no Node 24 release (upstream dormant since
-    # 2024, still declaring `node20`). Run its entrypoint on Node 24 via
-    # GitHub's documented opt-in until it ships one.
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

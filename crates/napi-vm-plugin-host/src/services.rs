@@ -18,7 +18,7 @@ use tokio::{
     net::TcpStream,
     process::{Child, Command},
     task::JoinHandle,
-    time::{Instant, sleep, timeout},
+    time::{Instant, sleep, timeout, timeout_at},
 };
 
 #[derive(Clone, Debug)]
@@ -188,13 +188,12 @@ async fn healthy(spec: &HttpReadiness) -> bool {
 impl ManagedService {
     pub async fn start(spec: ManagedServiceSpec) -> PluginResult<Self> {
         spec.preflight().await?;
+        let deadline = Instant::now() + spec.startup_timeout;
         // Fail if the endpoint was already occupied; never attach to a different service.
-        match timeout(
-            spec.startup_timeout.min(Duration::from_millis(500)),
-            TcpStream::connect(spec.readiness.address),
-        )
-        .await
-        {
+        // Windows may take over a second to report a refused loopback connection.
+        // Use the caller's startup budget, shared with readiness, instead of a
+        // shorter platform-dependent cutoff.
+        match timeout_at(deadline, TcpStream::connect(spec.readiness.address)).await {
             Ok(Ok(_)) => {
                 return Err(invalid(
                     "managed service readiness address is already occupied",
@@ -256,7 +255,6 @@ impl ManagedService {
             shutdown_timeout: spec.shutdown_timeout,
             stopped: false,
         };
-        let deadline = Instant::now() + spec.startup_timeout;
         loop {
             if owned.child.try_wait()?.is_some() {
                 owned.shutdown().await?;
@@ -272,10 +270,16 @@ impl ManagedService {
                     "managed service readiness deadline exceeded",
                 ));
             }
-            if healthy(&spec.readiness).await {
+            if timeout_at(deadline, healthy(&spec.readiness))
+                .await
+                .unwrap_or(false)
+            {
                 return Ok(owned);
             }
-            sleep(Duration::from_millis(25)).await;
+            sleep(
+                Duration::from_millis(25).min(deadline.saturating_duration_since(Instant::now())),
+            )
+            .await;
         }
     }
     pub fn endpoint(&self) -> &str {

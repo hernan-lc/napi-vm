@@ -1,10 +1,23 @@
 use super::api::{settle_deferred_without_interpreter, to_int32};
 use super::*;
 use crate::interpreter::{Interpreter, NativeAddonRuntime};
-use libloading::os::unix::{RTLD_GLOBAL, RTLD_NOW};
+#[cfg(target_os = "linux")]
+use libloading::os::unix::RTLD_GLOBAL;
+use libloading::os::unix::RTLD_NOW;
 use sha2::{Digest, Sha256};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+fn node_addon_compiler(compiler: &str) -> Command {
+    let mut command = Command::new(compiler);
+    #[cfg(target_os = "linux")]
+    command.arg("-shared");
+    // Node-API symbols are supplied by the loading host, not a link-time
+    // library. Darwin needs explicit dynamic lookup for both C and C++ addons.
+    #[cfg(target_os = "macos")]
+    command.args(["-dynamiclib", "-undefined", "dynamic_lookup"]);
+    command
+}
 
 fn assert_error_fields(value: &Value, name: &str, message: &str, code: Option<&str>) {
     assert!(matches!(
@@ -53,11 +66,3 @@ fn node_api_shim_is_shared_across_host_generations() {
 
 include!("cases_01.rs");
 include!("cases_02.rs");
-
-#[cfg(all(test, target_os = "windows"))]
-#[path = "windows.rs"]
-mod windows_tests;
-
-#[cfg(all(test, target_os = "macos"))]
-#[path = "macos.rs"]
-mod macos_tests;

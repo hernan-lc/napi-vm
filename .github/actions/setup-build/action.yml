@@ -23,11 +23,8 @@ runs:
       run: bash "$GITHUB_WORKSPACE/tools/ci/setup-mold.sh"
     - name: Configure MSVC and Windows SDK
       if: runner.os == 'Windows' && inputs.native-linkers == 'true'
-      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-      env:
-        FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-      with:
-        arch: ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
+      shell: pwsh
+      run: '& "$env:GITHUB_WORKSPACE/tools/ci/setup-msvc.ps1"'
     - name: Configure lld-link on Windows
       if: runner.os == 'Windows' && inputs.native-linkers == 'true'
       shell: pwsh
