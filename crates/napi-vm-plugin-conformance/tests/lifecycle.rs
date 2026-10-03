@@ -1,7 +1,11 @@
 use napi_vm_plugin_host::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 struct Package(PathBuf);
 impl Drop for Package {
     fn drop(&mut self) {
@@ -18,14 +22,21 @@ fn contract() -> Contract {
     .unwrap()
 }
 fn package() -> Package {
-    let root = std::env::temp_dir().join(format!(
-        "napi-rust-conformance-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    static NEXT_PACKAGE: AtomicU64 = AtomicU64::new(0);
+    // Wall-clock resolution can give parallel tests identical timestamps.
+    // Claim each directory atomically, also tolerating leftovers after a crash.
+    let root = loop {
+        let root = std::env::temp_dir().join(format!(
+            "napi-rust-conformance-{}-{}",
+            std::process::id(),
+            NEXT_PACKAGE.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&root) {
+            Ok(()) => break root,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("could not create isolated fixture directory: {error}"),
+        }
+    };
     std::fs::create_dir_all(root.join("bin")).unwrap();
     std::fs::create_dir(root.join("contracts")).unwrap();
     let exe = if cfg!(windows) {

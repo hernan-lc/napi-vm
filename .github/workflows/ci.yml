@@ -140,8 +140,7 @@ jobs:
 
       - name: Regenerate and diff
         run: |
-          npx napi build --platform --release --esm --js index.mjs -- --lib --locked
-          npx napi build --platform --release --js index.js -- --lib --locked
+          node tools/ci/build-bindings.mjs
           if ! git diff --exit-code -- index.js index.mjs index.d.ts; then
             echo "::error::Generated bindings are stale. Run 'npm run build:all' and commit the result."
             exit 1
@@ -205,10 +204,10 @@ jobs:
         run: cargo test --release --test generator_stress -- --test-threads=1 --nocapture
 
       - name: Run Rust tests (full)
-        run: cargo test --release
+        run: cargo test --profile ci --locked
 
       - name: Run Rust tests (core only, no NAPI)
-        run: cargo test --release --no-default-features
+        run: cargo test --profile ci --locked --no-default-features
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -294,7 +293,7 @@ jobs:
         run: npx napi build --platform --release -- --lib --locked
 
       - name: Run Rust tests (core only, no NAPI)
-        run: cargo test --release --no-default-features
+        run: cargo test --profile ci --locked --no-default-features
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -334,7 +333,7 @@ jobs:
         run: npx napi build --platform --release -- --lib --locked
 
       - name: Run Rust tests (core only, no NAPI)
-        run: cargo test --release --no-default-features
+        run: cargo test --profile ci --locked --no-default-features
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -374,7 +373,7 @@ jobs:
         run: npx napi build --platform --release -- --lib --locked
 
       - name: Run Rust tests (core only, no NAPI)
-        run: cargo test --release --no-default-features
+        run: cargo test --profile ci --locked --no-default-features
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -465,10 +464,10 @@ jobs:
           exit 0
 
       - name: Run Rust tests (full)
-        run: cargo test --release
+        run: cargo test --profile ci --locked
 
       - name: Run Rust tests (core only, no NAPI)
-        run: cargo test --release --no-default-features
+        run: cargo test --profile ci --locked --no-default-features
 
       - name: Build napi-vm-lsp (no-default-features)
         run: cargo build --release --no-default-features --bin napi-vm-lsp
@@ -557,7 +556,7 @@ jobs:
           cargo build --target "$NODE_API_TARGET" --release --no-default-features --features node-api-host --lib
           fixture="$RUNNER_TEMP/fixture.node"
           cc -std=c11 -O2 -fPIC -dynamiclib -undefined dynamic_lookup tests/fixtures/node-api/node-api-smoke.c -o "$fixture"
-          NAPI_VM_MACOS_NODE_API_FIXTURE="$fixture" cargo test --target "$NODE_API_TARGET" --release --no-default-features --features node-api-host --lib macos_tests:: -- --test-threads=1
+          NAPI_VM_MACOS_NODE_API_FIXTURE="$fixture" cargo test --target "$NODE_API_TARGET" --profile ci --locked --no-default-features --features node-api-host --lib macos_tests:: -- --test-threads=1
 
       - name: Fetch napi-rs fixture dependencies
         run: cargo fetch --locked --manifest-path tests/fixtures/node-api/napi-rs/Cargo.toml
@@ -565,7 +564,7 @@ jobs:
       - name: Differential-test Rust napi-rs plugins
         env:
           NODE_API_TARGET: ${{ matrix.target }}
-        run: cargo test --target "$NODE_API_TARGET" --release --no-default-features --features node-api-host --lib napi_rs -- --test-threads=1
+        run: cargo test --target "$NODE_API_TARGET" --profile ci --locked --no-default-features --features node-api-host --lib napi_rs -- --test-threads=1
 
       - name: Run the Rust plugin host with a Rust napi-rs addon
         run: examples/plugins/rust-napi-plugin/build-and-run.sh
@@ -611,7 +610,7 @@ jobs:
           }
 
           $env:NAPI_VM_WINDOWS_NODE_API_FIXTURE = $fixture
-          cargo test --release --no-default-features --features node-api-host --lib windows_tests:: -- --test-threads=1
+          cargo test --profile ci --locked --no-default-features --features node-api-host --lib windows_tests:: -- --test-threads=1
           if ($LASTEXITCODE -ne 0) {
             throw 'The in-process Node-API host tests failed under MSVC.'
           }
@@ -621,7 +620,7 @@ jobs:
             throw 'Could not fetch the napi-rs compatibility fixture dependencies.'
           }
 
-          cargo test --release --no-default-features --features node-api-host --lib napi_rs -- --test-threads=1
+          cargo test --profile ci --locked --no-default-features --features node-api-host --lib napi_rs -- --test-threads=1
           if ($LASTEXITCODE -ne 0) {
             throw 'The Rust napi-rs addon compatibility tests failed under MSVC.'
           }

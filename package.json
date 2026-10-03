@@ -17,7 +17,7 @@
   ],
   "scripts": {
     "build": "npx napi build --platform --release --js index.js",
-    "build:all": "bun run build:esm && bun run build:commonjs",
+    "build:all": "node tools/ci/build-bindings.mjs",
     "build:esm": "npx napi build --platform --release --esm --js index.mjs",
     "build:commonjs": "npx napi build --platform --release --commonjs --js index.js",
     "build:debug": "npx napi build --platform --js index.js",
@@ -28,7 +28,7 @@
     "check:generated": "bun run build:all && git diff --exit-code -- index.js index.mjs index.d.ts",
     "test": "bun test ./tests --path-ignore-patterns \"**/{node,wasm}/**\" && npm run test:node && node --test tests/wasm/*.test.mjs",
     "test:node": "node --test tests/node/*.test.js",
-    "test:rust": "cargo test --release",
+    "test:rust": "cargo test --profile ci --locked",
     "test:wasm": "npm run playground:build && npm run lint:playground && node --test tests/wasm/*.test.mjs",
     "bench": "node bench/bench.js",
     "bench:stress": "bun bench/stress.ts",

@@ -47,6 +47,9 @@ runs:
           examples/plugins/rust-napi-plugin/native/target/
         # Cache entries are immutable: append the commit to save fresh artifacts,
         # then restore the latest compatible entry on the next commit.
+        # The broad fallback preserves dependencies across manifest/CI edits;
+        # Cargo fingerprints rebuild changed crates, features and profiles.
         key: rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-${{ inputs.cache-group }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', '.github/actions/setup-build/action.yml', 'tools/ci/*') }}-${{ github.sha }}
         restore-keys: |
           rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-${{ inputs.cache-group }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', '.github/actions/setup-build/action.yml', 'tools/ci/*') }}-
+          rust-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.compiler.outputs.key }}-${{ inputs.cache-group }}-

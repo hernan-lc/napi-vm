@@ -2196,8 +2196,6 @@ module.exports = {
             threadsafe_statuses.get_prop("abortStatus"),
             Some(Value::Number(16.0))
         ));
-        assert_eq!(unsafe { threadsafe_worker_context_ok() }, 1);
-        assert_eq!(unsafe { threadsafe_worker_call_status() }, 0);
         let has_valid_threadsafe_order = |events: &Value| {
             matches!(events, Value::String(events)
                 if events == "threadsafe-value,worker-microtask,queue-first,threadsafe-second"
@@ -2227,6 +2225,10 @@ module.exports = {
             unsafe { threadsafe_worker_blocking_status() }
         );
         assert_eq!(unsafe { threadsafe_finalizer_calls() }, 2);
+        // The detached worker may not have run when runThreadsafe returns.
+        // Its finalizer runs after release; inspect worker results only then.
+        assert_eq!(unsafe { threadsafe_worker_context_ok() }, 1);
+        assert_eq!(unsafe { threadsafe_worker_call_status() }, 0);
         assert_eq!(unsafe { threadsafe_worker_blocking_status() }, 0);
         let vm_threadsafe_json = interpreter
             .eval_source(

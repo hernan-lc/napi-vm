@@ -31,12 +31,15 @@ test('template vendoring includes license and README, excludes caches, and rejec
   }
   const payload=join(root,'node_modules/@napi-vm/plugin-cli/src');
   for(const name of ['target','.cache']){await mkdir(join(payload,name));await writeFile(join(payload,name,'fixture.txt'),'must not be vendored');}
-  const entry=join(root,'node_modules/@napi-vm/plugin-cli/src/index.mjs');const project=join(root,'project');
-  const created=spawnSync(process.execPath,[entry,'create',project,'--language','ts'],{cwd:root,encoding:'utf8',timeout:30000});assert.equal(created.status,0,created.stderr);
+  // A junction/alias reproduces Windows short versus canonical temp paths.
+  // Preserve the main URL to check that the CLI canonicalizes both sides.
+  const alias=join(root,'alias');await symlink(root,alias,'junction');
+  const entry=join(alias,'node_modules/@napi-vm/plugin-cli/src/index.mjs');const project=join(root,'project');
+  const created=spawnSync(process.execPath,['--preserve-symlinks-main',entry,'create',project,'--language','ts'],{cwd:root,encoding:'utf8',timeout:30000});assert.equal(created.status,0,created.stderr);assert.equal(JSON.parse(created.stdout).created,project);
   for(const name of names){await access(join(project,'vendor',name,'LICENSE'));await access(join(project,'vendor',name,'README.md'));}
   for(const name of ['target','.cache'])await assert.rejects(access(join(project,'vendor/plugin-cli/src',name)),/ENOENT/);
   await writeFile(join(root,'outside'),'outside source');await symlink(join(root,'outside'),join(payload,'alias'),'file');
-  const rejected=join(root,'symlink-project');const failed=spawnSync(process.execPath,[entry,'create',rejected,'--language','ts'],{cwd:root,encoding:'utf8',timeout:30000});
+  const rejected=join(root,'symlink-project');const failed=spawnSync(process.execPath,['--preserve-symlinks-main',entry,'create',rejected,'--language','ts'],{cwd:root,encoding:'utf8',timeout:30000});
   assert.equal(failed.status,1);assert.match(failed.stderr,/Refusing symlink/);await assert.rejects(access(rejected),/ENOENT/);
  } finally {await rm(root,{recursive:true,force:true});}
 });
