@@ -17,7 +17,8 @@ try {
   Copy-Item -Force $nativeAddon $addonPath
   $digest = (Get-FileHash $addonPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
-  cargo run --no-default-features --features node-api-host `
+  $hostProfile = if ($env:NAPI_VM_HOST_PROFILE) { $env:NAPI_VM_HOST_PROFILE } else { 'dev' }
+  cargo run --profile $hostProfile --locked --no-default-features --features node-api-host `
     --example rust-plugin-napi -- $pluginDir $digest
   if ($LASTEXITCODE -ne 0) {
     throw 'The Rust plugin host failed to load the napi-rs addon.'

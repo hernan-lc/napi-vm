@@ -113,10 +113,12 @@ async fn repeated_unload_reaps_and_instances_are_independent() {
         b.invoke(&contract(), "get", json!({})).await.unwrap(),
         json!({"count":"0"})
     );
+    #[cfg(target_os = "linux")]
     let pid = a.pid().unwrap();
     a.shutdown().await.unwrap();
     a.shutdown().await.unwrap();
     assert_eq!(a.status(), Status::Stopped);
+    assert!(a.pid().is_none());
     assert_eq!(
         a.invoke(&contract(), "get", json!({}))
             .await

@@ -27,5 +27,5 @@ else
   exit 1
 fi
 
-cargo run --no-default-features --features node-api-host \
+cargo run --profile "${NAPI_VM_HOST_PROFILE:-dev}" --locked --no-default-features --features node-api-host \
   --example rust-plugin-napi -- "$plugin_dir" "$digest"
