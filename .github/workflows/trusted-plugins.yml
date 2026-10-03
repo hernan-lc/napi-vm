@@ -6,6 +6,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   native:
     name: Plugins runtime (${{ matrix.platform }}, Rust 1.96)
@@ -20,28 +24,25 @@ jobs:
           - os: windows-2025
             platform: Windows x64
     runs-on: ${{ matrix.os }}
-    env:
-      CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24.19.0
+          cache: npm
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.96.0
           components: rustfmt, clippy
-      - name: Cache Rust artifacts
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - name: Configure fast linkers and Rust cache
+        uses: ./.github/actions/setup-build
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: trusted-plugins-${{ matrix.os }}-rust-1.96-${{ hashFiles('**/Cargo.lock') }}
+          cache-group: plugins
+
       - name: Install pinned Bun
-        run: npm install --global bun@1.4.2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
       - run: npm ci --ignore-scripts
       - run: npm run plugins:check-generated
       - run: npm run plugins:check-assets
@@ -71,25 +72,20 @@ jobs:
           - os: macos-15-intel
             platform: macOS x64
     runs-on: ${{ matrix.os }}
-    env:
-      CARGO_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24.19.0
+          cache: npm
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.96.0
-      - name: Cache Rust artifacts
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - name: Configure fast linkers and Rust cache
+        uses: ./.github/actions/setup-build
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: trusted-plugins-${{ matrix.os }}-rust-1.96-${{ hashFiles('**/Cargo.lock') }}
+          cache-group: plugins
+
       - run: npm ci --ignore-scripts
       - run: npm run plugins:test:rust
       - name: Packaged native lifecycle without JS tooling
@@ -103,10 +99,16 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24.19.0
+          cache: npm
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.96.0
           targets: wasm32-unknown-unknown
+
+      - name: Configure fast linkers and Rust cache
+        uses: ./.github/actions/setup-build
+        with:
+          cache-group: wasm-boundary
       - name: Verify VM remains the sole default workspace member
         shell: bash
         run: |

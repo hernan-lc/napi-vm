@@ -19,6 +19,11 @@ fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=native/node_api_shim.c");
     println!("cargo::rerun-if-env-changed=CC");
+    // The NAPI CLI stores declarations beside cached Cargo artifacts. If that
+    // metadata is missing or changes location, it requests a fresh macro
+    // expansion; otherwise a cached library can produce an empty index.d.ts.
+    println!("cargo::rerun-if-env-changed=NAPI_TYPE_DEF_TMP_FOLDER");
+    println!("cargo::rerun-if-env-changed=NAPI_FORCE_BUILD_NAPI_VM");
     println!("cargo::rustc-check-cfg=cfg(stackful_coroutines)");
     println!("cargo::rustc-check-cfg=cfg(node_api_host_unavailable)");
 
