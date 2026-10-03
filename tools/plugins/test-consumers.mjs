@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {mkdtemp, mkdir, readFile, writeFile, rm, cp, realpath} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join, relative, isAbsolute, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {capture} from './capture.mjs';
 const root=fileURLToPath(new URL('../../',import.meta.url));
@@ -24,7 +24,14 @@ export async function testConsumers({templates=true,rustHost=join(root,'target/d
   await writeFile(join(consumer,'package.json'),JSON.stringify({private:true,type:'module'}));
   const nodeTypes=JSON.parse(await readFile(join(root,'node_modules/@types/node/package.json'),'utf8')).version;
   await capture('npm',['install','--prefer-offline','--ignore-scripts','--no-audit','--no-fund',...tarballs,`@types/node@${nodeTypes}`],{cwd:consumer,timeoutMs:120000});
-  for(const name of names) assert((await realpath(join(consumer,'node_modules/@napi-vm',name))).startsWith(consumer),`${name} linked back to workspace`);
+  // macOS resolves /var temporary directories through /private/var. Compare
+  // canonical paths and require a descendant, not a matching string prefix.
+  const canonicalConsumer=await realpath(consumer);
+  for(const name of names) {
+   const packagePath=await realpath(join(consumer,'node_modules/@napi-vm',name));
+   const location=relative(canonicalConsumer,packagePath);
+   assert(location && location!=='..' && !location.startsWith('..'+sep) && !isAbsolute(location),`${name} linked back to workspace`);
+  }
   const sources=join(consumer,'contracts');await mkdir(sources);
   for(const name of ['greeter.interface.json','greeter.types.schema.json','wire-types.interface.json','wire-types.types.schema.json'])await cp(join(root,'contracts/trusted-plugins/examples',name),join(sources,name));
   await writeFile(join(consumer,'generate.mjs'),`import {generate, generateAll} from '@napi-vm/plugin-codegen';

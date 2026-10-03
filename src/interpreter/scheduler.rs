@@ -302,6 +302,7 @@ mod lifecycle_tests {
         for source in [
             "setTimeout(() => 1, 1000);",
             "queueMicrotask(() => 1);",
+            #[cfg(stackful_coroutines)]
             "var gate=new Promise(() => {}); async function f(){ await gate; } var suspended=f();",
         ] {
             let (mut vm, clock) = controlled();
@@ -327,5 +328,22 @@ mod lifecycle_tests {
                     .contains("deadline")
             );
         }
+    }
+
+    #[test]
+    #[cfg(not(stackful_coroutines))]
+    fn buffered_async_bodies_reject_unsettleable_await_without_retaining_a_deadline() {
+        let (mut vm, _) = controlled();
+        vm.set_execution_timeout(Some(Duration::from_millis(50)));
+        let error = vm
+            .eval_source("var gate=new Promise(() => {}); async function f(){ await gate; } f();")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot synchronously await a pending Promise")
+        );
+        assert!(!vm.has_active_execution());
+        assert!(vm.execution.deadline.get().is_none());
     }
 }

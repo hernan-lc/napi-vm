@@ -277,7 +277,10 @@ const propertyNames = {
   configurable: rawPropertyNames.configurable.map(describePropertyKey),
   // Node and Bun insert the class prototype in different positions; keep the
   // cross-runtime comparison focused on the shared class own-key set.
-  class: rawPropertyNames.classNames.map(describePropertyKey).sort(),
+  // V8 versions differ in whether native constructors expose the legacy,
+  // non-standard arguments/caller keys. Compare the standard class surface.
+  class: rawPropertyNames.classNames.map(describePropertyKey)
+    .filter(name => !['string:arguments', 'string:caller'].includes(name)).sort(),
   function: rawPropertyNames.functionNames.map(describePropertyKey).filter(name =>
     ['string:length', 'string:name', 'string:prototype', 'string:nativeProperty',
       'string:definedByNapi'].includes(name)),
